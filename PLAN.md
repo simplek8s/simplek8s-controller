@@ -260,9 +260,9 @@ Rules:
 1. **Admission** (API, any pod): see 3.10. Patches absent→`requested`
    (409/422 otherwise).
 2. **Slot acquisition** (orchestrator, ~2 s loop): while in-flight count
-   < `--max-concurrent-reboots` (with at most
-   `--max-concurrent-cp-reboots` of them being control-plane nodes) and
-   the queue is not paused or held (3.4), take the oldest `requested`
+   < `--max-concurrent-reboots` (with at most **one** control-plane node
+   in-flight — hard limit, not configurable) and the queue is not paused
+   or held (3.4), take the oldest `requested`
    node and patch it to `draining`. Single writer — no races (Lease
    re-validated before every transition patch, 3.1).
 3. **PDB check** (orchestrator, skipped if `force`): see 3.7. It runs
@@ -416,7 +416,6 @@ partial**; the response is 202 with
 | Flag | Default | Description |
 |---|---|---|
 | `--max-concurrent-reboots` | `1` | Globally rebooting nodes at once. |
-| `--max-concurrent-cp-reboots` | `1` | Control-plane nodes `draining`/`rebooting` at once, independent of `--max-concurrent-reboots` (protects etcd quorum on multi-CP clusters). |
 | `--on-reboot-failure` | `pause` | `pause`\|`continue` — queue behavior while any node is `failed`. |
 | `--reboot-drain-timeout` | `10m` | Max drain duration (guards pods stuck on finalizers). |
 | `--reboot-issue-grace` | `5m` | After `reboot-issued-at`, time for the host to actually reboot (boot ID change) before the local pod fails the node as no-effect. |
@@ -427,8 +426,10 @@ partial**; the response is 202 with
 | env `NODE_NAME`, `POD_NAMESPACE` | downward API | Local node / namespace. |
 | env `SIMPLEK8S_API_TOKEN` | — | Optional API token. |
 
-Leader election constants: renew 10 s, takeover at 30 s stale (not
-flags in v1).
+Constants (not flags in v1): leader election renew 10 s, takeover at
+30 s stale; **at most one control-plane node `draining`/`rebooting` at
+a time**, independent of `--max-concurrent-reboots` (protects etcd
+quorum on multi-CP clusters).
 
 ### 3.11 RBAC (ServiceAccount `simplek8s-controller`)
 
@@ -476,9 +477,9 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
    the
    cluster down; while the CP is down the other pods idle safely (3.1).
    On multi-CP clusters, rebooting two CPs at once can drop etcd below
-   quorum (API down even though a CP survives);
-   `--max-concurrent-cp-reboots` (default 1) caps CP reboots regardless
-   of `--max-concurrent-reboots`. Mitigation: validate on a worker
+   quorum (API down even though a CP survives); the hard limit of one
+   concurrent CP reboot (3.5) prevents this regardless of
+   `--max-concurrent-reboots`. Mitigation: validate on a worker
    first; keep default concurrency at 1; document the risk
    prominently (operators must be aware that a batch
    `*` always includes the control planes).
@@ -527,8 +528,8 @@ gates the drain); validation order reflects that.
 1. **All nodes are rebootable, control-plane included** — v1 has no
    policy flag to lock CPs out (to be revisited in the future). Safety
    comes from ordering instead: `nodes:["*"]` and queue tie-breaks put
-   **workers before control planes**, and `--max-concurrent-cp-reboots`
-   caps simultaneous CP reboots.
+   **workers before control planes**, and a hard limit of one
+   simultaneous CP reboot (not configurable).
 2. Images are hosted on **GitHub Container Registry**
    (`ghcr.io/simplek8s/simplek8s-controller`).
 3. The API is exposed through a **Service** (NodePort,
@@ -556,10 +557,11 @@ gates the drain); validation order reflects that.
    observed `NotReady`); a `reboot` that is accepted but has no effect
    is `failed`, never `completed`. Chosen over grace-only heuristics:
    the boot ID is exact, local, and works in the single-CP case.
-10. **Cap on concurrent control-plane reboots**
-    (`--max-concurrent-cp-reboots`, default 1): independent of
-    `--max-concurrent-reboots`, so a batch can never drop etcd below
-    quorum on a multi-CP cluster.
+10. **Cap on concurrent control-plane reboots: 1, not configurable**
+    (constant): independent of `--max-concurrent-reboots`, so a batch
+    can never drop etcd below quorum on a multi-CP cluster. Deliberately
+    a constant, not a flag: rebooting two CPs at once is never a valid
+    goal, only a quorum hazard.
 11. **`NotReady` nodes are not rebootable** (admission 422; in v1 a hung
     node is rebooted manually/out-of-band), and the queue **holds** while
     any queued node is `NotReady` (3.4): a dead node is never drained,
