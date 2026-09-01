@@ -5,7 +5,8 @@ Phase: **PLAN** (design & planning). Status: draft v2, pending review.
 ## 1. Purpose
 
 A node-management controller for a self-built Kubernetes cluster
-(custom Buildroot-based distro, kubeadm). It runs as a privileged
+(SimpleK8s distro: Buildroot, systemd, containerd, kubeadm). It runs as a
+privileged
 DaemonSet with one instance per node and provides operational
 capabilities over the hosts.
 
@@ -52,6 +53,13 @@ extensible (see 3.7).
 - When a control-plane node reboots, the local instance dies and comes
   back with the DaemonSet; the state machine must be **fully
   recoverable from API-server state alone** (see 3.4).
+- **Single-control-plane outage behavior**: while the only CP is
+  rebooting, the API server is down. Non-CP instances simply skip engine
+  cycles (one log line per outage; no state writes, nothing marked
+  `failed`) and the API returns 503. The CP's own instance completes
+  `rebooting → completed` on its first cycle after the pod restarts and
+  the API answers again. If the CP comes back after the reappearance
+  timeout, the local instance marks it `failed` instead.
 
 ### 3.2 Kubernetes access: minimal REST client (`internal/kube`)
 
@@ -70,8 +78,10 @@ Stdlib `net/http` + `crypto/tls` + `encoding/json`. Required verbs
   in-cluster) or `--kube-apiserver` flag.
 - Auth: `Authorization: Bearer <token>`, token re-read from file per
   request (rotation-safe).
-- No `watch` in v1 — the engine polls (default 2 s). Watch support can be
-  added later if needed.
+- No `watch` in v1 — the engine polls (default 2 s). Reboot operations
+  are measured in minutes, not milliseconds; polling is far simpler to
+  get right with a hand-rolled client (no resync/reconnect edge cases)
+  and trivially robust. Watch can be added later if the cluster grows.
 - Hand-written minimal types (only the fields we use): `Node`
   (spec.unschedulable, status.conditions, metadata), `Pod` (phase,
   nodeName, ownerReferences, labels, deletionTimestamp, local ephemeral
@@ -84,20 +94,26 @@ Stdlib `net/http` + `crypto/tls` + `encoding/json`. Required verbs
 
 No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
 
-| Annotation | Values / format |
-|---|---|
-| `simplek8s.dev/reboot` | `requested` \| `draining` \| `rebooting` \| `completed` \| `failed` |
-| `simplek8s.dev/reboot-request-id` | id to correlate request ↔ execution |
-| `simplek8s.dev/reboot-since` | RFC3339, time entered current state |
-| `simplek8s.dev/reboot-force` | `true`/`false` |
-| `simplek8s.dev/reboot-cordoned-prev` | `true` if node was cordoned before (do not uncordon on completion) |
-| `simplek8s.dev/reboot-error` | error message (state `failed`) |
+| Annotation | Format | Meaning |
+|---|---|---|
+| `simplek8s.dev/reboot-state` | `requested` \| `draining` \| `rebooting` \| `completed` \| `failed` | Current lifecycle state. A **string enum, not a timestamp**; its presence means the node participates in the reboot lifecycle. |
+| `simplek8s.dev/reboot-request-id` | `<RFC3339>-<6 random>` | Correlates one API request with its execution |
+| `simplek8s.dev/reboot-requested-at` | RFC3339 | When the request was admitted (queue ordering) |
+| `simplek8s.dev/reboot-state-since` | RFC3339 | When the node entered its current state (drives timeouts) |
+| `simplek8s.dev/reboot-force` | `true`/`false` | Request bypasses PDB checks |
+| `simplek8s.dev/reboot-cordoned-prev` | `true` | Node was already cordoned before we started (do not uncordon on completion) |
+| `simplek8s.dev/reboot-blocked-by` | comma-separated `ns/pdb` | PDBs currently blocking the node (only while `requested` and blocked) |
+| `simplek8s.dev/reboot-error` | text | Last error (state `failed`) |
 
-- Queue = nodes in `requested`, ordered by `reboot-since`.
+- `reboot-state` is the only state marker; the rest are attributes of the
+  current request/state.
+- Queue = nodes in `requested`, ordered by `reboot-requested-at`; ties
+  broken by **workers before control planes**, then node name.
 - In-flight = nodes in `draining` or `rebooting`.
-- Transitions are atomic merge patches including `resourceVersion`;
-  losers of a race retry and re-read. A node is only mutated by its own
-  local instance; the API only performs absent→`requested`.
+- **Writer rule**: only the local instance of a node mutates that node
+  (its transitions); any instance may perform absent→`requested` (API) and
+  cancel a `requested` node. All patches are atomic merge patches
+  including `resourceVersion`; losers of a race re-read.
 - `completed`/`failed` remain as history until the next request for the
   same node. Cleanup is out of scope for v1.
 
@@ -117,7 +133,7 @@ No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
                                           │   (timeout/err)      │
                                           ▼                      ▼
                                        ┌────────┐     node Ready after the
-                                       │ failed │     reboot (NotRequired seen
+                                       │ failed │     reboot (NotReady seen
                                           ▲       │     in between)  ┌───────────┐
                                           └──────────┴─────────────▶ │ completed │
                                          (reappear timeout)          └───────────┘
@@ -125,18 +141,31 @@ No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
 
 Rules:
 
-- Only the **local instance of the target node** performs
-  `draining → rebooting → completed/failed` (nsenter is local). Every
-  instance observes global state to enforce the concurrency limit.
-- **Ownership via Lease**: driving a node's reboot is guarded by a
-  `coordination.k8s.io/v1` Lease `sck-reboot-<node>` (in the controller's
-  namespace). The node's **local** instance acquires it (create if
-  absent; renew every 10 s while the node is `draining`/`rebooting`);
-  `holderIdentity` is `<node>/<pod-uid>`. A Lease with stale `renewTime`
-  (> 30 s) can be taken over — that is the crash-recovery handoff to the
-  restarted pod on the same node. Holding the Lease is a precondition for
-  any state transition on that node; the node annotations remain the
-  source of truth for state.
+- **Writer rule** (restated): every *other* instance is a pure observer.
+  In particular, timeout/`failed` evaluation for a node is done only by
+  its local instance; a remote instance can never mark a foreign node
+  `failed` (this is also what keeps the cluster consistent while the only
+  CP is down — see 3.1).
+- **Ownership via Lease** (per-node lock, `coordination.k8s.io/v1`):
+  - *What it is*: a small cluster object `simplek8s-reboot-<node>` (in
+    the controller's namespace) with two fields that matter:
+    `spec.holderIdentity` (who holds the lock) and `spec.renewTime`
+    (last heartbeat). Same primitive Kubernetes uses for leader election.
+  - *How it is used*: before driving its node, the local pod **acquires**
+    the Lease (creates it if absent, or takes it if stale) and **renews**
+    it every 10 s while the node is `draining`/`rebooting`.
+    `holderIdentity` = `<pod-name>/<pod-uid>`.
+  - *Why it exists*: annotations say *what state* a node is in, but not
+    *whether someone is actively driving it*. After a crash (pod or node
+    restart) the new pod on that node sees the previous holder with a
+    stale `renewTime` (> 30 s) and takes over deterministically instead
+    of guessing. It also makes ownership visible: `kubectl get lease
+    simplek8s-reboot-<node>` shows who is driving and when it last
+    beat.
+  - *Rule*: holding the Lease is a precondition for any transition on
+    that node; a pod that finds a fresh Lease held by another identity
+    backs off. The node annotations remain the source of truth for
+    state; the Lease only arbitrates *who may write*.
 - Slot acquisition: the local instance of a `requested` node, while the
   global in-flight count < `--max-concurrent-reboots`, acquires the Lease
   and patches the node to `draining`. Non-local instances never advance
@@ -161,8 +190,10 @@ Rules:
 1. **Admission** (API, any instance): validate nodes exist, patch
    absent→`requested` (409 if an active request already exists).
 2. **Slot acquisition** (engine, ~2 s loop): see 3.4.
-3. **PDB check** (skipped if `force`): see 3.6.
-4. **Drain**:
+3. **PDB check** (skipped if `force`): see 3.6. It runs *before* cording:
+   a blocked node stays `requested`, records the blocking PDBs in
+   `reboot-blocked-by`, and is **never cordoned**.
+4. **Drain** (only after the PDB check passed):
    - Cordon (`spec.unschedulable=true`), remembering the previous state.
    - Evict pods via the **Eviction API** (`policy/v1`), skipping
      daemonset-managed and already-terminating pods; pods using local
@@ -202,6 +233,22 @@ For target node N, over every PDB in the cluster (pod label selector):
 MVP: direct computation (list pods + list PDBs, in-memory). Fine for
 small clusters.
 
+**"All nodes blocked" scenario — the cluster cannot wedge:**
+
+- The PDB check happens *before* cording, so a blocked node is never
+  cordoned and nothing on it changes. Worst case: the node simply stays
+  `requested` until the operator acts. The cluster keeps running
+  normally.
+- At most `--max-concurrent-reboots` nodes are cordoned at any time —
+  exactly the ones actively draining/rebooting.
+- Visibility: `reboot-blocked-by` annotation and `GET /reboots` show
+  exactly which PDBs block which node.
+- Escapes: fix the workload/PDB (scale up, lower `minAvailable`),
+  `DELETE` the request, or re-issue with `force` (bypasses the check).
+- A drain that started with a passing check but later meets a PDB denial
+  from the Eviction API aborts to `failed` **and uncordons** (3.4), so a
+  node never stays cordoned without cause.
+
 ### 3.7 Extensibility
 
 The controller is a platform for node-management features. Structure:
@@ -225,13 +272,13 @@ deploy/                     kustomize (SA, RBAC, DaemonSet)
 
 | Method | Route | Description |
 |---|---|---|
-| POST | `/api/v1/reboots` | `{"nodes":["n1","n2"],"force":false}` → `requested`. 202. Errors 404/409/422. |
+| POST | `/api/v1/reboots` | `{"nodes":["n1","n2"],"force":false}`; `"nodes":["*"]` = all nodes (workers queued first, CPs last). → `requested`. 202. Errors 404/409/422. |
 | GET | `/api/v1/reboots` | Reboot state for all nodes. |
 | GET | `/api/v1/reboots/{node}` | State of one node. |
 | DELETE | `/api/v1/reboots/{node}` | Cancel if `requested` (409 otherwise). |
 | GET | `/healthz` | Engine alive + API server reachable. |
 
-- Auth: optional fixed token via env `SCK_API_TOKEN` →
+- Auth: optional fixed token via env `SIMPLEK8S_API_TOKEN` →
   `Authorization: Bearer <token>`. Unset ⇒ no auth (trusted internal
   network).
 - The API is callable on any instance (state is global); execution
@@ -246,6 +293,7 @@ deploy/                     kustomize (SA, RBAC, DaemonSet)
 | Flag | Default | Description |
 |---|---|---|
 | `--max-concurrent-reboots` | `1` | Globally rebooting nodes at once. |
+| `--control-plane-reboots` | `allow` | `allow`\|`deny` — global policy for control-plane nodes. Checked at admission (422 when denied) and re-checked by the engine. |
 | `--reboot-timeout` | `15m` | Max wait for node reappearance. |
 | `--reboot-drain-timeout` | `10m` | Max drain duration. |
 | `--engine-interval` | `2s` | Engine poll period. |
@@ -253,7 +301,7 @@ deploy/                     kustomize (SA, RBAC, DaemonSet)
 | `--kube-apiserver` | in-cluster env | Override API endpoint. |
 | `--creds-dir` | `/var/run/secrets/kubernetes.io/serviceaccount` | Serviceaccount files. |
 | env `NODE_NAME`, `POD_NAMESPACE` | downward API | Local node / namespace. |
-| env `SCK_API_TOKEN` | — | Optional API token. |
+| env `SIMPLEK8S_API_TOKEN` | — | Optional API token. |
 
 ### 3.10 RBAC (ServiceAccount `simplek8s-controller`)
 
@@ -268,7 +316,7 @@ deploy/                     kustomize (SA, RBAC, DaemonSet)
 
 ```yaml
 containers:
-- name: sck
+- name: controller
   image: ghcr.io/simplek8s/simplek8s-controller:v1
   securityContext:
     privileged: true
@@ -282,16 +330,16 @@ serviceAccountName: simplek8s-controller
 ## 4. Risks & safety notes (production cluster)
 
 1. **Control-plane reboot**: control-plane nodes are rebootable by
-   default. With a single control plane and `max-concurrent=1`, a failed
-   recovery leaves the cluster down. Mitigation: validate on a worker
-   first; keep the default concurrency at 1; document the risk
-   prominently in the operation guide.
+   default (`--control-plane-reboots=allow`; set `deny` to lock CPs out).
+   With a single CP and `max-concurrent=1`, a failed recovery leaves the
+   cluster down; while the CP is down the other instances idle safely
+   (3.1). Mitigation: validate on a worker first; keep default
+   concurrency at 1; document the risk prominently.
 2. **Incomplete drains**: pods with local ephemeral storage or
    eviction-disallowing behaviors ⇒ drain times out, the node is **not**
    rebooted, state `failed`, unless `force`.
 3. **False "back" detection**: node may stay Ready through a fast reboot;
-   require NotRequired-in-between (typo guard: "NotReady-in-between") or
-   a newer Ready `lastTransitionTime`.
+   require NotReady-in-between or a newer Ready `lastTransitionTime`.
 4. **Idempotency / crash recovery**: full state in annotations; queue and
    in-flight survive controller (or node) restarts.
 5. **Concurrent writers**: atomic merge patches + resourceVersion; a node
@@ -317,7 +365,10 @@ serviceAccountName: simplek8s-controller
 
 ## 6. Decisions (closed)
 
-1. Control-plane nodes are rebootable **by default** — no opt-in flag.
+1. Control-plane nodes are rebootable **by default**; the policy is
+   selected by a **deployment** flag `--control-plane-reboots=allow|deny`
+   (default `allow`), not per request — reboot policy is an operational
+   decision, and per-request flags are a footgun in production.
 2. Images are hosted on **GitHub Container Registry**
    (`ghcr.io/simplek8s/simplek8s-controller`).
 3. The API is exposed through a **Service** (NodePort,

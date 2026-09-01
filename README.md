@@ -1,7 +1,7 @@
 # simplek8s-controller
 
 A node-management controller for self-built Kubernetes clusters
-(custom Buildroot-based distro, kubeadm). It runs as a privileged
+(SimpleK8s distro: Buildroot, systemd, containerd, kubeadm). It runs as a privileged
 DaemonSet with one instance per node and provides operational
 capabilities over the hosts.
 
