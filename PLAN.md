@@ -1,7 +1,7 @@
 # PLAN — simplek8s-controller
 
-Phase: **PLAN** (design & planning). Status: v3, reviewed (incl. external
-review), pending final sign-off.
+Phase: **PLAN** (design & planning). Status: v4, reviewed (incl. external
+review and follow-up), pending final sign-off.
 
 ## 1. Purpose
 
@@ -17,7 +17,8 @@ capabilities over the hosts.
 3. Wait until a node is available again before starting the next reboot.
 4. Do not reboot a node if a PodDisruptionBudget would be violated,
    unless the request passes `force`.
-5. Control-plane nodes are rebootable (policy flag, default allow).
+5. All nodes are rebootable, control-plane included (no policy flag in
+   v1 — a `deny` option can be added later when needed).
 
 The controller is intended to grow: reboot scheduling is only the first
 capability. The layout (feature packages, engine, API groups) must stay
@@ -50,7 +51,15 @@ extensible (see 3.9).
   - **Orchestrator** (global, single actor): elected via a
     `coordination.k8s.io/v1` Lease `simplek8s-controller-leader`
     (leader election: renew every 10 s, takeover when `renewTime` is
-    stale > 30 s, `holderIdentity` = `<pod-name>/<pod-uid>`). The
+    stale > 30 s, `holderIdentity` = `<pod-name>/<pod-uid>`). The Lease
+    guarantees at most one pod *believes* it is leader, not that only
+    one *acts*: if the leader's renewal is delayed (GC pause, API
+    latency > 30 s), a successor can take over while the old leader is
+    still running its loop. Mitigation: before **each** lifecycle
+    transition patch the orchestrator renews the Lease and aborts the
+    action if it no longer holds it; a rare one-cycle overshoot of the
+    concurrency limit during a handover race is still possible and
+    accepted. The
     orchestrator is the **sole decision-maker and sole writer of
     lifecycle states**: it owns the queue, the concurrency limit, PDB
     checks, drain (evictions are API calls — they do not need to be
@@ -58,11 +67,15 @@ extensible (see 3.9).
     deliberately generic: it leads the *controller*, not the reboot
     feature; future features are orchestrated by the same leader.
   - **Local executor** (one per node, all pods): watches its own node.
-    Its only action is: when its node is `rebooting`, write the
-    `reboot-issued-at` marker and run `nsenter -t 1 -m -u -i -n -p --
-    reboot` (the reboot command must be local — nsenter reaches only the
-    local host). If the command fails to start, it marks the node
-    `failed` with the error.
+    Its actions: when its node is `rebooting`, record the host boot ID
+    (`reboot-boot-id`), write the `reboot-issued-at` marker and run
+    `nsenter -t 1 -m -u -i -n -p -- reboot` (the reboot command must be
+    local — nsenter reaches only the local host). While its node is
+    `rebooting` it verifies the reboot actually happened: host boot ID
+    changed vs `reboot-boot-id` ⇒ write `reboot-confirmed-at`; unchanged
+    past `--reboot-issue-grace` ⇒ mark `failed` ("reboot did not take
+    effect"). If the command fails to start, it marks the node `failed`
+    with the error.
 - Every other pod for a given node is a pure observer (API, health).
 - `nsenter` only reaches the local host ⇒ the reboot *command* is local;
   everything else is centralized in the orchestrator. This eliminates
@@ -70,12 +83,15 @@ extensible (see 3.9).
 - **Single-control-plane outage behavior**: while the only CP is
   rebooting, the API server is down. Pods simply skip engine cycles (log
   rate-limited to one line per up→down transition; no state writes,
-  nothing marked `failed`) and the API returns 503. The orchestrator
-  (running on a worker) keeps its Lease; when the API answers again it
-  resumes and completes the transition (the `completed` rule in 3.5 does
-  not depend on having observed `NotReady` or on condition
-  `lastTransitionTime`, which is exactly what is unreliable in this
-  scenario).
+  nothing marked `failed`) and the API returns 503. While the API is
+  down the worker orchestrator **cannot renew its Lease**; when the API
+  answers again the Lease is stale and leadership typically transfers
+  (any API outage > 30 s has the same effect). The new leader re-reads
+  everything from annotations and completes the transition: the
+  `completed` rule (3.4) relies on `reboot-confirmed-at` (written by the
+  node's own pod once it is scheduled again) or on an observed
+  `NotReady` — never on a fresh `lastTransitionTime`, which is exactly
+  what is unreliable in this scenario.
 - When a CP node reboots, the local pod dies and comes back with the
   DaemonSet; the state machine is **fully recoverable from API-server
   state alone**.
@@ -126,6 +142,8 @@ No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
 | `simplek8s.org/reboot-cordoned-prev` | `true` | Node was already cordoned before we started (do not uncordon on completion) |
 | `simplek8s.org/reboot-blocked-by` | comma-separated `ns/pdb` | PDBs currently blocking the node (only while `requested` and blocked) |
 | `simplek8s.org/reboot-issued-at` | RFC3339 | Local pod issued the reboot command (written just before `nsenter`) |
+| `simplek8s.org/reboot-boot-id` | hex | Host boot ID (`/proc/sys/kernel/random/boot_id`, kernel-global, readable by the pod) recorded just before the reboot is issued |
+| `simplek8s.org/reboot-confirmed-at` | RFC3339 | Local pod verified the host boot ID changed after the reboot (evidence the reboot really happened) |
 | `simplek8s.org/reboot-error` | text | Last error (state `failed`) |
 
 - `reboot-state` is the only state marker; the rest are attributes of the
@@ -138,48 +156,55 @@ No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
 - **Writer rule**: the orchestrator writes all transitions
   (`requested → draining → rebooting → completed/failed`); any pod may
   perform absent→`requested` (API admission) and deletions per 3.10; the
-  local pod may write `reboot-issued-at` and mark `failed` on a failed
-  reboot command. All writes are atomic merge patches including
-  `resourceVersion`; losers of a race re-read.
+  local pod may write `reboot-boot-id`, `reboot-confirmed-at`, and mark
+  `failed` on a failed or no-effect reboot. All writes are atomic merge
+  patches including `resourceVersion`; losers of a race re-read. Node
+  status updates (~10 s, kubelet) bump `resourceVersion` often, so on 409
+  the writer re-reads and re-patches **immediately within the same
+  cycle**, not on the next poll.
 - `completed`/`failed` remain as history until cleared (DELETE) or
   replaced by a new request.
 
 ### 3.4 State machine (per node)
 
+```mermaid
+stateDiagram-v2
+    [*] --> requested: POST /reboots (admission, any pod)
+    requested --> requested: PDB blocked — reboot-blocked-by updated, retried each cycle
+    requested --> draining: slot free + PDB OK (or force)
+    requested --> [*]: DELETE (cancel — annotations cleared)
+    draining --> rebooting: drain OK (or force)
+    draining --> failed: drain timeout / PDB denial / force-delete error
+    rebooting --> failed: command failed to start / reboot no effect (boot ID unchanged)
+    rebooting --> completed: Ready + reboot confirmed (no timeout)
+    completed --> [*]: DELETE (clear history)
+    failed --> [*]: DELETE (clear history — resumes a paused queue)
+    completed --> requested: new POST (re-request)
+    failed --> requested: new POST (re-request)
 ```
-              POST /reboots (any pod, admission)
-                    │
-                    ▼
-             ┌────────────┐   PDB blocked: stays here,
-             │ requested  │   reboot-blocked-by updated,
-             └────────────┘   retried each cycle
-                  │  DELETE (cancel: annotations cleared)
-                  │  orchestrator: slot free + PDB OK (or force)
-                  ▼
-             ┌──────────┐  drain OK (or force)  ┌───────────┐
-             │ draining │──────────────────────▶│ rebooting │
-             └──────────┘                       └───────────┘
-                  │  drain timeout / PDB denial    │ local pod:
-                  │  / force-delete error          │ writes reboot-issued-at,
-                  ▼                                │ runs nsenter reboot
-             ┌────────┐                            │ (command fails → failed)
-             │ failed │                            ▼
-                  ▲                      node Ready again (any time,
-                  │                      no timeout)
-            (reboot command failed)   ┌───────────┐
-                  └───────────────────│ completed │
-                                      └───────────┘
-```
+
+While `rebooting`, the node's local pod records the host boot ID,
+issues `nsenter … reboot`, and later writes `reboot-confirmed-at` when
+the boot ID has changed (see 3.5 step 5).
+
+A node deleted from the cluster exits the machine entirely: its state
+disappears with it, and the orchestrator continues without error (3.4,
+"Node disappears mid-plan").
 
 Rules:
 
-- **`completed`**: orchestrator sees `rebooting` + `reboot-issued-at`
-  present + node `Ready` ⇒ `completed`, and uncordons the node if the
-  controller cordoned it. The `reboot-issued-at` marker is what makes
-  this correct in the single-CP case: the orchestrator (or its successor
-  after leader takeover) never needs to have observed `NotReady`, nor a
-  fresh `lastTransitionTime` — both are unreliable while the only CP is
-  down.
+- **`completed`**: orchestrator sees `rebooting` + node `Ready` +
+  evidence that the reboot really happened ⇒ `completed`, and uncordons
+  the node if the controller cordoned it. Evidence: the local pod wrote
+  `reboot-confirmed-at` (host boot ID changed vs `reboot-boot-id`), or
+  the orchestrator observed the node `NotReady` at least once after
+  `reboot-issued-at`. This stays correct in the single-CP case without
+  trusting condition `lastTransitionTime`: while the API was down no
+  `NotReady` is observable, but the node's own pod writes
+  `reboot-confirmed-at` as soon as it is scheduled again. It also closes
+  the no-effect hole: a `reboot` command that is accepted but never
+  reboots the host can never produce `completed`, because the boot ID
+  never changes (and the grace rule below fails the node).
 - **No reappearance timeout (KISS)**: a node stays `rebooting` until it
   is `Ready` again. A node that never comes back is visible through the
   platform itself (`NotReady` node + `NodeNotReady` events) *and* the
@@ -188,9 +213,11 @@ Rules:
   — "stop watching this node". No `lost` state, no give-up timer.
 - **`failed`** occurs only on definite errors: drain timeout (e.g. pod
   stuck `Terminating` on finalizers), PDB-denied eviction without
-  `force`, force-delete error, or the reboot command failing to start
-  (distinguished from "node has not reappeared"). On `failed` the
-  orchestrator uncordons the node if it cordoned it.
+  `force`, force-delete error, the reboot command failing to start, or
+  the reboot having no effect (host boot ID unchanged
+  `--reboot-issue-grace` after `reboot-issued-at`, detected by the
+  local pod — distinguished from "node has not reappeared"). On
+  `failed` the orchestrator uncordons the node if it cordoned it.
 - **Queue pause on failure**: with `--on-reboot-failure=pause` (default),
   the orchestrator stops admitting new nodes while any node is
   `failed`; it resumes when the operator clears the `failed` state via
@@ -199,12 +226,31 @@ Rules:
   distro build; continuing could brick the rest of the fleet.
 - **PDB-blocked** is not a failure: the node stays `requested`, the
   blocking PDBs are recorded, and the check is retried each cycle.
+- **Queue hold on `NotReady`**: if any node still in `requested` (queued,
+  reboot not yet issued) is `NotReady`, the orchestrator holds the whole
+  queue (no slot acquisition) and logs/Events rate-limited; it resumes
+  when every queued node is `Ready` again. A `NotReady` node is never
+  drained — eviction on a dead node cannot work — and admission (3.9)
+  only accepts `Ready` nodes, so this catches nodes that went `NotReady`
+  after admission. Nodes already `draining`/`rebooting` keep their own
+  rules (drain timeout / no timeout).
+- **Node disappears mid-plan**: state lives in the node's annotations,
+  so a node deleted from the cluster loses its state with the object.
+  The orchestrator never treats disappearance as an error, never
+  pauses or holds the queue because of it, and keeps no in-memory
+  per-node state for nodes that are gone — every cycle is derived
+  purely from the current node list. A node that disappears while
+  `draining` or `rebooting` simply frees its slot; one that disappears
+  while `failed` clears the pause condition. One log line (rate-
+  limited) + an Event on detection.
 - **Crash/leader recovery**: all state is in annotations; on leader
   takeover the new orchestrator re-reads everything and continues. A
   node in `rebooting` without `reboot-issued-at` (local pod died before
-  issuing) is completed by the local pod on its next cycle — issuing is
-  idempotent. A node in `draining` past `--reboot-drain-timeout` is
-  marked `failed` and uncordoned.
+  issuing) is issued by the local pod on its next cycle — issuing is
+  idempotent. The boot-ID checks (`reboot-boot-id` /
+  `reboot-confirmed-at` / no-effect failure) are annotation-driven, so
+  they survive pod and leader restarts. A node in `draining` past
+  `--reboot-drain-timeout` is marked `failed` and uncordoned.
 - **Lease during `rebooting` of the leader's own node**: the leader dies
   with the host; the next leader takes over after ~30 s. Expected and
   benign.
@@ -214,9 +260,11 @@ Rules:
 1. **Admission** (API, any pod): see 3.10. Patches absent→`requested`
    (409/422 otherwise).
 2. **Slot acquisition** (orchestrator, ~2 s loop): while in-flight count
-   < `--max-concurrent-reboots` and the queue is not paused, take the
-   oldest `requested` node and patch it to `draining`. Single writer —
-   no races.
+   < `--max-concurrent-reboots` (with at most
+   `--max-concurrent-cp-reboots` of them being control-plane nodes) and
+   the queue is not paused or held (3.4), take the oldest `requested`
+   node and patch it to `draining`. Single writer — no races (Lease
+   re-validated before every transition patch, 3.1).
 3. **PDB check** (orchestrator, skipped if `force`): see 3.7. It runs
    *before* cording: a blocked node stays `requested`, records
    `reboot-blocked-by`, and is **never cordoned**.
@@ -224,7 +272,9 @@ Rules:
    - Cordon (`spec.unschedulable=true`), recording `reboot-cordoned-prev`
      if it was already cordoned.
    - Evict pods via the **Eviction API** (`policy/v1`), skipping
-     daemonset-managed and already-terminating pods. Eviction is
+     daemonset-managed pods, mirror pods of static pods (ownerReference
+     of kind `Pod` — the API objects of CP static pods; they are never
+     evicted), and already-terminating pods. Eviction is
      asynchronous: 202 = pending (pod goes away up to
      `terminationGracePeriodSeconds` later), 429 = denied (PDB/grace) —
      the drain loop distinguishes pending / denied / gone. A PDB-denied
@@ -241,13 +291,24 @@ Rules:
      controller-manager, scheduler) are not evicted; the kubelet
      recreates them after reboot. Only user/addon pods are drained.
 5. **Reboot**: orchestrator patches the node to `rebooting`. The local
-   pod (next cycle) writes `reboot-issued-at` and runs
+   pod (next cycle) records the host boot ID in `reboot-boot-id`
+   (`/proc/sys/kernel/random/boot_id` is kernel-global, so the pod
+   reads it directly), writes `reboot-issued-at`, and runs
    `nsenter -t 1 -m -u -i -n -p -- reboot`. If the command fails to
    start (binary missing, permissions), the local pod marks `failed`
-   with the error — this is the "reboot never happened" path.
+   with the error. Reboot verification is annotation-driven and
+   idempotent: while the state is `rebooting`, the node's local pod
+   compares the current boot ID with `reboot-boot-id` — changed ⇒ writes
+   `reboot-confirmed-at`; unchanged for `--reboot-issue-grace` ⇒ marks
+   `failed` ("reboot did not take effect"), the "command succeeded but
+   the host never rebooted" path. A host that is genuinely down cannot
+   fire this check (its pod is dead), so slow boots are never false-
+   failed.
 6. **Wait for reappearance**: orchestrator, per 3.4 — until `Ready`
-   again, no timeout. The local pod restarts with the node; the
-   orchestrator (or its successor) completes `completed`.
+   again, no timeout. The local pod restarts with the node and writes
+   `reboot-confirmed-at` once the boot ID has changed; the orchestrator
+   (or its successor) completes `completed` per the verification rule
+   in 3.4.
 
 ### 3.6 "All nodes blocked" — the cluster cannot wedge
 
@@ -311,9 +372,9 @@ deploy/                     kustomize (SA, RBAC, DaemonSet, Service)
 | Method | Route | Description |
 |---|---|---|
 | POST | `/api/v1/reboots` | `{"nodes":["n1","n2"],"force":false,"requestedBy":"..."}`; `"nodes":["*"]` = all nodes (workers queued first, CPs last). → `requested`. 202. |
-| GET | `/api/v1/reboots` | Reboot state for all nodes (state, since, force, blockedBy, error, issued). |
-| GET | `/api/v1/reboots/{node}` | State of one node. |
-| DELETE | `/api/v1/reboots/{node}` | `requested`: cancel. `rebooting`: stop watching (operator escape for a node that never returns). `completed`/`failed`: clear history (also resumes a paused queue). `draining`: 409 (orchestrator owns it; drain timeout will resolve it). |
+| GET | `/api/v1/reboots` | The plan: every node that has a reboot state — in-flight (`requested`/`draining`/`rebooting`) plus `completed`/`failed` history until cleared (state, since, force, blockedBy, error, issued). Nodes without state are not listed. |
+| GET | `/api/v1/reboots/{node}` | State of one node. 404 if the node has no reboot state. |
+| DELETE | `/api/v1/reboots/{node}` | `requested`: cancel. `rebooting`: stop watching (operator escape for a node that never returns). `completed`/`failed`: clear history (also resumes a paused queue). `draining`: 409 (an in-flight drain is not interruptible; if it fails the node is `failed` and the plan pauses). No state: 404. |
 | GET | `/livez` | Process alive (never queries the API server). |
 | GET | `/readyz` | Last successful engine cycle within 3× `--engine-interval` (API server reachable). |
 
@@ -327,12 +388,17 @@ deploy/                     kustomize (SA, RBAC, DaemonSet, Service)
    On re-request the API rewrites `reboot-state`, `reboot-request-id`,
    `reboot-requested-at`, `reboot-state-since`, `reboot-force`,
    `reboot-requested-by` and clears `reboot-error`,
-   `reboot-blocked-by`, `reboot-issued-at`, `reboot-cordoned-prev`.
-5. Control-plane policy (422 when `--control-plane-reboots=deny`).
+   `reboot-blocked-by`, `reboot-issued-at`, `reboot-boot-id`,
+   `reboot-confirmed-at`, `reboot-cordoned-prev`.
+
+Control-plane nodes pass the same checks as workers; there is no
+policy gate in v1 (decision 1).
 
 With `"nodes":["*"]` (or a mixed list), admission is **per-node and
-partial**: the response (202) lists accepted and rejected nodes with
-reasons.
+partial**; the response is 202 with
+`{"accepted": ["n1", ...],
+  "rejected": [{"node": "n2", "code": 422, "reason": "node not Ready"}, ...]}`
+(rejection `code` is the admission-check status: 404/409/422).
 
 - Auth: optional fixed token via env `SIMPLEK8S_API_TOKEN` →
   `Authorization: Bearer <token>`. Unset ⇒ no auth (trusted internal
@@ -350,10 +416,11 @@ reasons.
 | Flag | Default | Description |
 |---|---|---|
 | `--max-concurrent-reboots` | `1` | Globally rebooting nodes at once. |
+| `--max-concurrent-cp-reboots` | `1` | Control-plane nodes `draining`/`rebooting` at once, independent of `--max-concurrent-reboots` (protects etcd quorum on multi-CP clusters). |
 | `--on-reboot-failure` | `pause` | `pause`\|`continue` — queue behavior while any node is `failed`. |
 | `--reboot-drain-timeout` | `10m` | Max drain duration (guards pods stuck on finalizers). |
+| `--reboot-issue-grace` | `5m` | After `reboot-issued-at`, time for the host to actually reboot (boot ID change) before the local pod fails the node as no-effect. |
 | `--engine-interval` | `2s` | Engine poll period. |
-| `--control-plane-reboots` | `allow` | `allow`\|`deny` — global policy for control-plane nodes (admission 422; orchestrator skips and logs if a CP node is already `requested` when the policy flips to `deny`). |
 | `--listen` | `:8080` | API bind address. |
 | `--kube-apiserver` | in-cluster env | Override API endpoint. |
 | `--creds-dir` | `/var/run/secrets/kubernetes.io/serviceaccount` | Serviceaccount files. |
@@ -388,6 +455,13 @@ containers:
   livenessProbe: httpGet /livez
   readinessProbe: httpGet /readyz
 serviceAccountName: simplek8s-controller
+priorityClassName: system-node-critical   # ops controller: survive scheduling pressure
+# REQUIRED: without the CP toleration there is no pod on control-plane
+# nodes, and CP reboots are impossible (admission check 3 would 422).
+tolerations:
+- key: node-role.kubernetes.io/control-plane
+  operator: Exists
+  effect: NoSchedule
 ```
 
 Liveness must **not** depend on API-server reachability: during a
@@ -396,12 +470,18 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
 
 ## 4. Risks & safety notes (production cluster)
 
-1. **Control-plane reboot**: control-plane nodes are rebootable by
-   default (`--control-plane-reboots=allow`; set `deny` to lock CPs out).
-   With a single CP and `max-concurrent=1`, a failed recovery leaves the
+1. **Control-plane reboot**: control-plane nodes are rebootable exactly
+   like workers, and v1 offers **no way to lock them out** (decision
+   1). With a single CP and `max-concurrent=1`, a failed recovery leaves
+   the
    cluster down; while the CP is down the other pods idle safely (3.1).
-   Mitigation: validate on a worker first; keep default concurrency at 1;
-   document the risk prominently.
+   On multi-CP clusters, rebooting two CPs at once can drop etcd below
+   quorum (API down even though a CP survives);
+   `--max-concurrent-cp-reboots` (default 1) caps CP reboots regardless
+   of `--max-concurrent-reboots`. Mitigation: validate on a worker
+   first; keep default concurrency at 1; document the risk
+   prominently (operators must be aware that a batch
+   `*` always includes the control planes).
 2. **Node that never returns** (bricked distro, hardware): stays
    `rebooting`, holding its slot — the queue does not advance on its
    own. Visibility: `NotReady` + annotation + Events. Escape: `DELETE`
@@ -418,8 +498,9 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
    validation list.
 6. **Concurrent writers**: atomic merge patches + resourceVersion; the
    orchestrator is the only lifecycle writer; the API only enters
-   `requested` and performs deletions; the local pod only writes
-   `reboot-issued-at` / command-failure `failed`.
+   `requested` and performs deletions; the local pod only writes the
+   boot-ID / `reboot-issued-at` markers and command-failure / no-effect
+   `failed`.
 7. **Privileged pod**: by design (nsenter). RBAC scoped to the
    ServiceAccount; API token generated by the kustomize for production.
 
@@ -430,12 +511,12 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
 | M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet+Service+token Secret), README |
 | M1 | `internal/kube` | REST client (auth, TLS, retries, pagination, leases, events), minimal types, unit tests (httptest) |
 | M2 | `internal/nodestate` | annotation read/write, state types, conflict handling, tests |
-| M3 | Engine | leader election (Lease), orchestrator loop (queue, concurrency, pause), local loop, state machine (fake rebooter in tests) |
+| M3 | Engine | leader election (Lease), orchestrator loop (queue, concurrency, pause), local loop, state machine (fake rebooter in tests); split-brain test (two orchestrator loops against a fake API with a delayed renew: the stale leader must abort its transition) |
 | M4 | Drain | cordon + evictions (202/429/pending/gone), drain timeout, force fallback |
 | M5 | PDB | per-node evaluation + force bypass + deliberate-divergence tests |
 | M6 | Rebooter | nsenter, `reboot-issued-at` marker, command-failure path |
 | M7 | HTTP API | endpoints, admission checks, partial responses, optional token auth, /livez /readyz |
-| M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-blocked-by`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape). |
+| M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-blocked-by`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape); no-effect reboot (boot ID unchanged ⇒ `failed` after `--reboot-issue-grace`); queued node goes `NotReady` (queue holds, then resumes); node deleted mid-plan (slot freed, plan continues); 401 with an invalid API token (verifies the kustomize-generated token is injected and enforced); batch `*` including a `NotReady` node (partial 202: `Ready` nodes accepted, the `NotReady` one rejected with 422); API outage mid-drain (`--max-concurrent-reboots=2`, worker draining + CP rebooting: nothing marked `failed` while down, leader handover on recovery, drain resumes and completes). |
 | M9 | Docs | final README: operation guide (scheduling reboots, states, pause/resume, troubleshooting), local-storage-wipe warning, CP risk. |
 
 Note: M4 is only operationally meaningful once M5 exists (the PDB check
@@ -443,10 +524,11 @@ gates the drain); validation order reflects that.
 
 ## 6. Decisions (closed)
 
-1. Control-plane nodes are rebootable **by default**; the policy is
-   selected by a **deployment** flag `--control-plane-reboots=allow|deny`
-   (default `allow`), not per request — reboot policy is an operational
-   decision, and per-request flags are a footgun in production.
+1. **All nodes are rebootable, control-plane included** — v1 has no
+   policy flag to lock CPs out (to be revisited in the future). Safety
+   comes from ordering instead: `nodes:["*"]` and queue tie-breaks put
+   **workers before control planes**, and `--max-concurrent-cp-reboots`
+   caps simultaneous CP reboots.
 2. Images are hosted on **GitHub Container Registry**
    (`ghcr.io/simplek8s/simplek8s-controller`).
 3. The API is exposed through a **Service** (NodePort,
@@ -468,3 +550,39 @@ gates the drain); validation order reflects that.
 8. **`--on-reboot-failure=pause|continue`** (default `pause`): queue
    behavior while any node is `failed`; resumed by the operator clearing
    the `failed` state.
+9. **Reboot verification via boot ID** (`reboot-boot-id` /
+   `reboot-confirmed-at` + `--reboot-issue-grace`): `completed` requires
+   evidence that the host actually rebooted (boot ID change, or an
+   observed `NotReady`); a `reboot` that is accepted but has no effect
+   is `failed`, never `completed`. Chosen over grace-only heuristics:
+   the boot ID is exact, local, and works in the single-CP case.
+10. **Cap on concurrent control-plane reboots**
+    (`--max-concurrent-cp-reboots`, default 1): independent of
+    `--max-concurrent-reboots`, so a batch can never drop etcd below
+    quorum on a multi-CP cluster.
+11. **`NotReady` nodes are not rebootable** (admission 422; in v1 a hung
+    node is rebooted manually/out-of-band), and the queue **holds** while
+    any queued node is `NotReady` (3.4): a dead node is never drained,
+    and its fate is the operator's to decide, not the orchestrator's.
+12. **Lease re-validation before every transition** (split-brain
+    mitigation): leader election guarantees at most one *self-proclaimed*
+    leader, not one *acting* leader; the orchestrator renews the Lease
+    immediately before each state transition patch and aborts if it lost
+    it. A rare one-cycle concurrency overshoot during a handover race is
+    accepted and documented.
+13. **Node disappearance is not a failure**: a node deleted from the
+    cluster at any stage of a reboot plan is not an error and never
+    pauses or holds the plan; the state lives on the node, so it
+    disappears with it, slots free automatically, and the orchestrator
+    derives everything from the current node list every cycle (3.4).
+14. **An in-flight drain is not interruptible**: `DELETE` on a
+    `draining` node is 409 — the operator does not interfere with an
+    ongoing drain; if the drain fails, the node is `failed` and the
+    plan pauses per `--on-reboot-failure`.
+15. **API read semantics**: `GET /reboots` shows the plan — every node
+    with a reboot state (in-flight states plus `completed`/`failed`
+    history until cleared); nodes without state are never listed, and
+    `GET`/`DELETE` `/reboots/{node}` on a node without state is 404.
+16. **No `/metrics` in v1**: observability is Events + structured logs
+    + `GET /reboots`; a metrics endpoint can be added later without API
+    changes.
