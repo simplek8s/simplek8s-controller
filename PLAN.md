@@ -101,7 +101,7 @@ No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
 - `completed`/`failed` remain as history until the next request for the
   same node. Cleanup is out of scope for v1.
 
-### 3.4 State machine (per node)
+### 3.4 State machine & ownership (per node)
 
 ```
               POST /reboots
@@ -128,9 +128,19 @@ Rules:
 - Only the **local instance of the target node** performs
   `draining → rebooting → completed/failed` (nsenter is local). Every
   instance observes global state to enforce the concurrency limit.
-- Slot acquisition: engine sees a `requested` node while in-flight count
-  < `--max-concurrent-reboots` → patches it to `draining`. With several
-  instances racing, the atomic patch decides; losers observe and skip.
+- **Ownership via Lease**: driving a node's reboot is guarded by a
+  `coordination.k8s.io/v1` Lease `sck-reboot-<node>` (in the controller's
+  namespace). The node's **local** instance acquires it (create if
+  absent; renew every 10 s while the node is `draining`/`rebooting`);
+  `holderIdentity` is `<node>/<pod-uid>`. A Lease with stale `renewTime`
+  (> 30 s) can be taken over — that is the crash-recovery handoff to the
+  restarted pod on the same node. Holding the Lease is a precondition for
+  any state transition on that node; the node annotations remain the
+  source of truth for state.
+- Slot acquisition: the local instance of a `requested` node, while the
+  global in-flight count < `--max-concurrent-reboots`, acquires the Lease
+  and patches the node to `draining`. Non-local instances never advance
+  a node (nsenter is local).
 - PDB check fails → back to `requested`, retried on a later engine cycle
   (logged); user can cancel via API.
 - `completed`: node is `Ready` **after** the reboot. Detection:
@@ -226,8 +236,10 @@ deploy/                     kustomize (SA, RBAC, DaemonSet)
   network).
 - The API is callable on any instance (state is global); execution
   happens on the target node's instance.
-- Access pattern: `hostNetwork: true` on the DaemonSet, API bound to
-  `0.0.0.0:8080` (open question 3), token required in production.
+- Access: a `Service` (NodePort, `externalTrafficPolicy: Local`) fronts
+  the per-instance API. Any instance can serve admission (state is
+  global); the Service routes to a running instance. Token auth required
+  in production.
 
 ### 3.9 Configuration (flags / env)
 
@@ -249,18 +261,18 @@ deploy/                     kustomize (SA, RBAC, DaemonSet)
 - `pods`: get, list, watch, delete
 - `pods/eviction`: create
 - `poddisruptionbudgets` (policy): get, list, watch
-- `events`: create (optional — open question 4)
+- `leases` (coordination.k8s.io): get, list, create, update
+- `events`: create (one Event per state transition, see 6.4)
 
 ### 3.11 DaemonSet pod spec (sketch)
 
 ```yaml
 containers:
 - name: sck
-  image: <registry>/simplek8s-controller:v1   # see open question 2
+  image: ghcr.io/simplek8s/simplek8s-controller:v1
   securityContext:
     privileged: true
   hostPID: true
-  hostNetwork: true
   env: [NODE_NAME (downward API), POD_NAMESPACE (downward API)]
   ports: [{name: api, containerPort: 8080}]
   livenessProbe: httpGet /healthz
@@ -269,10 +281,11 @@ serviceAccountName: simplek8s-controller
 
 ## 4. Risks & safety notes (production cluster)
 
-1. **Control-plane reboot**: with one control plane and
-   `max-concurrent=1`, a failed recovery leaves the cluster down.
-   Mitigation: `--allow-control-plane` flag (default **off** — open
-   question 1); test on a worker first; document the risk.
+1. **Control-plane reboot**: control-plane nodes are rebootable by
+   default. With a single control plane and `max-concurrent=1`, a failed
+   recovery leaves the cluster down. Mitigation: validate on a worker
+   first; keep the default concurrency at 1; document the risk
+   prominently in the operation guide.
 2. **Incomplete drains**: pods with local ephemeral storage or
    eviction-disallowing behaviors ⇒ drain times out, the node is **not**
    rebooted, state `failed`, unless `force`.
@@ -291,7 +304,7 @@ serviceAccountName: simplek8s-controller
 
 | # | Milestone | Deliverable |
 |---|---|---|
-| M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet without image), README |
+| M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet+Service), README |
 | M1 | `internal/kube` | REST client (auth, TLS, retries, pagination), minimal types, unit tests (httptest) |
 | M2 | `internal/nodestate` | annotation read/write, state types, conflict handling, tests |
 | M3 | Engine | loop, task registration, queue, concurrency, state machine (fake rebooter in tests) |
@@ -302,11 +315,14 @@ serviceAccountName: simplek8s-controller
 | M8 | Deploy & validate | image build, deploy, validate on one worker node (reboot ok, PDB block, force, cancel, timeout, crash recovery); then control-plane path |
 | M9 | Docs | final README: operation guide (scheduling reboots, states, troubleshooting) |
 
-## 6. Open questions
+## 6. Decisions (closed)
 
-1. `--allow-control-plane` (default off) vs. control plane always allowed?
-2. Image registry for the DaemonSet image (naming follows the `simplek8s`
-   org; which registry to host it in is TBD).
-3. API exposure: `hostNetwork` + bind `0.0.0.0:8080` per node vs.
-   NodePort/Service per node.
-4. Create `Events` for auditability in v1, or log-only?
+1. Control-plane nodes are rebootable **by default** — no opt-in flag.
+2. Images are hosted on **GitHub Container Registry**
+   (`ghcr.io/simplek8s/simplek8s-controller`).
+3. The API is exposed through a **Service** (NodePort,
+   `externalTrafficPolicy: Local`) instead of per-node host binding.
+4. **Events in v1 (recommended, included)**: one Event per state
+   transition. Cost is low (single `create` verb) and it gives an
+   operator-visible audit trail (`kubectl describe node`); structured
+   logs remain the detailed source. Easy to drop if unwanted.
