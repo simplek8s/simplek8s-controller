@@ -1,0 +1,20 @@
+# Binarios y builds
+/bin/
+/dist/
+*.exe
+simplek8s-controller
+
+# Go
+vendor/
+coverage.out
+*.test
+
+# IDE / SO
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Secrets / configs locales
+*.local.yaml
+kubeconfig
