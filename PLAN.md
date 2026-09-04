@@ -1,7 +1,7 @@
 # PLAN — simplek8s-controller
 
-Phase: **PLAN** (design & planning). Status: v4, reviewed (incl. external
-review and follow-up), pending final sign-off.
+Phase: **PLAN** (design & planning). Status: v5 (4-annotation state design adopted, reviewed by a
+design→review→adapt→review agent chain), pending final sign-off.
 
 ## 1. Purpose
 
@@ -68,14 +68,18 @@ extensible (see 3.9).
     feature; future features are orchestrated by the same leader.
   - **Local executor** (one per node, all pods): watches its own node.
     Its actions: when its node is `rebooting`, record the host boot ID
-    (`reboot-boot-id`), write the `reboot-issued-at` marker and run
-    `nsenter -t 1 -m -u -i -n -p -- reboot` (the reboot command must be
-    local — nsenter reaches only the local host). While its node is
-    `rebooting` it verifies the reboot actually happened: host boot ID
-    changed vs `reboot-boot-id` ⇒ write `reboot-confirmed-at`; unchanged
-    past `--reboot-issue-grace` ⇒ mark `failed` ("reboot did not take
-    effect"). If the command fails to start, it marks the node `failed`
-    with the error.
+    and `issuedAt` in the `reboot-exec` annotation (one patch, just
+    before `nsenter -t 1 -m -u -i -n -p -- reboot` — the reboot command
+    must be local, nsenter reaches only the local host). While its node
+    is `rebooting` it verifies the reboot actually happened: host boot ID
+    changed vs `reboot-exec.bootId` ⇒ add `confirmedAt` to
+    `reboot-exec`; unchanged past `--reboot-issue-grace` ⇒ mark `failed`
+    ("reboot did not take effect"). If the command fails to start, it
+    marks the node `failed` with the error. Before every write it
+    re-reads its node and proceeds only while `reboot-state.state ==
+    "rebooting"` (3.3).
+  - Every write by any actor follows the writer rule and conditional-
+    transition discipline of 3.3.
 - Every other pod for a given node is a pure observer (API, health).
 - `nsenter` only reaches the local host ⇒ the reboot *command* is local;
   everything else is centralized in the orchestrator. This eliminates
@@ -88,10 +92,11 @@ extensible (see 3.9).
   answers again the Lease is stale and leadership typically transfers
   (any API outage > 30 s has the same effect). The new leader re-reads
   everything from annotations and completes the transition: the
-  `completed` rule (3.4) relies on `reboot-confirmed-at` (written by the
-  node's own pod once it is scheduled again) or on an observed
-  `NotReady` — never on a fresh `lastTransitionTime`, which is exactly
-  what is unreliable in this scenario.
+  `completed` rule (3.4) relies on `reboot-exec.confirmedAt` (written by
+  the node's own pod once it is scheduled again) or on an observed
+  `NotReady` after `reboot-exec.issuedAt` — never on a fresh
+  `lastTransitionTime`, which is exactly what is unreliable in this
+  scenario.
 - When a CP node reboots, the local pod dies and comes back with the
   DaemonSet; the state machine is **fully recoverable from API-server
   state alone**.
@@ -127,50 +132,189 @@ Stdlib `net/http` + `crypto/tls` + `encoding/json`. Required verbs
 - Small retry wrapper: exponential backoff for 429/503, honor
   `Retry-After`; context deadlines everywhere.
 
-### 3.3 Reboot state: annotations on `Node`
+### 3.3 Reboot state: four JSON annotations on `Node`
 
-No CRDs (MVP, stdlib-only). State per node in `Node` annotations:
+No CRDs (MVP, stdlib-only). State per node in **four** `Node`
+annotations, grouped by concern and by writer ownership. **A node
+participates in the reboot lifecycle iff `reboot-state` is present.**
 
-| Annotation | Format | Meaning |
-|---|---|---|
-| `simplek8s.org/reboot-state` | `requested` \| `draining` \| `rebooting` \| `completed` \| `failed` | Current lifecycle state. A **string enum, not a timestamp**; its presence means the node participates in the reboot lifecycle. |
-| `simplek8s.org/reboot-request-id` | `<RFC3339>-<6 random>` | Correlates one API request with its execution |
-| `simplek8s.org/reboot-requested-at` | RFC3339 | When the request was admitted (queue ordering) |
-| `simplek8s.org/reboot-state-since` | RFC3339 | When the node entered its current state (drives the drain timeout; human display) |
-| `simplek8s.org/reboot-requested-by` | text (optional) | Origin of the request (from the API body) |
-| `simplek8s.org/reboot-force` | `true`/`false` | Request bypasses PDB checks |
-| `simplek8s.org/reboot-cordoned-prev` | `true` | Node was already cordoned before we started (do not uncordon on completion) |
-| `simplek8s.org/reboot-blocked-by` | comma-separated `ns/pdb` | PDBs currently blocking the node (only while `requested` and blocked) |
-| `simplek8s.org/reboot-issued-at` | RFC3339 | Local pod issued the reboot command (written just before `nsenter`) |
-| `simplek8s.org/reboot-boot-id` | hex | Host boot ID (`/proc/sys/kernel/random/boot_id`, kernel-global, readable by the pod) recorded just before the reboot is issued |
-| `simplek8s.org/reboot-confirmed-at` | RFC3339 | Local pod verified the host boot ID changed after the reboot (evidence the reboot really happened) |
-| `simplek8s.org/reboot-error` | text | Last error (state `failed`) |
+| Annotation | Format | Writer(s) | Written when |
+|---|---|---|---|
+| `simplek8s.org/reboot-state` | `{"state":"requested\|draining\|rebooting\|completed\|failed","since":"<RFC3339 UTC>"}` | API (absent→`requested`, re-request); orchestrator (all other transitions, incl. its `failed`s); local pod (its two `failed`s only) | Admission; re-request; every state transition. `state`+`since` are **one atomic unit**: every writer that changes `state` writes both in the same patch. |
+| `simplek8s.org/reboot-request` | `{"id":"<RFC3339>-<6 random>","by":"<text, omitted if absent>","force":false}` | **API only** | Admission and re-request — written once per request, never rewritten afterwards. |
+| `simplek8s.org/reboot-exec` | `{"issuedAt":"<RFC3339>","bootId":"<hex>","confirmedAt":"<RFC3339, added later>"}` | **Local pod only** (its own node) | `issuedAt`+`bootId` together in one patch just before `nsenter … reboot`; `confirmedAt` added in a later patch when the pod observes the host boot ID changed. Does not exist until the reboot is actually issued. |
+| `simplek8s.org/reboot-status` | `{"blockedBy":["<ns>/pdb",...],"error":"<text>","cordonedPrev":true}` — each field present only while relevant | Shared: orchestrator (`blockedBy`, `cordonedPrev`, its `error`s); local pod (its `error`s); API (removes the whole annotation on re-request) | `blockedBy`: each cycle while `requested` and blocked. `cordonedPrev`: at `requested→draining`, if the node was already cordoned. `error`: on a `failed` transition, in the same patch as the state. |
 
-- `reboot-state` is the only state marker; the rest are attributes of the
-  current request/state.
-- Queue = nodes in `requested`, ordered by `reboot-requested-at`; ties
-  broken by **workers before control planes**, then node name. With a
-  single orchestrator the ordering is respected except for read-staleness
-  of at most one cycle.
-- In-flight = nodes in `draining` or `rebooting`.
-- **Writer rule**: the orchestrator writes all transitions
-  (`requested → draining → rebooting → completed/failed`); any pod may
-  perform absent→`requested` (API admission) and deletions per 3.10; the
-  local pod may write `reboot-boot-id`, `reboot-confirmed-at`, and mark
-  `failed` on a failed or no-effect reboot. All writes are atomic merge
-  patches including `resourceVersion`; losers of a race re-read. Node
-  status updates (~10 s, kubelet) bump `resourceVersion` often, so on 409
-  the writer re-reads and re-patches **immediately within the same
-  cycle**, not on the next poll.
-- `completed`/`failed` remain as history until cleared (DELETE) or
-  replaced by a new request.
+All four are cleared together: `DELETE /reboots/{node}` sets all four
+keys to `null` in one patch (3.9). `completed`/`failed` remain as
+history until cleared (DELETE) or replaced by a new request.
+
+#### 3.3.1 Field notes
+
+- **`reboot-state`**: `since` is stable for the whole duration of the
+  state (no writer can bump it without changing `state`). Consumers:
+  queue = `.state=="requested"` ordered by `.since` (while `requested`,
+  `.since` **is** the request time — the old separate
+  `reboot-requested-at` is gone), ties broken by **workers before
+  control planes**, then node name; drain timeout = now − `.since` while
+  `.state=="draining"`; `GET /reboots` renders `state`+`since`.
+  Unparseable value: see 3.3.3.
+- **`reboot-request`**: `id` correlates the API response, the admission
+  Event, and all later Events (orchestrator and local pod read it from
+  the node); `by` is the operator-supplied origin (field **omitted**
+  when absent — no empty-string values); `force` is read by the
+  orchestrator to skip the PDB check and use the force-delete fallback —
+  it requires node storage (must survive leader/pod restarts), and
+  `id`/`by` ride along at ~60 bytes. Unparseable: fields render as
+  absent, `force` defaults to `false` (never assume force from a corrupt
+  annotation).
+- **`reboot-exec`**: `bootId` is the host boot ID
+  (`/proc/sys/kernel/random/boot_id`, kernel-global, readable by the
+  pod). Consumers: local pod — no-effect check (now >
+  `issuedAt + --reboot-issue-grace` and boot ID unchanged ⇒ `failed`)
+  and confirmation (boot ID changed ⇒ add `confirmedAt`); orchestrator —
+  `completed` requires `confirmedAt` **or** an observed `NotReady` after
+  `issuedAt`, and **both conjuncts require `reboot-exec` to exist**: a
+  `rebooting` node without it has **no completion evidence** and stays
+  `rebooting` until the local pod issues the reboot (issuing is
+  idempotent, 3.4). A node in `requested`/`draining`/`completed`/`failed`
+  (command never started) may lack the annotation entirely.
+- **`reboot-status`**: `blockedBy` (JSON array of `ns/pdb`) is present
+  only while `.state=="requested"` and blocked; `error` is present only
+  while `.state=="failed"` (history until DELETE or re-request);
+  `cordonedPrev` is `true` when the node was already cordoned before the
+  drain started (set at `requested→draining`, read at `completed` **and
+  at every `failed`** to decide whether to uncordon — 3.3.2). This is
+  the **only shared-value annotation**; the RMW discipline in 3.3.2
+  makes it safe. "Clearing a field" = rewriting the annotation value
+  without that field (merge-patch acts on the whole string value).
+- **Timestamps**: all RFC3339, UTC, second precision (Kubernetes
+  convention, lexicographically sortable); written by the acting pod
+  from its clock.
+
+#### 3.3.2 Writer rule and write discipline
+
+- **Orchestrator** writes all lifecycle transitions
+  (`requested→draining`, `draining→rebooting`, `rebooting→completed`,
+  and its `failed` transitions: drain timeout, PDB-denied eviction
+  without force, force-delete error), and owns
+  `reboot-status.blockedBy`, `reboot-status.cordonedPrev`, and
+  `reboot-status.error` for its own `failed` transitions.
+- **Any pod (API)** may perform absent→`requested` (admission) and
+  re-request, and may delete (clear) the state. It is the **only writer
+  of `reboot-request`** and the only actor that removes annotations.
+- **Local pod** writes `reboot-exec` (its own node only) and may mark
+  `failed` (state + `reboot-status.error`) on command-start failure or
+  no-effect reboot. Before every write it re-reads its node and proceeds
+  only if `state=="rebooting"` (and `reboot-exec` is present when adding
+  `confirmedAt`); otherwise it writes nothing.
+- **Conditional transitions (universal)**: every state-transition patch
+  is conditional. After any 409 — or any re-read for any reason —
+  re-evaluate the transition's precondition against the **fresh** node
+  before re-patching. If it no longer holds (state already the target,
+  something else, or not the transition's source), **abort without
+  writing** — in particular a `failed` loser writes no `error` (covers
+  the failed-vs-failed and failed-vs-completed races).
+- **Uncordon on `failed`**: the orchestrator uncordons any node it
+  cordoned (i.e. `cordonedPrev` absent) whenever the node is in
+  `failed`, **regardless of which actor wrote the transition** — as its
+  own idempotent `spec.unschedulable: false` patch, skipped when
+  `cordonedPrev` is present. This also covers local-pod-caused `failed`
+  (no-effect, command-start failure) on drained, cordoned nodes.
+- **Serialization / 409**: all writes are atomic
+  `application/merge-patch+json` including a fresh
+  `metadata.resourceVersion`. Node status updates (~10 s, kubelet) bump
+  `resourceVersion` often, so on 409 the writer re-reads and retries
+  **immediately within the same cycle**, then applies the
+  conditional-transition rule above. Two writers may both attempt a
+  `failed` transition; the loser of the state patch sees the target
+  state already set on re-read and backs off without writing `error`.
+  Whoever wins the state patch owns `error` for that transition (written
+  in the *same* merge-patch as the state).
+- **RMW discipline for `reboot-status`** (the only shared-value
+  annotation): before patching, re-read the node; build the new status
+  JSON by applying **only your own field changes** on top of the fresh
+  value (never overwrite fields you don't touch); include
+  `metadata.resourceVersion`; on 409 re-read and retry within the same
+  cycle. A "clear" is a field removed from the JSON value, or the key
+  set to `null` to delete the whole annotation.
+
+Example patches (one merge-patch each, all include fresh
+`metadata.resourceVersion`):
+
+- **Admission / re-request** (API): `reboot-state:
+  {"state":"requested","since":"<now>"}`, `reboot-request:
+  {"id":"<new>","by":...,"force":<bool>}`, `reboot-exec: null`,
+  `reboot-status: null`. Atomic: a re-request can never leave stale
+  exec/status behind.
+- **`requested→draining`** (orchestrator): `reboot-state:
+  {"state":"draining","since":"<now>"}`, `reboot-status:` fresh value
+  minus `blockedBy`, plus `cordonedPrev` if the node was already
+  cordoned, and `spec.unschedulable: true` in the same patch.
+- **Local pod issues reboot** (only while `state=="rebooting"`):
+  `reboot-exec: {"issuedAt":"<now>","bootId":"<hex>"}`.
+- **Local pod confirms** (only while `state=="rebooting"` and
+  `reboot-exec` present): `reboot-exec: <fresh + confirmedAt>`.
+- **Local pod no-effect / command failure** (only while
+  `state=="rebooting"`): `reboot-state:
+  {"state":"failed","since":"<now>"}`, `reboot-status: <fresh +
+  error>`. (Uncordon is the orchestrator's job, next cycle — 3.3.2.)
+- **Orchestrator `failed`** (drain timeout / PDB denial / force-delete
+  error): `reboot-state: {"state":"failed","since":"<now>"}`,
+  `reboot-status: <fresh + error>`, and `spec.unschedulable: false`
+  only if `cordonedPrev` is absent.
+- **`completed`** (orchestrator): `reboot-state:
+  {"state":"completed","since":"<now>"}`, and `spec.unschedulable:
+  false` in the same patch only if `cordonedPrev` is absent.
+- **DELETE** (any pod): all four annotation keys → `null` in one patch.
+
+#### 3.3.3 Corrupted annotations (fault handling)
+
+- **`reboot-state` unparseable** (or missing `state`/`since`): the node
+  counts as **in-flight** (slot-holding, conservative for concurrency),
+  is shown with `parseError` in `GET /reboots`, and gets one
+  rate-limited log line + Event. **This holds a concurrency slot
+  indefinitely until the operator DELETEs the node's reboot state (works
+  regardless of content) or repairs the annotation; with
+  `--max-concurrent-reboots=1` a single corrupt annotation halts the
+  whole queue** — the Event must state both escapes and include the
+  offending raw value. Accepted over auto-clearing: silently clearing an
+  unparseable state could restart a reboot lifecycle on a node that is
+  actually mid-reboot — worse than a pause with a loud Event.
+- **Other annotations unparseable**: fields render as absent; `force`
+  defaults to `false` (never assume force from a corrupt annotation);
+  exec checks (no-effect, confirmation) simply do not run until fixed;
+  the orchestrator proceeds on what it can read.
+- Writers never panic on bad input: log, Event, skip the node for that
+  cycle (same rate-limiting discipline as "API unreachable").
+  `GET /reboots` must never 500 on bad annotations.
+
+#### 3.3.4 Mapping: 12 old annotations → 4
+
+| Old (v4 §3.3) | New location |
+|---|---|
+| `reboot-state` | `reboot-state` JSON `.state` |
+| `reboot-state-since` | `reboot-state` JSON `.since` (atomic with state) |
+| `reboot-requested-at` | **removed** — while `.state=="requested"`, `.since` **is** the request time; no observable behavior change |
+| `reboot-request-id` | `reboot-request` JSON `.id` |
+| `reboot-requested-by` | `reboot-request` JSON `.by` (omitted when absent) |
+| `reboot-force` | `reboot-request` JSON `.force` |
+| `reboot-cordoned-prev` | `reboot-status` JSON `.cordonedPrev` |
+| `reboot-blocked-by` | `reboot-status` JSON `.blockedBy` (array, was CSV) |
+| `reboot-issued-at` | `reboot-exec` JSON `.issuedAt` |
+| `reboot-boot-id` | `reboot-exec` JSON `.bootId` |
+| `reboot-confirmed-at` | `reboot-exec` JSON `.confirmedAt` |
+| `reboot-error` | `reboot-status` JSON `.error` |
+
+12 annotations → 4; 11 distinct data points remain
+(`requested-at` merged into `state-since`).
 
 ### 3.4 State machine (per node)
 
 ```mermaid
 stateDiagram-v2
     [*] --> requested: POST /reboots (admission, any pod)
-    requested --> requested: PDB blocked — reboot-blocked-by updated, retried each cycle
+    requested --> requested: PDB blocked — reboot-status.blockedBy updated, retried each cycle
     requested --> draining: slot free + PDB OK (or force)
     requested --> [*]: DELETE (cancel — annotations cleared)
     draining --> rebooting: drain OK (or force)
@@ -183,25 +327,27 @@ stateDiagram-v2
     failed --> requested: new POST (re-request)
 ```
 
-While `rebooting`, the node's local pod records the host boot ID,
-issues `nsenter … reboot`, and later writes `reboot-confirmed-at` when
-the boot ID has changed (see 3.5 step 5).
+While `rebooting`, the node's local pod records the host boot ID and
+`issuedAt` in `reboot-exec`, issues `nsenter … reboot`, and later adds
+`confirmedAt` when the boot ID has changed (see 3.5 step 5).
 
 A node deleted from the cluster exits the machine entirely: its state
-disappears with it, and the orchestrator continues without error (3.4,
-"Node disappears mid-plan").
+disappears with it, and the orchestrator continues without error (see
+the "Node disappears mid-plan" rule below).
 
 Rules:
 
 - **`completed`**: orchestrator sees `rebooting` + node `Ready` +
   evidence that the reboot really happened ⇒ `completed`, and uncordons
-  the node if the controller cordoned it. Evidence: the local pod wrote
-  `reboot-confirmed-at` (host boot ID changed vs `reboot-boot-id`), or
-  the orchestrator observed the node `NotReady` at least once after
-  `reboot-issued-at`. This stays correct in the single-CP case without
-  trusting condition `lastTransitionTime`: while the API was down no
-  `NotReady` is observable, but the node's own pod writes
-  `reboot-confirmed-at` as soon as it is scheduled again. It also closes
+  the node if the controller cordoned it (`cordonedPrev` absent). Both
+  evidence conjuncts require `reboot-exec` to exist (a `rebooting` node
+  without it has no completion evidence): the local pod added
+  `confirmedAt` to `reboot-exec` (host boot ID changed vs
+  `reboot-exec.bootId`), or the orchestrator observed the node `NotReady`
+  at least once after `reboot-exec.issuedAt`. This stays correct in the
+  single-CP case without trusting condition `lastTransitionTime`: while
+  the API was down no `NotReady` is observable, but the node's own pod
+  writes `confirmedAt` as soon as it is scheduled again. It also closes
   the no-effect hole: a `reboot` command that is accepted but never
   reboots the host can never produce `completed`, because the boot ID
   never changes (and the grace rule below fails the node).
@@ -215,9 +361,11 @@ Rules:
   stuck `Terminating` on finalizers), PDB-denied eviction without
   `force`, force-delete error, the reboot command failing to start, or
   the reboot having no effect (host boot ID unchanged
-  `--reboot-issue-grace` after `reboot-issued-at`, detected by the
-  local pod — distinguished from "node has not reappeared"). On
-  `failed` the orchestrator uncordons the node if it cordoned it.
+  `--reboot-issue-grace` after `reboot-exec.issuedAt`, detected by the
+  local pod — distinguished from "node has not reappeared"). On every
+  `failed` the orchestrator uncordons the node if it cordoned it
+  (`cordonedPrev` absent), regardless of which actor wrote the transition
+  (3.3.2).
 - **Queue pause on failure**: with `--on-reboot-failure=pause` (default),
   the orchestrator stops admitting new nodes while any node is
   `failed`; it resumes when the operator clears the `failed` state via
@@ -245,12 +393,12 @@ Rules:
   limited) + an Event on detection.
 - **Crash/leader recovery**: all state is in annotations; on leader
   takeover the new orchestrator re-reads everything and continues. A
-  node in `rebooting` without `reboot-issued-at` (local pod died before
+  node in `rebooting` without `reboot-exec` (local pod died before
   issuing) is issued by the local pod on its next cycle — issuing is
-  idempotent. The boot-ID checks (`reboot-boot-id` /
-  `reboot-confirmed-at` / no-effect failure) are annotation-driven, so
-  they survive pod and leader restarts. A node in `draining` past
-  `--reboot-drain-timeout` is marked `failed` and uncordoned.
+  idempotent. The boot-ID checks (`reboot-exec` / no-effect failure) are
+  annotation-driven, so they survive pod and leader restarts. A node in
+  `draining` past `--reboot-drain-timeout` is marked `failed` and
+  uncordoned.
 - **Lease during `rebooting` of the leader's own node**: the leader dies
   with the host; the next leader takes over after ~30 s. Expected and
   benign.
@@ -267,10 +415,10 @@ Rules:
    re-validated before every transition patch, 3.1).
 3. **PDB check** (orchestrator, skipped if `force`): see 3.7. It runs
    *before* cording: a blocked node stays `requested`, records
-   `reboot-blocked-by`, and is **never cordoned**.
+   `reboot-status.blockedBy`, and is **never cordoned**.
 4. **Drain** (orchestrator, only after the PDB check passed):
-   - Cordon (`spec.unschedulable=true`), recording `reboot-cordoned-prev`
-     if it was already cordoned.
+   - Cordon (`spec.unschedulable=true`), recording
+     `reboot-status.cordonedPrev` if it was already cordoned.
    - Evict pods via the **Eviction API** (`policy/v1`), skipping
      daemonset-managed pods, mirror pods of static pods (ownerReference
      of kind `Pod` — the API objects of CP static pods; they are never
@@ -291,22 +439,23 @@ Rules:
      controller-manager, scheduler) are not evicted; the kubelet
      recreates them after reboot. Only user/addon pods are drained.
 5. **Reboot**: orchestrator patches the node to `rebooting`. The local
-   pod (next cycle) records the host boot ID in `reboot-boot-id`
-   (`/proc/sys/kernel/random/boot_id` is kernel-global, so the pod
-   reads it directly), writes `reboot-issued-at`, and runs
+   pod (next cycle) writes `reboot-exec` (`{"issuedAt","bootId"}` —
+   `/proc/sys/kernel/random/boot_id` is kernel-global, so the pod reads
+   it directly) in one patch just before running
    `nsenter -t 1 -m -u -i -n -p -- reboot`. If the command fails to
    start (binary missing, permissions), the local pod marks `failed`
    with the error. Reboot verification is annotation-driven and
    idempotent: while the state is `rebooting`, the node's local pod
-   compares the current boot ID with `reboot-boot-id` — changed ⇒ writes
-   `reboot-confirmed-at`; unchanged for `--reboot-issue-grace` ⇒ marks
-   `failed` ("reboot did not take effect"), the "command succeeded but
-   the host never rebooted" path. A host that is genuinely down cannot
-   fire this check (its pod is dead), so slow boots are never false-
-   failed.
+   compares the current boot ID with `reboot-exec.bootId` — changed ⇒
+   adds `confirmedAt` to `reboot-exec`; unchanged for
+   `--reboot-issue-grace` ⇒ marks `failed` ("reboot did not take
+   effect"), the "command succeeded but the host never rebooted" path.
+   A host that is genuinely down cannot fire this check (its pod is
+   dead), so slow boots are never false-failed.
 6. **Wait for reappearance**: orchestrator, per 3.4 — until `Ready`
-   again, no timeout. The local pod restarts with the node and writes
-   `reboot-confirmed-at` once the boot ID has changed; the orchestrator
+   again, no timeout. The local pod restarts with the node and adds
+   `confirmedAt` to `reboot-exec` once the boot ID has changed; the
+   orchestrator
    (or its successor) completes `completed` per the verification rule
    in 3.4.
 
@@ -318,8 +467,8 @@ Rules:
   normally.
 - At most `--max-concurrent-reboots` nodes are cordoned at any time —
   exactly the ones actively draining/rebooting.
-- Visibility: `reboot-blocked-by` and `GET /reboots` show exactly which
-  PDBs block which node.
+- Visibility: `reboot-status.blockedBy` and `GET /reboots` show exactly
+  which PDBs block which node.
 - Escapes: fix the workload/PDB (scale up, lower `minAvailable`),
   `DELETE` the request, or re-issue with `force` (bypasses the check;
   the Eviction API still denies protected evictions and `force` falls
@@ -372,9 +521,9 @@ deploy/                     kustomize (SA, RBAC, DaemonSet, Service)
 | Method | Route | Description |
 |---|---|---|
 | POST | `/api/v1/reboots` | `{"nodes":["n1","n2"],"force":false,"requestedBy":"..."}`; `"nodes":["*"]` = all nodes (workers queued first, CPs last). → `requested`. 202. |
-| GET | `/api/v1/reboots` | The plan: every node that has a reboot state — in-flight (`requested`/`draining`/`rebooting`) plus `completed`/`failed` history until cleared (state, since, force, blockedBy, error, issued). Nodes without state are not listed. |
-| GET | `/api/v1/reboots/{node}` | State of one node. 404 if the node has no reboot state. |
-| DELETE | `/api/v1/reboots/{node}` | `requested`: cancel. `rebooting`: stop watching (operator escape for a node that never returns). `completed`/`failed`: clear history (also resumes a paused queue). `draining`: 409 (an in-flight drain is not interruptible; if it fails the node is `failed` and the plan pauses). No state: 404. |
+| GET | `/api/v1/reboots` | The plan: every node with a `reboot-state` annotation — in-flight (`requested`/`draining`/`rebooting`) plus `completed`/`failed` history until cleared (state, since, force, by, blockedBy, error, issued). Nodes without state are not listed; nodes with a corrupt `reboot-state` are listed with `parseError` (never a 500, 3.3.3). |
+| GET | `/api/v1/reboots/{node}` | State of one node, sourced from the four annotations alone. 404 if the node has no reboot state. |
+| DELETE | `/api/v1/reboots/{node}` | `requested`: cancel. `rebooting`: stop watching (operator escape for a node that never returns). `completed`/`failed`: clear history (also resumes a paused queue). `draining`: 409 (an in-flight drain is not interruptible; if it fails the node is `failed` and the plan pauses). No state: 404. In every allowed case the clearing is uniform: **one patch setting all four annotation keys to `null`**; on 409 the DELETE re-reads and re-evaluates the per-state semantics against the fresh state. |
 | GET | `/livez` | Process alive (never queries the API server). |
 | GET | `/readyz` | Last successful engine cycle within 3× `--engine-interval` (API server reachable). |
 
@@ -385,11 +534,13 @@ deploy/                     kustomize (SA, RBAC, DaemonSet, Service)
 3. The controller pod on that node is `Running` (422 — otherwise no one
    can issue the reboot).
 4. State is re-requestable: absent, `completed`, or `failed` (else 409).
-   On re-request the API rewrites `reboot-state`, `reboot-request-id`,
-   `reboot-requested-at`, `reboot-state-since`, `reboot-force`,
-   `reboot-requested-by` and clears `reboot-error`,
-   `reboot-blocked-by`, `reboot-issued-at`, `reboot-boot-id`,
-   `reboot-confirmed-at`, `reboot-cordoned-prev`.
+   On success the API writes, in one atomic patch: fresh `reboot-state`
+   (`requested`) + fresh `reboot-request` (`id`/`by`/`force`), and
+   removes `reboot-exec: null` and `reboot-status: null` — a re-request
+   can never leave stale exec/status behind. On 409 from the patch:
+   re-read, re-evaluate the state check against the fresh value, retry
+   within the request (a node that raced into `draining` correctly
+   yields 409).
 
 Control-plane nodes pass the same checks as workers; there is no
 policy gate in v1 (decision 1).
@@ -418,7 +569,7 @@ partial**; the response is 202 with
 | `--max-concurrent-reboots` | `1` | Globally rebooting nodes at once. |
 | `--on-reboot-failure` | `pause` | `pause`\|`continue` — queue behavior while any node is `failed`. |
 | `--reboot-drain-timeout` | `10m` | Max drain duration (guards pods stuck on finalizers). |
-| `--reboot-issue-grace` | `5m` | After `reboot-issued-at`, time for the host to actually reboot (boot ID change) before the local pod fails the node as no-effect. |
+| `--reboot-issue-grace` | `5m` | After `reboot-exec.issuedAt`, time for the host to actually reboot (boot ID change) before the local pod fails the node as no-effect. |
 | `--engine-interval` | `2s` | Engine poll period. |
 | `--listen` | `:8080` | API bind address. |
 | `--kube-apiserver` | in-cluster env | Override API endpoint. |
@@ -497,12 +648,19 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
    (~30 s) + annotation state resumes everything. This is the most
    frequent crash-recovery case in real life and is in the M8
    validation list.
-6. **Concurrent writers**: atomic merge patches + resourceVersion; the
-   orchestrator is the only lifecycle writer; the API only enters
-   `requested` and performs deletions; the local pod only writes the
-   boot-ID / `reboot-issued-at` markers and command-failure / no-effect
-   `failed`.
-7. **Privileged pod**: by design (nsenter). RBAC scoped to the
+6. **Concurrent writers**: four JSON annotations, each with a single
+   owner except `reboot-status` (shared: orchestrator / local pod /
+   API), which is governed by the RMW + conditional-transition
+   discipline of 3.3.2 (a discipline requirement on the implementer —
+   write windows are disjoint per state, and M2 unit tests must
+   simulate a same-instant cross-field RMW on `reboot-status` and
+   assert no field loss).
+7. **Corrupt annotation**: a hand edit or a bug can corrupt a
+   `reboot-state`; the node then holds a concurrency slot until
+   `DELETE` or repair — at the default concurrency of 1 the whole queue
+   halts, with a loud Event stating both escapes (3.3.3). Accepted over
+   auto-clearing.
+8. **Privileged pod**: by design (nsenter). RBAC scoped to the
    ServiceAccount; API token generated by the kustomize for production.
 
 ## 5. Milestones
@@ -511,17 +669,18 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
 |---|---|---|
 | M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet+Service+token Secret), README |
 | M1 | `internal/kube` | REST client (auth, TLS, retries, pagination, leases, events), minimal types, unit tests (httptest) |
-| M2 | `internal/nodestate` | annotation read/write, state types, conflict handling, tests |
+| M2 | `internal/nodestate` | 4-annotation JSON model (parse/serialize, tolerant parse, per-field RMW for `reboot-status`), state types, conditional-transition + 409-retry discipline, conflict tests (incl. same-instant cross-field RMW on `reboot-status` and the failed-vs-completed race) |
 | M3 | Engine | leader election (Lease), orchestrator loop (queue, concurrency, pause), local loop, state machine (fake rebooter in tests); split-brain test (two orchestrator loops against a fake API with a delayed renew: the stale leader must abort its transition) |
 | M4 | Drain | cordon + evictions (202/429/pending/gone), drain timeout, force fallback |
 | M5 | PDB | per-node evaluation + force bypass + deliberate-divergence tests |
-| M6 | Rebooter | nsenter, `reboot-issued-at` marker, command-failure path |
+| M6 | Rebooter | nsenter, `reboot-exec` marker (`issuedAt`/`bootId`), command-failure path |
 | M7 | HTTP API | endpoints, admission checks, partial responses, optional token auth, /livez /readyz |
-| M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-blocked-by`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape); no-effect reboot (boot ID unchanged ⇒ `failed` after `--reboot-issue-grace`); queued node goes `NotReady` (queue holds, then resumes); node deleted mid-plan (slot freed, plan continues); 401 with an invalid API token (verifies the kustomize-generated token is injected and enforced); batch `*` including a `NotReady` node (partial 202: `Ready` nodes accepted, the `NotReady` one rejected with 422); API outage mid-drain (`--max-concurrent-reboots=2`, worker draining + CP rebooting: nothing marked `failed` while down, leader handover on recovery, drain resumes and completes). |
+| M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-status.blockedBy`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape); no-effect reboot (boot ID unchanged ⇒ `failed` after `--reboot-issue-grace`); queued node goes `NotReady` (queue holds, then resumes); node deleted mid-plan (slot freed, plan continues); 401 with an invalid API token (verifies the kustomize-generated token is injected and enforced); batch `*` including a `NotReady` node (partial 202: `Ready` nodes accepted, the `NotReady` one rejected with 422); API outage mid-drain (`--max-concurrent-reboots=2`, worker draining + CP rebooting: nothing marked `failed` while down, leader handover on recovery, drain resumes and completes); corrupt a `reboot-state` annotation by hand (verify `parseError` in `GET /reboots`, slot held, Event shows both escapes + raw value, DELETE clears). |
 | M9 | Docs | final README: operation guide (scheduling reboots, states, pause/resume, troubleshooting), local-storage-wipe warning, CP risk. |
 
 Note: M4 is only operationally meaningful once M5 exists (the PDB check
 gates the drain); validation order reflects that.
+| M9 | Docs | final README: operation guide (scheduling reboots, states, pause/resume, troubleshooting), local-storage-wipe warning, CP risk; JSON-annotation inspection: `jsonpath` one-liners for `state`/`since`/`force`, the exact repair `kubectl annotate` command, and the DELETE endpoint. |
 
 ## 6. Decisions (closed)
 
@@ -551,12 +710,13 @@ gates the drain); validation order reflects that.
 8. **`--on-reboot-failure=pause|continue`** (default `pause`): queue
    behavior while any node is `failed`; resumed by the operator clearing
    the `failed` state.
-9. **Reboot verification via boot ID** (`reboot-boot-id` /
-   `reboot-confirmed-at` + `--reboot-issue-grace`): `completed` requires
-   evidence that the host actually rebooted (boot ID change, or an
-   observed `NotReady`); a `reboot` that is accepted but has no effect
-   is `failed`, never `completed`. Chosen over grace-only heuristics:
-   the boot ID is exact, local, and works in the single-CP case.
+9. **Reboot verification via boot ID** (`reboot-exec`:
+   `issuedAt`/`bootId`/`confirmedAt` + `--reboot-issue-grace`):
+   `completed` requires `reboot-exec` plus evidence that the host
+   actually rebooted (boot ID change, or an observed `NotReady`);
+   a `reboot` that is accepted but has no effect is `failed`, never
+   `completed`. Chosen over grace-only heuristics: the boot ID is
+   exact, local, and works in the single-CP case.
 10. **Cap on concurrent control-plane reboots: 1, not configurable**
     (constant): independent of `--max-concurrent-reboots`, so a batch
     can never drop etcd below quorum on a multi-CP cluster. Deliberately
@@ -588,3 +748,20 @@ gates the drain); validation order reflects that.
 16. **No `/metrics` in v1**: observability is Events + structured logs
     + `GET /reboots`; a metrics endpoint can be added later without API
     changes.
+17. **State lives in four JSON annotations** (`reboot-state`,
+    `reboot-request`, `reboot-exec`, `reboot-status`), one per concern
+    and writer — replacing the 12-annotation v4 design: `state`+`since`
+    is one atomic unit (the request time is `since` while
+    `requested`); `reboot-status` is the only shared-value annotation,
+    governed by an RMW + conditional-transition discipline (3.3.2);
+    corrupt `reboot-state` holds a slot with a loud Event rather than
+    being auto-cleared (3.3.3). Chosen over 12 string keys (fewer
+    annotations, single-owner fields, atomic 4-key patches) and over one
+    monolithic JSON blob (writers stay separated; a leader restart
+    cannot clobber the local pod's fields).
+18. **`failed` is terminal, by design**: no automatic re-evaluation — if
+    a node marked `failed` later turns out to have rebooted (slow boot
+    beyond `--reboot-issue-grace`, or an operator unbricking it), the
+    plan is not resumed or completed; the operator starts a **new** plan
+    or clears the history (`DELETE`). The pause-on-failure principle
+    outranks self-healing bookkeeping.
