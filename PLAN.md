@@ -1,8 +1,9 @@
 # PLAN — simplek8s-controller
 
-Phase: **PLAN** (design & planning). Status: v6 (4-annotation state design adopted, reviewed by a
-design→review→adapt→review agent chain, plus a two-reviewer +
-verification round), pending final sign-off.
+Phase: **PLAN** (design & planning). Status: v9 (4-annotation state
+design adopted, reviewed by a design→review→adapt→review agent chain,
+plus Gemini, Claude, and ChatGPT review rounds with verified cherry-
+picks), pending final sign-off.
 
 ## 1. Purpose
 
