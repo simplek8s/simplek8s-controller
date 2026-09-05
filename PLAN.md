@@ -227,7 +227,9 @@ history until cleared (DELETE) or replaced by a new request.
   cordoned (i.e. `cordonedPrev` absent) whenever the node is in
   `failed`, **regardless of which actor wrote the transition** — as its
   own idempotent `spec.unschedulable: false` patch, skipped when
-  `cordonedPrev` is present. This also covers local-pod-caused `failed`
+  `cordonedPrev` is present or when the fresh read shows the node is
+  already unschedulable=false (an operator may have uncordoned manually
+  mid-drain — do not overwrite it). This also covers local-pod-caused `failed`
   (no-effect, command-start failure) on drained, cordoned nodes.
 - **Serialization / 409**: all writes are atomic
   `application/merge-patch+json` including a fresh
@@ -448,7 +450,10 @@ Rules:
      accepted / pending / denied / gone. A PDB-denied
      eviction without `force` aborts the drain → `failed`.
    - With `force`: after eviction attempts, `DELETE` remaining
-     evictable pods (aggressive; documented).
+     evictable pods (aggressive; documented). `force` **never removes
+     finalizers** — a pod stuck on a finalizer survives the DELETE and
+     simply runs the drain out to `--reboot-drain-timeout` → `failed`
+     (accepted behavior, not an extra escape hatch).
    - **No local-storage gate** (unlike `kubectl drain`): a reboot
      destroys node-local ephemeral storage anyway, so gating on it would
      protect against an inevitable outcome. Documented prominently:
@@ -529,7 +534,7 @@ internal/nodestate/         annotation read/write, state types
 internal/engine/            leader election, orchestrator loop, local loop
 internal/api/               HTTP server: registered route groups
 internal/features/reboot/   v1 feature: drain, pdb, rebooter, task, routes
-deploy/                     kustomize (SA, RBAC, DaemonSet, Service)
+deploy/                     kustomize (SA, RBAC, DaemonSet, Service, NetworkPolicy)
 ```
 
 - Each feature = one package registering (a) an orchestrator task,
@@ -591,7 +596,11 @@ answers 404 — the expected 404 window of 3.12.
 - The API is callable on any pod (state is global); the orchestrator
   executes decisions, the target node's pod issues the reboot.
 - Access: a `Service` (NodePort, `externalTrafficPolicy: Local`) fronts
-  the per-pod API; the Service routes to a ready pod.
+  the per-pod API; the Service routes to a ready pod. Production
+  kustomize ships a **NetworkPolicy** restricting ingress to the Service
+  (the plain-HTTP token is not the only wall); `kubectl port-forward`
+  to any pod is the documented alternative that needs no reachable
+  NodePort at all.
 - The engine rate-limits "API server unreachable" log lines (one per
   up→down transition) and emits the same rate-limited Event when no
   valid leader is observed while reboot state exists (lease stale/absent)
@@ -708,15 +717,15 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
 
 | # | Milestone | Deliverable |
 |---|---|---|
-| M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet+Service+token Secret), README |
+| M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet+Service+NetworkPolicy+token Secret), README |
 | M1 | `internal/kube` | REST client (auth, TLS, retries, pagination, leases, events), minimal types, unit tests (httptest): eviction status codes (200/202/429/404) and the merge-patch `resourceVersion` discipline (200 / 409 / 200) |
-| M2 | `internal/nodestate` | 4-annotation JSON model (parse/serialize, tolerant parse, per-field RMW for `reboot-status`), state types, conditional-transition + 409-retry discipline, conflict tests (incl. same-instant cross-field RMW on `reboot-status` and the failed-vs-completed race) |
+| M2 | `internal/nodestate` | 4-annotation JSON model (parse/serialize, tolerant parse, per-field RMW for `reboot-status`), state types, conditional-transition + 409-retry discipline, conflict tests (incl. same-instant cross-field RMW on `reboot-status` and the failed-vs-completed race), corrupt-annotation deserialization tests (tolerant parse, never a panic — 3.3.3) |
 | M3 | Engine | leader election (Lease), orchestrator loop (queue, concurrency, pause), local loop, state machine (fake rebooter in tests); split-brain test (two orchestrator loops against a fake API with a delayed renew: the stale leader must abort its transition); Lease protocol tests (a stale leader's delayed renew cannot flip `holderIdentity`; takeover only after > 30 s stale) |
 | M4 | Drain | cordon + evictions (200/202/429/404: accepted/pending/denied/gone), drain timeout (wall-clock), force fallback |
 | M5 | PDB | per-node evaluation + force bypass + deliberate-divergence tests |
 | M6 | Rebooter | nsenter, `reboot-exec` marker (`issuedAt`/`bootId`), command-failure path |
 | M7 | HTTP API | endpoints, admission checks, partial responses, optional token auth, /livez /readyz |
-| M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-status.blockedBy`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape); no-effect reboot (boot ID unchanged ⇒ `failed` after `--reboot-issue-grace`); queued node goes `NotReady` (queue holds, then resumes); node deleted mid-plan (slot freed, plan continues); 401 with an invalid API token (verifies the kustomize-generated token is injected and enforced); batch `*` including a `NotReady` node (partial 202: `Ready` nodes accepted, the `NotReady` one rejected with 422); API outage mid-drain (`--max-concurrent-reboots=2`, worker draining + CP rebooting, outage **shorter** than `--reboot-drain-timeout`: nothing marked `failed` while down, leader handover on recovery, drain resumes and completes); a 2-node PDB case (worker A PDB-blocked, worker B proceeds — skip rule); DELETE on a `draining` node → 409; `workers before CP` queue tie-break (batch with 2 workers + 1 CP: workers admitted first, CP waits); explicit pause→resume (`failed` node pauses the queue; `DELETE` resumes); `cordonedPrev` set and respected (a node already cordoned stays cordoned after `failed`); re-request after `failed` and after `completed`; corrupt a `reboot-state` annotation by hand (verify `parseError` in `GET /reboots` and in `GET /reboots/{node}`, slot held, Event shows both escapes + raw value, DELETE clears and uncordons); no-effect reboot induced with a distro image variant whose reboot shim is a no-op; API-outage variant **longer** than `--reboot-drain-timeout` (a draining node must be `failed` + uncordoned on recovery — wall-clock timeout). M8 is a multi-day campaign on the production cluster; order cases from cheap to disruptive. |
+| M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-status.blockedBy`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape); host hang during shutdown (its pod dies, so the boot-ID check cannot fire — the node must stay `rebooting` until Ready, not fail after `--reboot-issue-grace`; escape = DELETE); no-effect reboot (boot ID unchanged ⇒ `failed` after `--reboot-issue-grace`); queued node goes `NotReady` (queue holds, then resumes); node deleted mid-plan (slot freed, plan continues); 401 with an invalid API token (verifies the kustomize-generated token is injected and enforced); batch `*` including a `NotReady` node (partial 202: `Ready` nodes accepted, the `NotReady` one rejected with 422); API outage mid-drain (`--max-concurrent-reboots=2`, worker draining + CP rebooting, outage **shorter** than `--reboot-drain-timeout`: nothing marked `failed` while down, leader handover on recovery, drain resumes and completes); a 2-node PDB case (worker A PDB-blocked, worker B proceeds — skip rule); DELETE on a `draining` node → 409; `workers before CP` queue tie-break (batch with 2 workers + 1 CP: workers admitted first, CP waits); explicit pause→resume (`failed` node pauses the queue; `DELETE` resumes); `cordonedPrev` set and respected (a node already cordoned stays cordoned after `failed`); re-request after `failed` and after `completed`; corrupt a `reboot-state` annotation by hand (verify `parseError` in `GET /reboots` and in `GET /reboots/{node}`, slot held, Event shows both escapes + raw value, DELETE clears and uncordons); no-effect reboot induced with a distro image variant whose reboot shim is a no-op; API-outage variant **longer** than `--reboot-drain-timeout` (a draining node must be `failed` + uncordoned on recovery — wall-clock timeout). M8 is a multi-day campaign on the production cluster; order cases from cheap to disruptive. |
 | M9 | Docs | final README: operation guide (scheduling reboots, states, pause/resume, troubleshooting), local-storage-wipe warning, CP risk, plain-HTTP API note; JSON-annotation inspection: `jsonpath` one-liners for `state`/`since`/`force`, the exact repair `kubectl annotate` command, and the DELETE endpoint; hand-repair caveats (deleting `reboot-status` loses `cordonedPrev` — repair fields, not whole annotations) and the drain-stuck escape (wait out the timeout, or clear all four keys + `kubectl uncordon`). |
 
 Note: M4 is only operationally meaningful once M5 exists (the PDB check
