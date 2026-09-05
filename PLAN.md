@@ -116,7 +116,7 @@ Stdlib `net/http` + `crypto/tls` + `encoding/json`. Required verbs
 |---|---|---|
 | GET | `nodes`, `pods` (all ns), `poddisruptionbudgets`, `leases`, API `/healthz` | Pagination via `limit` + `continue`; retry on 429/5xx |
 | PATCH | `nodes/{name}` | `application/merge-patch+json` with `metadata.resourceVersion` for optimistic concurrency |
-| CREATE (POST) | `namespaces/{ns}/pods/{pod}/eviction` | `policy/v1` Eviction body; 200/202 = accepted (202 = pending), 429 = denied (PDB/grace), 404 = pod already gone (not an error) |
+| CREATE (POST) | `namespaces/{ns}/pods/{pod}/eviction` | `policy/v1` Eviction body; 200 = accepted (the pod goes away up to `terminationGracePeriodSeconds` later), 429 = denied (PDB), 404 = pod already gone (not an error) — there is no separate "pending" code: a pending eviction is simply a pod that still exists (3.5) |
 | DELETE | `pods/{pod}` | Fallback for `force` drain |
 | CREATE/UPDATE | `leases/{simplek8s-controller-leader}` | Leader election: create if absent; **renew** = conditional UPDATE requiring `holderIdentity == self`; **acquire** a stale lease (stale > 30 s) via conditional UPDATE; 409 → re-read, re-evaluate (3.1) |
 | CREATE | `events` (namespaced, regarding the Node) | one per state transition + rate-limited PDB-blocked and no-leader entries (empty namespace, 3.11) |
@@ -172,8 +172,8 @@ history until cleared (DELETE) or replaced by a new request.
   the node); `by` is the operator-supplied origin (field **omitted**
   when absent — no empty-string values); `force` is read by the
   orchestrator to skip the PDB check and use the force-delete fallback —
-  it requires node storage (must survive leader/pod restarts), and
-  `id`/`by` ride along at ~60 bytes. Unparseable: fields render as
+  it lives in the node's annotation precisely because it must survive
+  leader/pod restarts, and `id`/`by` ride along at ~60 bytes. Unparseable: fields render as
   absent, `force` defaults to `false` (never assume force from a corrupt
   annotation).
 - **`reboot-exec`**: `bootId` is the host boot ID
@@ -204,8 +204,8 @@ history until cleared (DELETE) or replaced by a new request.
 
 - **Orchestrator** writes all lifecycle transitions
   (`requested→draining`, `draining→rebooting`, `rebooting→completed`,
-  and its `failed` transitions: drain timeout, PDB-denied eviction
-  without force, force-delete error), and owns
+  and its `failed` transitions: drain timeout — including a PDB denial
+  that survives retries, 3.5 — and force-delete error), and owns
   `reboot-status.blockedBy`, `reboot-status.cordonedPrev`, and
   `reboot-status.error` for its own `failed` transitions.
 - **Any pod (API)** may perform absent→`requested` (admission) and
@@ -269,8 +269,8 @@ Example patches (one merge-patch each, all include fresh
   `state=="rebooting"`): `reboot-state:
   {"state":"failed","since":"<now>"}`, `reboot-status: <fresh +
   error>`. (Uncordon is the orchestrator's job, next cycle — 3.3.2.)
-- **Orchestrator `failed`** (drain timeout / PDB denial / force-delete
-  error): `reboot-state: {"state":"failed","since":"<now>"}`,
+- **Orchestrator `failed`** (drain timeout — including an unrecovered
+  PDB denial — / force-delete error): `reboot-state: {"state":"failed","since":"<now>"}`,
   `reboot-status: <fresh + error>`, and `spec.unschedulable: false`
   only if `cordonedPrev` is absent.
 - **`completed`** (orchestrator): `reboot-state:
@@ -332,7 +332,7 @@ stateDiagram-v2
     requested --> draining: slot free + PDB OK (or force)
     requested --> [*]: DELETE (cancel — annotations cleared)
     draining --> rebooting: no evictable pods remain (evicted, or force-deleted)
-    draining --> failed: drain timeout / PDB denial / force-delete error
+    draining --> failed: drain timeout (incl. PDB denial surviving retries) / force-delete error
     rebooting --> failed: command failed to start / reboot no effect (boot ID unchanged)
     rebooting --> completed: Ready + reboot confirmed (no timeout)
     completed --> [*]: DELETE (clear history)
@@ -375,8 +375,10 @@ Rules:
   advance. The operator's escape is `DELETE /reboots/{node}` (see 3.10)
   — "stop watching this node". No `lost` state, no give-up timer.
 - **`failed`** occurs only on definite errors: drain timeout (e.g. pod
-  stuck `Terminating` on finalizers), PDB-denied eviction without
-  `force`, force-delete error, the reboot command failing to start, or
+  stuck `Terminating` on finalizers), eviction still PDB-denied when the
+  drain timeout expires (without `force`; denials are retried with
+  backoff in the meantime — 3.5, decision 19), force-delete error, the
+  reboot command failing to start, or
   the reboot having no effect (host boot ID unchanged
   `--reboot-issue-grace` after `reboot-exec.issuedAt`, detected by the
   local pod — distinguished from "node has not reappeared"). On every
@@ -442,13 +444,21 @@ Rules:
    - Cordon (`spec.unschedulable=true`), recording
      `reboot-status.cordonedPrev` if it was already cordoned.
    - Evict pods via the **Eviction API** (`policy/v1`), skipping
-     daemonset-managed pods, mirror pods of static pods (ownerReference
-     of kind `Pod` — the API objects of CP static pods; they are never
-     evicted), and already-terminating pods. Eviction is asynchronous: 200/202 = accepted (202 = pending, pod goes
-     away up to `terminationGracePeriodSeconds` later), 429 = denied
-     (PDB/grace), 404 = pod already gone — the drain loop distinguishes
-     accepted / pending / denied / gone. A PDB-denied
-     eviction without `force` aborts the drain → `failed`.
+     daemonset-managed pods, mirror pods of static pods (detected by the
+     `kubernetes.io/config.mirror` annotation plus an ownerReference of
+     kind `Node` — the API objects of CP static pods; they are never
+     evicted, and an eviction/delete against one is harmless but useless:
+     the kubelet simply recreates the mirror), and already-terminating
+     pods. Eviction is asynchronous: 200 = accepted (the pod goes away up
+     to `terminationGracePeriodSeconds` later), 429 = denied (PDB),
+     404 = pod already gone — the drain loop distinguishes accepted /
+     denied / gone, and "pending" is simply a pod that still exists (with
+     or without `deletionTimestamp`). A PDB-denied eviction without
+     `force` is **not** immediately fatal: it is retried with backoff
+     while `--reboot-drain-timeout` remains, because a PDB's state can
+     fluctuate due to activity unrelated to the draining node (same
+     rationale as `kubectl drain`'s retry loop); still denied at the
+     timeout → `failed` (decision 19).
    - With `force`: after eviction attempts, `DELETE` remaining
      evictable pods (aggressive; documented). `force` **never removes
      finalizers** — a pod stuck on a finalizer survives the DELETE and
@@ -589,14 +599,17 @@ API server is unreachable, `GET`/`POST`/`DELETE /reboots` return
 drops out of the Service endpoints (readyz) and the Service then
 answers 404 — the expected 404 window of 3.12.
 
-- Auth: optional fixed token via env `SIMPLEK8S_API_TOKEN` →
-  `Authorization: Bearer <token>`. Unset ⇒ no auth (trusted internal
-  network). The production kustomize **generates and injects** the token
-  (Secret), so the safe default does not rely on operator memory.
+- Auth: **mandatory** fixed token via env `SIMPLEK8S_API_TOKEN` →
+  `Authorization: Bearer <token>` (missing/mismatching token ⇒ 401). The
+  production kustomize **generates and injects** the token (Secret); a
+  deployment without a token is not supported, so the API is never
+  accidentally exposed tokenless outside that kustomize.
 - The API is callable on any pod (state is global); the orchestrator
   executes decisions, the target node's pod issues the reboot.
-- Access: a `Service` (NodePort, `externalTrafficPolicy: Local`) fronts
-  the per-pod API; the Service routes to a ready pod. Production
+- Access: a `Service` (NodePort, `externalTrafficPolicy: Cluster`) fronts
+  the per-pod API; the Service routes to a ready pod, so a NodePort hit
+  on a node whose local pod is not ready still reaches a live API (with
+  `Local` such a hit would drop the connection). Production
   kustomize ships a **NetworkPolicy** restricting ingress to the Service
   (the plain-HTTP token is not the only wall); `kubectl port-forward`
   to any pod is the documented alternative that needs no reachable
@@ -619,7 +632,7 @@ answers 404 — the expected 404 window of 3.12.
 | `--kube-apiserver` | in-cluster env | Override API endpoint. |
 | `--creds-dir` | `/var/run/secrets/kubernetes.io/serviceaccount` | Serviceaccount files. |
 | env `NODE_NAME`, `POD_NAMESPACE` | downward API | Local node / namespace. |
-| env `SIMPLEK8S_API_TOKEN` | — | Optional API token. |
+| env `SIMPLEK8S_API_TOKEN` | — | **Mandatory** API token (401 without it). |
 
 Constants (not flags in v1): leader election renew 10 s, takeover at
 30 s stale; **at most one control-plane node `draining`/`rebooting` at
@@ -628,12 +641,19 @@ quorum on multi-CP clusters).
 
 ### 3.11 RBAC (ServiceAccount `simplek8s-controller`)
 
-- `nodes`: get, list, patch
-- `pods`: get, list, delete
-- `pods/eviction`: create
-- `poddisruptionbudgets` (policy): get, list
-- `leases` (coordination.k8s.io): get, create, update
-- `events`: create — in the **empty namespace** (a Role + RoleBinding for the ServiceAccount there); Node-related events live there so `kubectl describe node` shows them. One per state transition + rate-limited PDB-blocked and no-leader entries (decision 4)
+- **ClusterRole** (cluster-wide binding) — cluster-scoped and
+  cross-namespace resources:
+  - `nodes`: get, list, patch
+  - `pods`: get, list, delete
+  - `pods/eviction`: create
+  - `poddisruptionbudgets` (policy): get, list
+- **Role in the empty namespace** (+ RoleBinding for the ServiceAccount
+  there):
+  - `leases` (coordination.k8s.io): get, create, update — the leader
+    Lease `simplek8s-controller-leader` lives in the **empty namespace**
+  - `events`: create — Node-related events live in the empty namespace
+    so `kubectl describe node` shows them. One per state transition +
+    rate-limited PDB-blocked and no-leader entries (decision 4)
 
 ### 3.12 DaemonSet pod spec (sketch)
 
@@ -708,8 +728,9 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
 8. **Privileged pod**: by design (nsenter). RBAC scoped to the
    ServiceAccount; API token generated by the kustomize for production.
 9. **Plain-HTTP operator API**: the NodePort API is unencrypted HTTP
-   with an optional static bearer token — anyone who can reach the
-   NodePort can schedule reboots, control planes included (accepted in
+   with a mandatory static bearer token — anyone who can reach the
+   NodePort **and hold the token** can schedule reboots, control planes
+   included (accepted in
    v1: trusted internal network; TLS termination in front can be added
    later without API changes).
 
@@ -718,13 +739,13 @@ single-CP outage, `/livez` stays 200 on every node (no restart storm);
 | # | Milestone | Deliverable |
 |---|---|---|
 | M0 | Scaffold | git, go.mod (stdlib only), package layout, Makefile, kustomize skeleton (SA+RBAC+DaemonSet+Service+NetworkPolicy+token Secret), README |
-| M1 | `internal/kube` | REST client (auth, TLS, retries, pagination, leases, events), minimal types, unit tests (httptest): eviction status codes (200/202/429/404) and the merge-patch `resourceVersion` discipline (200 / 409 / 200) |
+| M1 | `internal/kube` | REST client (auth, TLS, retries, pagination, leases, events), minimal types, unit tests (httptest): eviction status codes (200/429/404: accepted/denied/gone) and the merge-patch `resourceVersion` discipline (200 / 409 / 200) |
 | M2 | `internal/nodestate` | 4-annotation JSON model (parse/serialize, tolerant parse, per-field RMW for `reboot-status`), state types, conditional-transition + 409-retry discipline, conflict tests (incl. same-instant cross-field RMW on `reboot-status` and the failed-vs-completed race), corrupt-annotation deserialization tests (tolerant parse, never a panic — 3.3.3) |
 | M3 | Engine | leader election (Lease), orchestrator loop (queue, concurrency, pause), local loop, state machine (fake rebooter in tests); split-brain test (two orchestrator loops against a fake API with a delayed renew: the stale leader must abort its transition); Lease protocol tests (a stale leader's delayed renew cannot flip `holderIdentity`; takeover only after > 30 s stale) |
-| M4 | Drain | cordon + evictions (200/202/429/404: accepted/pending/denied/gone), drain timeout (wall-clock), force fallback |
+| M4 | Drain | cordon + evictions (200/429/404: accepted/denied/gone; pending = pod still present), PDB-denial retry-with-backoff until drain timeout (decision 19), drain timeout (wall-clock), force fallback |
 | M5 | PDB | per-node evaluation + force bypass + deliberate-divergence tests |
 | M6 | Rebooter | nsenter, `reboot-exec` marker (`issuedAt`/`bootId`), command-failure path |
-| M7 | HTTP API | endpoints, admission checks, partial responses, optional token auth, /livez /readyz |
+| M7 | HTTP API | endpoints, admission checks, partial responses, mandatory token auth (401 path), /livez /readyz |
 | M8 | Deploy & validate | image build, deploy, then on one worker: reboot ok; late return; PDB block + `reboot-status.blockedBy`; force; cancel (`requested` and `rebooting`); drain timeout; nsenter failure (e.g. broken image); leader takeover mid-drain (rolling update); CP reboot last; bricked node (power off: verify visibility + DELETE escape); host hang during shutdown (its pod dies, so the boot-ID check cannot fire — the node must stay `rebooting` until Ready, not fail after `--reboot-issue-grace`; escape = DELETE); no-effect reboot (boot ID unchanged ⇒ `failed` after `--reboot-issue-grace`); queued node goes `NotReady` (queue holds, then resumes); node deleted mid-plan (slot freed, plan continues); 401 with an invalid API token (verifies the kustomize-generated token is injected and enforced); batch `*` including a `NotReady` node (partial 202: `Ready` nodes accepted, the `NotReady` one rejected with 422); API outage mid-drain (`--max-concurrent-reboots=2`, worker draining + CP rebooting, outage **shorter** than `--reboot-drain-timeout`: nothing marked `failed` while down, leader handover on recovery, drain resumes and completes); a 2-node PDB case (worker A PDB-blocked, worker B proceeds — skip rule); DELETE on a `draining` node → 409; `workers before CP` queue tie-break (batch with 2 workers + 1 CP: workers admitted first, CP waits); explicit pause→resume (`failed` node pauses the queue; `DELETE` resumes); `cordonedPrev` set and respected (a node already cordoned stays cordoned after `failed`); re-request after `failed` and after `completed`; corrupt a `reboot-state` annotation by hand (verify `parseError` in `GET /reboots` and in `GET /reboots/{node}`, slot held, Event shows both escapes + raw value, DELETE clears and uncordons); no-effect reboot induced with a distro image variant whose reboot shim is a no-op; API-outage variant **longer** than `--reboot-drain-timeout` (a draining node must be `failed` + uncordoned on recovery — wall-clock timeout). M8 is a multi-day campaign on the production cluster; order cases from cheap to disruptive. |
 | M9 | Docs | final README: operation guide (scheduling reboots, states, pause/resume, troubleshooting), local-storage-wipe warning, CP risk, plain-HTTP API note; JSON-annotation inspection: `jsonpath` one-liners for `state`/`since`/`force`, the exact repair `kubectl annotate` command, and the DELETE endpoint; hand-repair caveats (deleting `reboot-status` loses `cordonedPrev` — repair fields, not whole annotations) and the drain-stuck escape (wait out the timeout, or clear all four keys + `kubectl uncordon`). |
 
@@ -741,7 +762,10 @@ gates the drain); validation order reflects that.
 2. Images are hosted on **GitHub Container Registry**
    (`ghcr.io/simplek8s/simplek8s-controller`).
 3. The API is exposed through a **Service** (NodePort,
-   `externalTrafficPolicy: Local`) instead of per-node host binding.
+   `externalTrafficPolicy: Cluster`) instead of per-node host binding —
+   so a NodePort hit on a node whose local pod is not ready still
+   routes to a ready pod (`Local` would drop such connections,
+   contradicting the "routes to a ready pod" semantics).
 4. **Events in v1**: one Event per state transition, plus rate-limited
    events on entry to PDB-blocked and on no valid leader (the two stuck
    situations that are not transitions); all low cost, operator-visible
@@ -817,3 +841,10 @@ gates the drain); validation order reflects that.
     plan is not resumed or completed; the operator starts a **new** plan
     or clears the history (`DELETE`). The pause-on-failure principle
     outranks self-healing bookkeeping.
+19. **A PDB denial mid-drain is retried, not immediately fatal**: a 429
+    from the Eviction API during the drain is retried with backoff for
+    as long as `--reboot-drain-timeout` remains — a PDB's state can
+    fluctuate due to activity unrelated to the draining node (the same
+    rationale as `kubectl drain`'s retry loop, and consistent with the
+    documented pre-check/API divergence, 3.7); only a denial that
+    survives until the timeout fails the node.
