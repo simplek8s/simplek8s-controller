@@ -19,6 +19,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 
 | Case | Result | Date | Notes |
 |---|---|---|---|
+| M1-regression | PASS | 2026-09-06 | config-driven binary `7bf8c43` deployed to all 3 nodes (ctr import, nodeSelector rollout); live ConfigMap checks: invalid value → `WARN feature config ... keeping previous` (last-valid-wins), CM deleted → pods stay Running on built-in defaults, CM restored → 3/3; re-verified A1 (401s + livez 200), B1 (`scripts/e2e-reboot.sh wk1` 20/20), C1 (PDB `maxUnavailable:0` → `requested` + `blockedBy=[default/pdb-target]` + `PDBBlocked` event, DELETE 204) |
 | B1 | PASS | 2026-09-06 | `scripts/e2e-reboot.sh wk1`, 20/20 checks, ~20 s reboot. First run had 5 spurious failures: port-forward died with the node (fixed: NodePort on a healthy node), polling through the API (fixed: node annotations), 5 s polling missed the short `draining` window (fixed: 2 s), and the 4 lifecycle events were never created (fixed: events must live in `default`, PLAN.FIXME #5). |
 | A1 | PASS | 2026-09-06 | bad token → 401 `{"code":401,"reason":"Unauthorized"}` |
 | A2 | PASS | 2026-09-06 | livez 200, readyz 200 |
