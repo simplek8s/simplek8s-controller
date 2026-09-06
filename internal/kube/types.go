@@ -236,6 +236,12 @@ type Lease struct {
 	} `json:"spec"`
 }
 
+// ConfigMap is a minimal v1 ConfigMap (flat string data, PLAN-M2 3.2).
+type ConfigMap struct {
+	Metadata ObjectMeta        `json:"metadata"`
+	Data     map[string]string `json:"data,omitempty"`
+}
+
 // Event is a minimal v1 Event (namespaced; created regarding a Node).
 type Event struct {
 	Metadata       ObjectMeta `json:"metadata"`

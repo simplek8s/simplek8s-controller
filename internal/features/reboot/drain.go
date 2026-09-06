@@ -23,11 +23,11 @@ const (
 
 // runDrain performs one drain cycle for a draining node (PLAN 3.5 step 4).
 // It returns the result and, for drainFailed, the error text.
-func (f *Feature) runDrain(ctx context.Context, node *kube.Node, st *nodestate.NodeState, allPods []kube.Pod) (drainResult, string) {
+func (f *Feature) runDrain(ctx context.Context, node *kube.Node, st *nodestate.NodeState, allPods []kube.Pod, drainTimeout time.Duration) (drainResult, string) {
 	now := f.cfg.Now()
 	force := forceOf(st)
-	if now.Sub(st.State.Since) >= f.cfg.DrainTimeout {
-		return drainFailed, fmt.Sprintf("drain timed out after %s", f.cfg.DrainTimeout)
+	if now.Sub(st.State.Since) >= drainTimeout {
+		return drainFailed, fmt.Sprintf("drain timed out after %s", drainTimeout)
 	}
 
 	var toEvict []kube.Pod

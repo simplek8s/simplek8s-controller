@@ -12,12 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/simplek8s/simplek8s-controller/internal/config"
 	"github.com/simplek8s/simplek8s-controller/internal/engine"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
 
-// Config carries the reboot feature's settings (PLAN 3.8 flags).
+// Config carries the reboot feature's settings. Reboot tuning
+// (reboots.* keys) comes from the per-cycle feature Config snapshot
+// (PLAN-M2 3.2).
 type Config struct {
 	// NodeName is the node this pod is bound to.
 	NodeName string
@@ -26,14 +29,9 @@ type Config struct {
 	// EventNamespace for Events. Node Events are cluster-scoped
 	// subjects and must live in "default" (PLAN 3.11).
 	EventNamespace string
-	// MaxConcurrentReboots is --max-concurrent-reboots (default 1).
-	MaxConcurrentReboots int
-	// OnRebootFailure is --on-reboot-failure: "pause" | "continue".
-	OnRebootFailure string
-	// DrainTimeout is --reboot-drain-timeout.
-	DrainTimeout time.Duration
-	// IssueGrace is --reboot-issue-grace.
-	IssueGrace time.Duration
+	// Features returns the current feature config snapshot (the
+	// engine's, or Defaults for standalone tests).
+	Features func() config.Config
 	// RebootCmd is the command run inside the host PID namespace
 	// (default: nsenter -t 1 -m -u -i -n -p -- reboot).
 	RebootCmd []string
@@ -67,17 +65,8 @@ type denyState struct {
 // New builds the feature and registers it with the engine (orchestrator
 // task + local executor).
 func New(e *engine.Engine, cfg Config) *Feature {
-	if cfg.MaxConcurrentReboots <= 0 {
-		cfg.MaxConcurrentReboots = 1
-	}
-	if cfg.OnRebootFailure == "" {
-		cfg.OnRebootFailure = "pause"
-	}
-	if cfg.DrainTimeout <= 0 {
-		cfg.DrainTimeout = 5 * time.Minute
-	}
-	if cfg.IssueGrace <= 0 {
-		cfg.IssueGrace = 120 * time.Second
+	if cfg.Features == nil {
+		cfg.Features = func() config.Config { return config.Defaults() }
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now

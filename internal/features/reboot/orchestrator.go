@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/simplek8s/simplek8s-controller/internal/config"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
@@ -35,6 +36,7 @@ func (f *Feature) runOrchestrator(ctx context.Context) {
 		return
 	}
 	now := f.cfg.Now()
+	fc := f.cfg.Features()
 
 	views := buildViews(nodes)
 	f.observeDisappearances(views)
@@ -42,7 +44,7 @@ func (f *Feature) runOrchestrator(ctx context.Context) {
 	// Phase 1: manage existing lifecycles (timeouts, drain, completion,
 	// uncordon, corrupt-state handling).
 	for _, v := range views {
-		f.manageNode(ctx, v, pods, now)
+		f.manageNode(ctx, v, pods, now, fc)
 	}
 
 	// Phase 2: admission (queue), from a fresh node list: phase 1 may
@@ -52,7 +54,7 @@ func (f *Feature) runOrchestrator(ctx context.Context) {
 		return
 	}
 	inFlight, cpInFlight, anyFailed, queuedNotReady := admissionCounts(buildViews(freshNodes))
-	if f.cfg.OnRebootFailure == "pause" && anyFailed {
+	if fc.OnRebootFailure == "pause" && anyFailed {
 		f.noteEvent("queue-paused", "", "QueuePaused",
 			"reboot queue paused: a node is in failed state; clear it with DELETE /reboots/<node> to resume", true, true)
 		return
@@ -62,7 +64,7 @@ func (f *Feature) runOrchestrator(ctx context.Context) {
 			"reboot queue held: a requested (queued) node is NotReady", true, true)
 		return
 	}
-	if inFlight >= f.cfg.MaxConcurrentReboots || cpInFlight >= 1 {
+	if inFlight >= fc.MaxConcurrentReboots || cpInFlight >= 1 {
 		return
 	}
 
@@ -77,7 +79,7 @@ func (f *Feature) runOrchestrator(ctx context.Context) {
 	sortQueue(queue)
 
 	for _, v := range queue {
-		if inFlight >= f.cfg.MaxConcurrentReboots || cpInFlight >= 1 {
+		if inFlight >= fc.MaxConcurrentReboots || cpInFlight >= 1 {
 			break
 		}
 		if !forceOf(v.st) {
@@ -175,7 +177,7 @@ func sortQueue(queue []*view) {
 }
 
 // manageNode runs the per-node lifecycle rules for one cycle.
-func (f *Feature) manageNode(ctx context.Context, v *view, pods []kube.Pod, now time.Time) {
+func (f *Feature) manageNode(ctx context.Context, v *view, pods []kube.Pod, now time.Time, fc config.Config) {
 	name := v.node.Metadata.Name
 	if v.st.State == nil || !v.st.State.Present {
 		return
@@ -190,7 +192,7 @@ func (f *Feature) manageNode(ctx context.Context, v *view, pods []kube.Pod, now 
 	}
 	switch v.st.State.State {
 	case nodestate.Draining:
-		f.manageDraining(ctx, v, pods, now)
+		f.manageDraining(ctx, v, pods, now, fc.RebootDrainTimeout)
 	case nodestate.Rebooting:
 		f.manageRebooting(ctx, v, now)
 	case nodestate.Completed, nodestate.Failed:
@@ -199,8 +201,8 @@ func (f *Feature) manageNode(ctx context.Context, v *view, pods []kube.Pod, now 
 }
 
 // manageDraining: timeout check, then one drain cycle, then transitions.
-func (f *Feature) manageDraining(ctx context.Context, v *view, pods []kube.Pod, now time.Time) {
-	res, errMsg := f.runDrain(ctx, v.node, v.st, pods)
+func (f *Feature) manageDraining(ctx context.Context, v *view, pods []kube.Pod, now time.Time, drainTimeout time.Duration) {
+	res, errMsg := f.runDrain(ctx, v.node, v.st, pods, drainTimeout)
 	switch res {
 	case drainDone:
 		f.transition(ctx, v, nodestate.Draining, func(fresh *kube.Node) map[string]any {

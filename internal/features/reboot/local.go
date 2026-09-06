@@ -38,6 +38,7 @@ func (f *Feature) runLocal(ctx context.Context) {
 		return
 	}
 	now := f.cfg.Now()
+	issueGrace := f.cfg.Features().RebootIssueGrace
 	execInfo := st.Exec
 
 	switch {
@@ -74,7 +75,7 @@ func (f *Feature) runLocal(ctx context.Context) {
 		// (re-issue once within the grace) or a no-effect reboot
 		// (fail past the grace, measured from the latest issuedAt).
 		switch {
-		case execInfo.Attempt == 1 && !now.After(execInfo.IssuedAt.Add(f.cfg.IssueGrace)):
+		case execInfo.Attempt == 1 && !now.After(execInfo.IssuedAt.Add(issueGrace)):
 			e := nodestate.ExecInfo{
 				IssuedAt:       now,
 				BootID:         bootID,
@@ -86,15 +87,15 @@ func (f *Feature) runLocal(ctx context.Context) {
 					return freshSt.Exec.Present && freshSt.Exec.ParseError == "" &&
 						freshSt.Exec.Attempt == 1 &&
 						freshSt.Exec.BootID == bootID &&
-						!f.cfg.Now().After(freshSt.Exec.IssuedAt.Add(f.cfg.IssueGrace))
+						!f.cfg.Now().After(freshSt.Exec.IssuedAt.Add(issueGrace))
 				},
 				e)
 			if err != nil || !patched {
 				return
 			}
 			f.issueReboot()
-		case now.After(execInfo.IssuedAt.Add(f.cfg.IssueGrace)):
-			f.localFailed(ctx, "reboot did not take effect: host boot ID unchanged "+f.cfg.IssueGrace.String()+" after issuedAt")
+		case now.After(execInfo.IssuedAt.Add(issueGrace)):
+			f.localFailed(ctx, "reboot did not take effect: host boot ID unchanged "+issueGrace.String()+" after issuedAt")
 		}
 		// attempt==2 within grace: wait; no second re-issue.
 

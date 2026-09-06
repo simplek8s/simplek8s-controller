@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"testing"
 	"time"
 
@@ -59,29 +60,37 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reboot tuning comes from the flat-key ConfigMap (PLAN-M2 3.2);
+	// the harness publishes it and drives one engine cycle so the
+	// feature config snapshot is resolved before the test manipulates
+	// nodes directly.
+	fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
+		"reboots.max-concurrent-reboots": strconv.Itoa(o.maxConcurrent),
+		"reboots.on-reboot-failure":      o.onFailure,
+		"reboots.reboot-drain-timeout":   o.drainTimeout.String(),
+		"reboots.reboot-issue-grace":     o.issueGrace.String(),
+	})
 	eng, err := engine.New(engine.Config{
-		CredsDir:       creds.Dir,
-		APIEndpoint:    fake.Server.URL,
-		Identity:       "pod-x/uid-x",
-		NodeName:       "w1",
-		LeaseNamespace: "default",
-		LeaseName:      engine.LeaseName,
-		PollInterval:   time.Hour, // cycles are driven manually
-		Now:            cl.Now,
-		Sleep:          func(ctx context.Context, d time.Duration) error { return nil },
-		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		CredsDir:           creds.Dir,
+		APIEndpoint:        fake.Server.URL,
+		Identity:           "pod-x/uid-x",
+		NodeName:           "w1",
+		LeaseNamespace:     "default",
+		LeaseName:          engine.LeaseName,
+		ConfigMapNamespace: "default",
+		ConfigMapName:      "simplek8s-controller",
+		Now:                cl.Now,
+		Sleep:              func(ctx context.Context, d time.Duration) error { return nil },
+		Log:                slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.f = New(eng, Config{
-		NodeName:             "w1",
-		PodUID:               "uid-x",
-		MaxConcurrentReboots: o.maxConcurrent,
-		OnRebootFailure:      o.onFailure,
-		DrainTimeout:         o.drainTimeout,
-		IssueGrace:           o.issueGrace,
-		BootIDFunc:           func() (string, error) { return h.bootID, nil },
+		NodeName:   "w1",
+		PodUID:     "uid-x",
+		Features:   eng.FeatureConfig,
+		BootIDFunc: func() (string, error) { return h.bootID, nil },
 		StartReboot: func(ctx context.Context) error {
 			h.reboots++
 			return h.startErr
@@ -89,6 +98,7 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 		Now: cl.Now,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	eng.Cycle(context.Background()) // resolves the feature config snapshot
 	return h
 }
 

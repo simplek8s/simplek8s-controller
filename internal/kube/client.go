@@ -86,10 +86,10 @@ func New(cfg Config) (*Client, error) {
 		tlsCfg = &tls.Config{RootCAs: pool}
 	}
 	c := &Client{
-		cfg:       cfg,
-		http:      &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}},
-		caBytes:   ca,
-		ua: cfg.UA,
+		cfg:     cfg,
+		http:    &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}},
+		caBytes: ca,
+		ua:      cfg.UA,
 	}
 	return c, nil
 }
@@ -426,6 +426,17 @@ func (c *Client) CreateLease(ctx context.Context, l *Lease) error {
 func (c *Client) UpdateLease(ctx context.Context, l *Lease) error {
 	return c.Do(ctx, http.MethodPut, fmt.Sprintf(leasePath, l.Metadata.Namespace, l.Metadata.Name),
 		nil, l, nil, doOpts{})
+}
+
+// GetConfigMap fetches a namespaced ConfigMap. 404 (IsNotFound) means
+// the ConfigMap is absent: callers fall back to built-in defaults
+// (PLAN-M2 3.2).
+func (c *Client) GetConfigMap(ctx context.Context, ns, name string) (*ConfigMap, error) {
+	var cm ConfigMap
+	if err := c.Get(ctx, "/api/v1/namespaces/"+ns+"/configmaps/"+name, &cm); err != nil {
+		return nil, err
+	}
+	return &cm, nil
 }
 
 // --- Events (PLAN 3.11) --------------------------------------------------

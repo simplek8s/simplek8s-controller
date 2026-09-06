@@ -33,7 +33,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | C6 | PASS | 2026-09-06 | PDB on wk2, `POST {"force":true}` → eviction rejected by PDB, force-DELETE removes the pod, drain completes, wk2 `completed` (Deployment recreated the pod after the reboot) |
 | A7 | PASS | 2026-09-06 | `POST [wk1,wk2]` → strict serialization: wk1 `completed` first, wk2 admitted only after (slot=1) |
 | B3 | PASS | 2026-09-06 | re-POST after `completed` → accepted (completed is re-requestable), full lifecycle again |
-| C4 | PASS | 2026-09-06 | unmanaged pod on wk1, `force:false` → drain skipped the pod, hit `--reboot-drain-timeout` exactly (10m0s) → `failed` + uncordon + `RebootFailed` event; node back to Ready |
+| C4 | PASS | 2026-09-06 | unmanaged pod on wk1, `force:false` → drain skipped the pod, hit `reboots.reboot-drain-timeout` exactly (10m0s) → `failed` + uncordon + `RebootFailed` event; node back to Ready |
 | D1 | PASS | 2026-09-06 | leader pod deleted mid-drain → standby took over via lease; drain finished and node reached `completed` |
 | D2 | PASS | 2026-09-06 | DS rollout (pod restart) while node `rebooting` → no re-issue: `attempt` stayed 1, no second reboot |
 | D3 | PASS | 2026-09-06 | DELETE while `draining` → 409 (in-flight drain not interruptible); `failed`/`completed` DELETE → 204 |
@@ -51,7 +51,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | D12 | PASS | 2026-09-06 | `virsh destroy` (hard power-off, no reboot) 1 s after issue: node NotReady, stays `rebooting` past the 5 m grace (no executor → no boot-ID check → **no auto-fail**); queued node stayed `requested` (slot held); DELETE cleared annotations on the bricked node; `virsh start` → Ready. First attempt void: the Buildroot guest reboots in ~17 s, completing before a late power-off lands. |
 | D16 | PASS | 2026-09-06 | `virsh suspend` (freeze) in the same second as issue, held 6.5 min (past grace): node stayed `rebooting`, **not** `failed` (executor pod frozen with the host); `virsh resume` → node returned 6m26s after issuedAt → `completed` |
 | B2 | PASS | 2026-09-06 | same campaign: late return (>30 s after issuedAt) → `completed` via the NotReady-after-issuedAt evidence path (no `confirmedAt` in reboot-exec: the local pod never confirmed, exactly as designed) |
-| D14 | PASS | 2026-09-06 | `--max-concurrent-reboots=2`: `POST [wk1,cp1]` → BOTH `rebooting` concurrently; cp1 reboot took the API down ~1 min (< drain-timeout); on recovery both `completed`, nothing `failed`; leader handover on recovery |
+| D14 | PASS | 2026-09-06 | `reboots.max-concurrent-reboots: "2"`: `POST [wk1,cp1]` → BOTH `rebooting` concurrently; cp1 reboot took the API down ~1 min (< drain-timeout); on recovery both `completed`, nothing `failed`; leader handover on recovery |
 | D15 | PASS | 2026-09-06 | unmanaged pod on wk1 (drain pending); CP apiserver is a static pod on this distro — outage by `mv`-ing its manifest off for 13 min (> drain-timeout); `failed` at 05:46:33, i.e. **on recovery**, not at the 05:43:18 deadline while API was down (wall-clock); `drain timed out after 10m0s`, uncordoned next cycle |
 
 ## Phase A — API & admission (no reboot)
@@ -82,7 +82,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | C1 | PDB block | Deployment + PDB (`maxUnavailable:0`) pinned to the worker; POST | stays `requested`; `reboot-status.blockedBy` set; `PDBBlocked` event; queue continues past it |
 | C2 | 2-node PDB skip | C1 on w1 + POST w2 | w1 blocked, w2 drains/completes (skip rule) |
 | C3 | PDB unblock | delete the PDB (or scale dep to 0) | drain proceeds on next cycle |
-| C4 | unmanaged pod, no force | `kubectl run orphan --rm=false ...` on the worker (no owner); POST | drain blocks; at `--reboot-drain-timeout` → `failed` + uncordon + `error` set; queue pauses (pause mode) |
+| C4 | unmanaged pod, no force | `kubectl run orphan --rm=false ...` on the worker (no owner); POST | drain blocks; at `reboots.reboot-drain-timeout` → `failed` + uncordon + `error` set; queue pauses (pause mode) |
 | C5 | unmanaged pod, force | same, `POST -d '{"force":true}'` | pod deleted, drain completes, reboot proceeds |
 | C6 | force bypasses PDB | C1 setup, `POST -d '{"force":true}'` | drain proceeds despite PDB |
 
@@ -99,12 +99,12 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | D7 | corrupt `cordonedPrev` | on a `failed` cordoned node: set `reboot-status='{"cordonedPrev":"yes"}'` (wrong type) | uncordon **skipped** (cordon preserved), `UncordonBlocked` event; `kubectl uncordon` repairs |
 | D8 | `cordonedPrev` respected | `kubectl cordon <node>` first, then reboot to `failed`/`completed` | node stays cordoned (operator's cordon) |
 | D9 | pause → resume | let a node reach `failed` (e.g. C4); POST another node | `QueuePaused` event, new node stays `requested`; DELETE the failed node → queue resumes |
-| D10 | no-effect reboot | image variant whose reboot shim is a no-op (or patch the container command) | boot ID unchanged; `failed` after `--reboot-issue-grace` ("reboot did not take effect") |
+| D10 | no-effect reboot | image variant whose reboot shim is a no-op (or patch the container command) | boot ID unchanged; `failed` after `reboots.reboot-issue-grace` ("reboot did not take effect") |
 | D11 | nsenter failure | image without `nsenter` (e.g. scratch-based) | `RebootFailed` command-failure path, node `failed`, uncordoned |
 | D12 | bricked node | POST a worker, then power off the VM (do not reboot) | stays `rebooting`; NotReady; queue holds the slot; no auto-assumption; DELETE clears |
 | D13 | batch `*` with NotReady | make one node NotReady; `POST -d '{"nodes":["*"]}'` | partial 202: Ready nodes accepted, the NotReady one rejected 422 |
-| D14 | API outage mid-drain (short) | `--max-concurrent-reboots=2`, w1 draining + cp rebooting; stop apiserver < drain-timeout | nothing marked `failed` while down; leader handover on recovery; drain resumes and completes |
-| D15 | API outage > drain-timeout | same, outage longer than `--reboot-drain-timeout` | draining node `failed` + uncordoned on recovery (wall-clock) |
+| D14 | API outage mid-drain (short) | `reboots.max-concurrent-reboots: "2"`, w1 draining + cp rebooting; stop apiserver < drain-timeout | nothing marked `failed` while down; leader handover on recovery; drain resumes and completes |
+| D15 | API outage > drain-timeout | same, outage longer than `reboots.reboot-drain-timeout` | draining node `failed` + uncordoned on recovery (wall-clock) |
 | D16 | host hang during shutdown | hang the host's shutdown (e.g. qemu pause at reboot) | its pod dies, so the boot-ID check cannot fire: node stays `rebooting` until Ready (does **not** fail after the grace); escape = DELETE |
 | D17 | CP reboot last | batch including the CP node | CP admitted only when nothing else in-flight; single-CP: API down until the node returns, then everything resumes from annotations |
 

@@ -38,10 +38,10 @@ func newHarness(t *testing.T) *harness {
 	}
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	srv := New(Config{
-		Kube:          kc,
-		PodNamespace:  "default",
-		PodSelector:   map[string]string{"app": "simplek8s-controller"},
-		Now:           func() time.Time { return now },
+		Kube:         kc,
+		PodNamespace: "default",
+		PodSelector:  map[string]string{"app": "simplek8s-controller"},
+		Now:          func() time.Time { return now },
 	}, testToken)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

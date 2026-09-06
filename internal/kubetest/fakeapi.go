@@ -45,13 +45,14 @@ type PDB struct {
 type FakeAPI struct {
 	*httptest.Server
 
-	mu        sync.Mutex
-	rvCounter int
-	nodes     map[string]map[string]any
-	pods      []*Pod
-	pdbs      []*PDB
-	leases    map[string]map[string]any
-	events    []map[string]any
+	mu         sync.Mutex
+	rvCounter  int
+	nodes      map[string]map[string]any
+	pods       []*Pod
+	pdbs       []*PDB
+	leases     map[string]map[string]any
+	configmaps map[string]map[string]string // "ns/name" -> data
+	events     []map[string]any
 	// EvictDeny decides whether an eviction is PDB-denied (429).
 	// The default (nil) never denies.
 	EvictDeny func(ns, pod string) bool
@@ -71,10 +72,11 @@ type FakeAPI struct {
 // NewFakeAPI starts the server with no nodes.
 func NewFakeAPI() *FakeAPI {
 	f := &FakeAPI{
-		nodes:     map[string]map[string]any{},
-		leases:    map[string]map[string]any{},
-		FailNext:  map[string]int{},
-		DelayNext: map[string]time.Duration{},
+		nodes:      map[string]map[string]any{},
+		leases:     map[string]map[string]any{},
+		configmaps: map[string]map[string]string{},
+		FailNext:   map[string]int{},
+		DelayNext:  map[string]time.Duration{},
 	}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.handle))
 	return f
@@ -196,6 +198,20 @@ func (f *FakeAPI) InjectFailure(suffix string, n int) {
 }
 
 // Lease returns a copy of the lease.
+// SetConfigMap upserts a fake ConfigMap's data.
+func (f *FakeAPI) SetConfigMap(ns, name string, data map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.configmaps[ns+"/"+name] = data
+}
+
+// RemoveConfigMap deletes a fake ConfigMap (subsequent GETs 404).
+func (f *FakeAPI) RemoveConfigMap(ns, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.configmaps, ns+"/"+name)
+}
+
 func (f *FakeAPI) Lease(ns, name string) (map[string]any, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -267,6 +283,20 @@ func (f *FakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.createLease(w, r, path)
 	case strings.HasPrefix(path, "apis/coordination.k8s.io/v1/namespaces/") && r.Method == http.MethodPut:
 		f.updateLease(w, r, path)
+	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.Contains(path, "/configmaps/") && r.Method == http.MethodGet:
+		parts := strings.Split(strings.TrimPrefix(path, "api/v1/namespaces/"), "/")
+		if len(parts) == 3 && parts[1] == "configmaps" {
+			if data, ok := f.configmaps[parts[0]+"/"+parts[2]]; ok {
+				writeJSON(w, map[string]any{
+					"metadata": map[string]any{"name": parts[2], "namespace": parts[0]},
+					"data":     data,
+				})
+			} else {
+				httpError(w, 404, "NotFound", "configmap "+parts[2])
+			}
+		} else {
+			httpError(w, 404, "NotFound", path)
+		}
 	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.HasSuffix(path, "/events") && r.Method == http.MethodPost:
 		f.createEvent(w, r, path)
 	default:

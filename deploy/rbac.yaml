@@ -40,6 +40,11 @@ rules:
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, create, update]
+  # Flat-key feature ConfigMap (PLAN-M2 3.2); create/update for the
+  # leader-owned plan-state ConfigMap (PLAN-M2 3.8/3.13).
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update]
 ---
 # Node Events are cluster-scoped subjects: the API server requires them in
 # the "default" namespace (where kubelet's own node events live).

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/simplek8s/simplek8s-controller/internal/config"
 	"github.com/simplek8s/simplek8s-controller/internal/kubetest"
 )
 
@@ -26,15 +27,16 @@ func newTestEngine(t *testing.T, fake *kubetest.FakeAPI, cl *clock, identity str
 		t.Fatal(err)
 	}
 	e, err := New(Config{
-		CredsDir:       creds.Dir,
-		APIEndpoint:    fake.Server.URL,
-		Identity:       identity,
-		NodeName:       "n1",
-		LeaseNamespace: "default",
-		LeaseName:      LeaseName,
-		PollInterval:   time.Hour, // cycles are driven manually
-		Now:            cl.Now,
-		Sleep:          func(ctx context.Context, d time.Duration) error { return nil },
+		CredsDir:           creds.Dir,
+		APIEndpoint:        fake.Server.URL,
+		Identity:           identity,
+		NodeName:           "n1",
+		LeaseNamespace:     "default",
+		LeaseName:          LeaseName,
+		ConfigMapNamespace: "default",
+		ConfigMapName:      "simplek8s-controller",
+		Now:                cl.Now,
+		Sleep:              func(ctx context.Context, d time.Duration) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +205,53 @@ func TestReadyzCycle(t *testing.T) {
 	a.Cycle(ctx)
 	if got := a.LastSuccessfulCycle(); !got.Equal(first) {
 		t.Fatalf("LastSuccessfulCycle moved to %v after a failed cycle", got)
+	}
+}
+
+func TestFeatureConfigLoad(t *testing.T) {
+	fake := kubetest.NewFakeAPI()
+	defer fake.Close()
+	fake.SetNode("n1", nil, false, nil, "uid-n1")
+	cl := newClock()
+	ctx := context.Background()
+	const cmNS, cmName = "default", "simplek8s-controller"
+
+	a := newTestEngine(t, fake, cl, "pod-a/uid-a")
+
+	// No ConfigMap yet: built-in defaults.
+	a.Cycle(ctx)
+	if got := a.FeatureConfig(); got != config.Defaults() {
+		t.Fatalf("absent ConfigMap: got %+v, want defaults", got)
+	}
+
+	// Present ConfigMap: values apply on top of the last snapshot.
+	fake.SetConfigMap(cmNS, cmName, map[string]string{
+		"engine.engine-interval":         "30s",
+		"reboots.max-concurrent-reboots": "4",
+	})
+	a.Cycle(ctx)
+	got := a.FeatureConfig()
+	if got.EngineInterval != 30*time.Second || got.MaxConcurrentReboots != 4 {
+		t.Fatalf("ConfigMap values not applied: %+v", got)
+	}
+	if got.RebootDrainTimeout != 10*time.Minute {
+		t.Fatalf("absent key must keep default: %+v", got)
+	}
+
+	// Invalid value: last valid is kept.
+	fake.SetConfigMap(cmNS, cmName, map[string]string{
+		"reboots.max-concurrent-reboots": "nope",
+	})
+	a.Cycle(ctx)
+	if got := a.FeatureConfig(); got.MaxConcurrentReboots != 4 {
+		t.Fatalf("invalid value must keep last valid: %+v", got)
+	}
+
+	// ConfigMap removed: back to built-in defaults.
+	fake.RemoveConfigMap(cmNS, cmName)
+	a.Cycle(ctx)
+	if got := a.FeatureConfig(); got != config.Defaults() {
+		t.Fatalf("removed ConfigMap: got %+v, want defaults", got)
 	}
 }
 

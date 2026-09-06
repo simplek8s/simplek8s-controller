@@ -3,17 +3,19 @@ package engine
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/simplek8s/simplek8s-controller/internal/config"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 )
 
-// Config carries the engine-wide settings (PLAN 3.8).
+// Config carries the engine-wide deployment wiring (PLAN-M2 3.2).
+// Feature settings live in the flat-key ConfigMap and are re-read
+// every cycle (see FeatureConfig).
 type Config struct {
-	// PollInterval is the engine cycle period (default 2 s).
-	PollInterval time.Duration
 	// LeaseNamespace/LeaseName for the global leader lease.
 	LeaseNamespace string
 	LeaseName      string
@@ -25,16 +27,16 @@ type Config struct {
 	// Events are cluster-scoped subjects and must live in "default"
 	// (PLAN 3.11).
 	EventNamespace string
+	// ConfigMapNamespace/ConfigMapName is the flat-key feature
+	// ConfigMap, re-read at the start of every cycle (PLAN-M2 3.2).
+	// Absent (404) means built-in defaults.
+	ConfigMapNamespace string
+	ConfigMapName      string
 	// CredsDir/APIEndpoint for the kube client.
 	CredsDir    string
 	APIEndpoint string
 	Log         *slog.Logger
 	Now         func() time.Time
-	// Reboot feature settings.
-	MaxConcurrentReboots int
-	OnRebootFailure      string // "pause" | "continue"
-	DrainTimeout         time.Duration
-	IssueGrace           time.Duration
 	// RebootCmd is the command issued into the host PID namespace.
 	RebootCmd []string
 	// BootIDFunc returns the current host boot ID (injectable).
@@ -58,14 +60,18 @@ type Engine struct {
 	kube *kube.Client
 	leas *Leaser
 
-	mu       sync.Mutex
-	tasks    []OrchestratorTask
-	locals   []LocalFunc
-	lastOk   atomic.Int64 // unixnano of last successful cycle
-	apiUp    bool
-	noLeader bool // last reported no-valid-leader condition
+	mu        sync.Mutex
+	tasks     []OrchestratorTask
+	locals    []LocalFunc
+	lastOk    atomic.Int64 // unixnano of last successful cycle
+	apiUp     bool
+	noLeader  bool // last reported no-valid-leader condition
 	prevLease LeaseState
-	havePrev bool
+	havePrev  bool
+
+	featMu    sync.Mutex
+	feat      config.Config // last valid feature snapshot
+	featWarns string        // dedup key for config warnings
 }
 
 // New builds an Engine. It fails if the kube client cannot be built.
@@ -75,9 +81,6 @@ func New(cfg Config) (*Engine, error) {
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
-	}
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 2 * time.Second
 	}
 	if cfg.Sleep == nil {
 		cfg.Sleep = func(ctx context.Context, d time.Duration) error {
@@ -104,6 +107,7 @@ func New(cfg Config) (*Engine, error) {
 		cfg:  cfg,
 		kube: c,
 		leas: NewLeaser(c, cfg.LeaseNamespace, cfg.LeaseName, cfg.Identity, cfg.Now),
+		feat: config.Defaults(),
 	}, nil
 }
 
@@ -136,19 +140,53 @@ func (e *Engine) LastSuccessfulCycle() time.Time {
 	return time.Time{}
 }
 
-// Run starts the polling loop and blocks until ctx is done.
+// Run starts the polling loop and blocks until ctx is done. The period
+// comes from the per-cycle feature config (engine.engine-interval).
 func (e *Engine) Run(ctx context.Context) {
 	e.Cycle(ctx)
-	t := time.NewTicker(e.cfg.PollInterval)
-	defer t.Stop()
 	for {
-		select {
-		case <-ctx.Done():
+		if e.cfg.Sleep(ctx, e.FeatureConfig().EngineInterval) != nil {
 			return
-		case <-t.C:
-			e.Cycle(ctx)
+		}
+		e.Cycle(ctx)
+	}
+}
+
+// FeatureConfig returns the last resolved feature configuration
+// snapshot (PLAN-M2 3.2). Before the first successful read it is the
+// built-in defaults.
+func (e *Engine) FeatureConfig() config.Config {
+	e.featMu.Lock()
+	defer e.featMu.Unlock()
+	return e.feat
+}
+
+// loadConfig re-reads the feature ConfigMap (get, no watch; PLAN-M2
+// 3.2): present -> parse over the last valid snapshot; absent (404) ->
+// built-in defaults; other errors -> keep the last snapshot.
+func (e *Engine) loadConfig(ctx context.Context) {
+	cm, err := e.kube.GetConfigMap(ctx, e.cfg.ConfigMapNamespace, e.cfg.ConfigMapName)
+	var next config.Config
+	var warns []string
+	switch {
+	case err == nil:
+		next, warns = config.Parse(e.FeatureConfig(), cm.Data)
+	case kube.IsNotFound(err):
+		next = config.Defaults()
+	default:
+		e.cfg.Log.Debug("feature configmap read failed; keeping last config", "err", err)
+		return
+	}
+	e.featMu.Lock()
+	e.feat = next
+	key := strings.Join(warns, "|")
+	if key != e.featWarns {
+		e.featWarns = key
+		for _, w := range warns {
+			e.cfg.Log.Warn("feature config", "warning", w)
 		}
 	}
+	e.featMu.Unlock()
 }
 
 // Cycle is one engine iteration. A cycle succeeds only when the node
@@ -163,6 +201,7 @@ func (e *Engine) Cycle(ctx context.Context) {
 		return
 	}
 	e.apiUp = true
+	e.loadConfig(ctx)
 	now := e.cfg.Now()
 
 	state := e.leas.Sync(ctx)

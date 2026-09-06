@@ -63,11 +63,11 @@ stateDiagram-v2
     failed --> absent: DELETE
 ```
 
-Queue gates while `requested`: at most `--max-concurrent-reboots` nodes
+Queue gates while `requested`: at most `reboots.max-concurrent-reboots` nodes
 in flight, at most 1 control plane, PDB-blocked nodes wait (unless
 `force`), a requested node that is NotReady holds the queue. DELETE is
 **not** available on `draining` (409: an in-flight drain is not
-interruptible — wait out `--reboot-drain-timeout`).
+interruptible — wait out `reboots.reboot-drain-timeout`).
 
 Completion evidence: the leader transitions `rebooting`→`completed` only
 when the node is Ready **and** either the local pod confirmed the boot ID
@@ -82,7 +82,7 @@ make deploy           # kubectl apply -k deploy/ (uses your kubeconfig)
 ```
 
 `deploy/` is a kustomize bundle: namespace, ServiceAccount, RBAC,
-DaemonSet, Service, NetworkPolicy. **The API token Secret is
+ConfigMap, DaemonSet, Service, NetworkPolicy. **The API token Secret is
 deliberately not in the bundle** — create it with real material first:
 
 ```sh
@@ -93,16 +93,29 @@ kubectl -n simplek8s create secret generic simplek8s-api-token \
 Without `SIMPLEK8S_API_TOKEN` the binary refuses to start (the API is
 never tokenless by design).
 
-### Flags (DaemonSet args)
+### Configuration (ConfigMap)
 
-| Flag | Default | Meaning |
+Feature configuration lives in the flat-key ConfigMap
+`simplek8s-controller` (namespace `simplek8s`), re-read at the start of
+every engine cycle. All values are strings; absent keys fall back to
+the built-in defaults, an absent ConfigMap runs entirely on defaults,
+and an invalid value keeps the previous one (with a warning) — a config
+typo never crashes the controller.
+
+| Key | Default | Meaning |
 |---|---|---|
-| `--max-concurrent-reboots` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
-| `--on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
-| `--reboot-drain-timeout` | `10m` | wall-clock cap on the drain phase |
-| `--reboot-issue-grace` | `5m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
-| `--engine-interval` | `2s` | poll period |
-| `--listen` | `:8080` | API bind address |
+| `engine.engine-interval` | `2s` | engine poll period |
+| `reboots.max-concurrent-reboots` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
+| `reboots.on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
+| `reboots.reboot-drain-timeout` | `10m` | wall-clock cap on the drain phase |
+| `reboots.reboot-issue-grace` | `5m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
+
+Deployment wiring is not feature configuration and stays as a flag:
+`--listen` (default `:8080`, API bind address). The old feature flags
+(`--max-concurrent-reboots`, `--on-reboot-failure`,
+`--reboot-drain-timeout`, `--reboot-issue-grace`, `--engine-interval`)
+are gone; an old DaemonSet manifest still passing them fails at startup
+with `flag provided but not defined` (the intended migration signal).
 
 ## Scheduling reboots (API)
 
@@ -168,11 +181,11 @@ kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
 
 ## Failure handling, pause/resume, hand repair
 
-- **Queue paused**: with `--on-reboot-failure=pause`, any node in
+- **Queue paused**: with `reboots.on-reboot-failure: pause`, any node in
   `failed` halts the queue (`QueuePaused` event). Resume by clearing the
   node: `DELETE /api/v1/reboots/<node>`.
 - **Drain stuck**: evictions can wait for `terminationGracePeriodSeconds`
-  and PDBs. Escape hatches: wait out `--reboot-drain-timeout` (node goes
+  and PDBs. Escape hatches: wait out `reboots.reboot-drain-timeout` (node goes
   to `failed` under `pause`, or proceeds under `continue`), or clear all
   four annotations by hand **and** `kubectl uncordon <node>`:
 
@@ -242,6 +255,7 @@ Layout:
 
 ```
 cmd/simplek8s-controller/   entrypoint (flags, env, wiring)
+internal/config/            flat-key ConfigMap config (defaults, last-valid-wins)
 internal/kube/              stdlib REST client + minimal K8s types
 internal/nodestate/         the four annotations: schema, parse, patches
 internal/engine/            poll loop, leader election (Lease), roles

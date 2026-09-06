@@ -26,15 +26,14 @@ var (
 )
 
 func main() {
+	// Deployment wiring only. Feature configuration lives in the
+	// flat-key ConfigMap (PLAN-M2 3.2); the old feature flags are
+	// removed, so an old DS manifest fails at startup with
+	// "flag provided but not defined" (the intended migration signal).
 	var (
-		maxConcurrent = flag.Int("max-concurrent-reboots", 1, "in-flight reboot nodes at once")
-		onFailure     = flag.String("on-reboot-failure", "pause", "queue behavior on failure: pause|continue")
-		drainTimeout  = flag.Duration("reboot-drain-timeout", 10*time.Minute, "max drain duration (wall-clock)")
-		issueGrace    = flag.Duration("reboot-issue-grace", 5*time.Minute, "reboot issue grace window")
-		interval      = flag.Duration("engine-interval", 2*time.Second, "engine poll period")
-		listen        = flag.String("listen", ":8080", "API bind address")
-		apiServer     = flag.String("kube-apiserver", "", "API endpoint (default: in-cluster)")
-		credsDir      = flag.String("creds-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "serviceaccount creds dir")
+		listen    = flag.String("listen", ":8080", "API bind address")
+		apiServer = flag.String("kube-apiserver", "", "API endpoint (default: in-cluster)")
+		credsDir  = flag.String("creds-dir", "/var/run/secrets/kubernetes.io/serviceaccount", "serviceaccount creds dir")
 	)
 	flag.Parse()
 
@@ -61,9 +60,7 @@ func main() {
 	log.Info("starting simplek8s-controller",
 		"version", version, "commit", commit, "built", builtAt,
 		"node", nodeName, "pod", podName, "podUID", podUID, "namespace", podNS,
-		"maxConcurrentReboots", *maxConcurrent, "onRebootFailure", *onFailure,
-		"rebootDrainTimeout", *drainTimeout, "rebootIssueGrace", *issueGrace,
-		"engineInterval", *interval, "listen", *listen)
+		"listen", *listen)
 	// The leader Lease lives in the controller's own namespace. Node
 	// Events go to the "default" namespace: the API server rejects v1
 	// Events whose namespaced subject disagrees with the event's
@@ -71,19 +68,16 @@ func main() {
 	// "default" (where kubelet's own node events are).
 
 	e, err := engine.New(engine.Config{
-		PollInterval:         *interval,
-		LeaseNamespace:       podNS,
-		LeaseName:            "simplek8s-controller-leader",
-		Identity:             podName + "/" + podUID,
-		NodeName:             nodeName,
-		EventNamespace:       "default",
-		CredsDir:             *credsDir,
-		APIEndpoint:          *apiServer,
-		Log:                  log,
-		MaxConcurrentReboots: *maxConcurrent,
-		OnRebootFailure:      *onFailure,
-		DrainTimeout:         *drainTimeout,
-		IssueGrace:           *issueGrace,
+		LeaseNamespace:     podNS,
+		LeaseName:          "simplek8s-controller-leader",
+		Identity:           podName + "/" + podUID,
+		NodeName:           nodeName,
+		EventNamespace:     "default",
+		ConfigMapNamespace: podNS,
+		ConfigMapName:      "simplek8s-controller",
+		CredsDir:           *credsDir,
+		APIEndpoint:        *apiServer,
+		Log:                log,
 	})
 	if err != nil {
 		log.Error("building engine", "err", err)
@@ -91,21 +85,18 @@ func main() {
 	}
 
 	reboot.New(e, reboot.Config{
-		NodeName:             nodeName,
-		PodUID:               podUID,
-		EventNamespace:       "default",
-		MaxConcurrentReboots: *maxConcurrent,
-		OnRebootFailure:      *onFailure,
-		DrainTimeout:         *drainTimeout,
-		IssueGrace:           *issueGrace,
-		Log:                  log,
+		NodeName:       nodeName,
+		PodUID:         podUID,
+		EventNamespace: "default",
+		Features:       e.FeatureConfig,
+		Log:            log,
 	})
 
 	srv := api.New(api.Config{
-		Kube:           e.Kube(),
-		PodNamespace:   podNS,
-		PodSelector:    map[string]string{"app": "simplek8s-controller"},
-		Log:            log,
+		Kube:         e.Kube(),
+		PodNamespace: podNS,
+		PodSelector:  map[string]string{"app": "simplek8s-controller"},
+		Log:          log,
 		Ready: func() bool {
 			last := e.LastSuccessfulCycle()
 			return !last.IsZero() && time.Since(last) < 30*time.Second
