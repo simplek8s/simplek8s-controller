@@ -46,6 +46,13 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | D10 | PASS | 2026-09-06 | variant image with no-op `nsenter` (exit 0) → command "succeeded", boot ID unchanged → `failed` at exactly 5m0s: `reboot did not take effect: host boot ID unchanged 5m0s after issuedAt` |
 | D11 | PASS | 2026-09-06 | variant image without `nsenter` → `failed` seconds after issue: `reboot command failed to start: exec: "nsenter": executable file not found in $PATH`, uncordoned, `RebootFailed` event |
 | D13 | PASS | 2026-09-06 | `POST *` with wk2 NotReady (kubelet stopped) → 202 partial: Ready nodes accepted, `{node:wk2,code:422,reason:"node not Ready"}` rejected |
+| A8 | PASS | 2026-09-06 | `POST [wk1,cp1]` (max-concurrent=1): wk1 `rebooting` while cp1 stayed `requested` (workers-before-CP tiebreak + CP gate); cp1 admitted only after wk1 `completed` |
+| D17 | PASS | 2026-09-06 | same campaign: cp1 admitted alone (nothing else in-flight), rebooted, API down ~1 min, node returned → `completed`; everything resumed from annotations |
+| D12 | PASS | 2026-09-06 | `virsh destroy` (hard power-off, no reboot) 1 s after issue: node NotReady, stays `rebooting` past the 5 m grace (no executor → no boot-ID check → **no auto-fail**); queued node stayed `requested` (slot held); DELETE cleared annotations on the bricked node; `virsh start` → Ready. First attempt void: the Buildroot guest reboots in ~17 s, completing before a late power-off lands. |
+| D16 | PASS | 2026-09-06 | `virsh suspend` (freeze) in the same second as issue, held 6.5 min (past grace): node stayed `rebooting`, **not** `failed` (executor pod frozen with the host); `virsh resume` → node returned 6m26s after issuedAt → `completed` |
+| B2 | PASS | 2026-09-06 | same campaign: late return (>30 s after issuedAt) → `completed` via the NotReady-after-issuedAt evidence path (no `confirmedAt` in reboot-exec: the local pod never confirmed, exactly as designed) |
+| D14 | PASS | 2026-09-06 | `--max-concurrent-reboots=2`: `POST [wk1,cp1]` → BOTH `rebooting` concurrently; cp1 reboot took the API down ~1 min (< drain-timeout); on recovery both `completed`, nothing `failed`; leader handover on recovery |
+| D15 | PASS | 2026-09-06 | unmanaged pod on wk1 (drain pending); CP apiserver is a static pod on this distro — outage by `mv`-ing its manifest off for 13 min (> drain-timeout); `failed` at 05:46:33, i.e. **on recovery**, not at the 05:43:18 deadline while API was down (wall-clock); `drain timed out after 10m0s`, uncordoned next cycle |
 
 ## Phase A — API & admission (no reboot)
 
@@ -105,6 +112,13 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 
 - B1 first, always: it is the reference for every later case.
 - D14/D15/D16 need host-level access (VM control) — schedule them last.
+- VM control on the test host: `sudo virsh` (sk8s-cp1/sk8s-wk1/sk8s-wk2).
+  The guests are Buildroot: systemd (kubelet/containerd) + runit (calico
+  daemons); the CP components (apiserver, etcd, scheduler, CM) are static
+  pods managed by the kubelet — there is no `kube-apiserver` systemd unit.
+  To stop the API: move `/etc/kubernetes/manifests/kube-apiserver.yaml`.
+  Guests reboot in ~17 s; a power-off for D12 must land within ~10 s of
+  the reboot issue.
 - Every case must end with: node Ready, annotations cleared or in a
   well-defined state, queue unblocked, and a `kubectl -n simplek8s
   get events` scan for unexpected reasons.
