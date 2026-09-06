@@ -1,9 +1,17 @@
-# PLAN — simplek8s-controller
+# PLAN-M1 — simplek8s-controller: node reboots
 
-Phase: **PLAN** (design & planning). Status: v10 (4-annotation state
-design adopted, reviewed by a design→review→adapt→review agent chain,
-plus Gemini, Claude, and ChatGPT review rounds with verified cherry-
-picks; v10 full-document consistency pass), pending final sign-off.
+> **Planning index**
+> - [PLAN-M1.md](PLAN-M1.md) — node reboots (this document; shipped)
+> - [PLAN-M2.md](PLAN-M2.md) — distro updates (in planning)
+> - [E2E.md](E2E.md) — reboots E2E campaign (28/28 PASS)
+> - [E2E-UPDATE.md](E2E-UPDATE.md) — updates E2E campaign
+
+Phase: **SHIPPED**. Status: v10 (4-annotation state design adopted,
+reviewed by a design→review→adapt→review agent chain, plus Gemini,
+Claude, and ChatGPT review rounds with verified cherry-picks; v10
+full-document consistency pass). Implemented and validated: E2E 28/28
+PASS (see E2E.md, 2026-09-06). Successor feature: PLAN-M2.md (distro
+updates).
 
 ## 1. Purpose
 

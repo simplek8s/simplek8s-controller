@@ -12,7 +12,7 @@ limit, availability waiting, and PodDisruptionBudget awareness.
 - Repo: https://github.com/simplek8s/simplek8s-controller
 - Go 1.27, stdlib only (no client-go, no controller-runtime).
 
-Design: [PLAN.md](PLAN.md). Deviations found during implementation: [PLAN.FIXME.md](PLAN.FIXME.md).
+Design: [PLAN-M1.md](PLAN-M1.md) (node reboots, shipped) and [PLAN-M2.md](PLAN-M2.md) (distro updates, in planning). Deviations found during implementation: [PLAN.FIXME.md](PLAN.FIXME.md).
 
 ## How it works
 

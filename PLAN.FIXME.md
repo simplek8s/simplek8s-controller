@@ -1,6 +1,6 @@
-# PLAN.FIXME — Errores encontrados en PLAN.md
+# PLAN.FIXME — Errores encontrados en PLAN-M1.md
 
-Registro de las discrepancias entre lo que dice `PLAN.md` y el comportamiento
+Registro de las discrepancias entre lo que dice `PLAN-M1.md` y el comportamiento
 real del API server de Kubernetes, detectadas durante la implementación y la
 validación contra un cluster real (minikube, k8s **v1.35.1**, 2 nodos,
 2026-09-05). Cada entrada indica el apartado del PLAN afectado, el error, la
@@ -37,7 +37,7 @@ namespace vacío.
 - Los **Eventos** de Node: la entrada 5 documenta que el API server también
   rechaza crearlos en el namespace del controller; acaban viviendo en
   `default`.
-- `PLAN.md` actualizado en 3.11, la tabla de 3.2 y la decisión 4.
+- `PLAN-M1.md` actualizado en 3.11, la tabla de 3.2 y la decisión 4.
 
 **Nota de despliegue (trampa de kubectl):** `kubectl apply`/`-k` **normaliza**
 `namespace: ''` a `default` para recursos namespaced, por lo que un manifiesto
@@ -77,7 +77,7 @@ real (los tests pasaban porque el fake server era permisivo).
 
 ## 3. (Código, no PLAN) `CreateLease` hacía POST a la ruta de ítem
 
-**Nota:** esto no es un error de `PLAN.md`, sino un bug de código detectado en
+**Nota:** esto no es un error de `PLAN-M1.md`, sino un bug de código detectado en
 vivo. Se documenta aquí para trazabilidad.
 
 `Client.CreateLease` hacía `POST /apis/coordination.k8s.io/v1/namespaces/<ns>/leases/<nombre>`
@@ -93,7 +93,7 @@ para extraer el nombre del cuerpo en el POST.
 
 ## 4. (Código, no PLAN) Sin logs en el controller
 
-**Nota:** no es un error de `PLAN.md`, pero es una carencia detectada en
+**Nota:** no es un error de `PLAN-M1.md`, pero es una carencia detectada en
 vivo: el controller no emitía ningún log (el motor solo loguea errores de
 API y los eventos fallidos a nivel debug), por lo que no había forma de
 verificar que estaba funcionando ni quién era el líder.

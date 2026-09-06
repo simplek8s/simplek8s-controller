@@ -1,6 +1,6 @@
 // Package kube is a minimal, stdlib-only REST client for the Kubernetes
 // API. It implements only the verbs and types this controller needs
-// (PLAN.md 3.2): no watch, polling-based usage, hand-rolled types.
+// (PLAN-M1.md 3.2): no watch, polling-based usage, hand-rolled types.
 package kube
 
 import (
