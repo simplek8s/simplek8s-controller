@@ -32,7 +32,7 @@ capabilities over the hosts.
 
 The controller is intended to grow: reboot scheduling is only the first
 capability. The layout (feature packages, engine, API groups) must stay
-extensible (see 3.9).
+extensible (see 3.8).
 
 ## 2. Constraints
 

@@ -348,9 +348,16 @@ re-stage that version locally. No plan implications.
      re-plans a version already in `/boot`.
   2. Switching `stage`→`full` for an already-staged version does NOT
      start a plan (same reason).
-  3. A failed version is never auto-retried: the check sees V in
-     `/boot` → no-op. Only a new release or an operator re-anchor moves
-     things forward.
+   3. A failed version is never auto-retried: the check sees V in
+      `/boot` → no-op. Only a new release or an operator re-anchor moves
+      things forward.
+   4. A cancel does NOT guarantee a full rollback: members that
+      completed before the failure stay on V — the cluster ends mixed
+      (each node quiescent on its own version). Safe state (reverted
+      nodes keep the old version; purge never deletes running) and it
+      converges on the next successful update (every node stages and
+      reboots to the new version); the operator may also converge early
+      (re-anchor remaining nodes + M1 API).
 - **Mixed per-node URLs**: plans are per-version and serialized (one
   active plan at a time; the second waits for the first to complete or
   cancel).
@@ -367,19 +374,24 @@ leader-owned state).
 
 ### 3.10 Verification
 
-- **Leader-side**, per plan member, when the member reaches M1
-  `completed` (or returns Ready after reboot): compare `running`
+- **Leader-side, plan member**: when the member reaches M1
+  `completed` (returns Ready after reboot): compare `running`
   (nodeInfo) with V. Equal → OK. Different → plan failure → cancel +
   two-phase reset (§3.8).
+- **Leader-side, non-plan reboot** (`stage` mode / operator-driven):
+  an operator reboots a node whose `next-kernel != running` — the
+  bootloader already points at `next-kernel`, so the node comes back on
+  it → quiescent. If the new version fails to boot and the bootloader
+  falls back to the old one, the same `completed` transition shows
+  `running != next-kernel` → **single-node reset**: `next-kernel :=
+  running` (leader, conditional RMW, precondition: value still the
+  failed version), no plan ConfigMap involved — the node is back to a
+  known-good quiescent state; a failed boot is what we want to catch. A
+  `failed` reboot (drain timeout, no-effect) does NOT reset: the node
+  never left the old kernel and stays prepared for the operator's
+  retry.
 - The local pod performs **no** update verification (the leader owns
-  plan outcomes).
-- Consistency with non-plan reboots: an operator reboots a node whose
-  `next-kernel != running` — the bootloader already points at
-  `next-kernel`, so the node comes back on it → quiescent. If the new
-  version fails to boot and the bootloader falls back to the old one,
-  `running != next-kernel` reads exactly like a plan failure → cancel +
-  reset, which is the desired behavior (a failed boot is what we want to
-  catch).
+  all update outcomes).
 
 ### 3.11 Events and logs
 
@@ -392,7 +404,7 @@ Events (namespace `default`, M1 rules — PLAN.FIXME #5):
 | `UpdateCheckError` | per node | check failure (network/GPG/parse), rate-limited |
 | `UpdatePlanStarted` | cluster | plan admitted to the reboot queue |
 | `UpdatePlanCanceled` | cluster | plan failed; two-phase reset applied (in-flight members settle when their M1 state lands) |
-| `UpdateNodeFailed` | per node | a plan member failed (drain/no-effect/verify mismatch) |
+| `UpdateNodeFailed` | per node | a node failed to come up on its `next-kernel` (plan member: drain/no-effect/verify mismatch; non-plan reboot: `completed` with verify mismatch → node reset) |
 
 Plan reboots additionally emit the existing M1 reboot events
 (`RebootDraining`, `RebootIssued`, ...).
@@ -453,14 +465,15 @@ API's nodeInfo, not `uname`), an xz decoder.
 ```
 internal/config/            new: flat-key ConfigMap loader (parse, validate,
                             last-valid-wins, unknown-key warn, absent→defaults)
-internal/features/update/   k8s-agnostic core: index/check, gpg+sha verify,
+internal/features/update/   the whole feature in one package (M1 style):
+                            k8s-agnostic core (index/check, gpg+sha verify,
                             keyring resolution, versions, stage, purge,
-                             reconcile (bootloader writers), boot device
-internal/features/update/   engine hooks (same package, M1 style):
-                             local executor task (bootstrap, check, stage,
-                             reconcile, purge), orchestrator task (plan
-                             admission, verification, cancel + two-phase
-                             reset, plan-state ConfigMap marker)
+                            reconcile + bootloader writers, boot device)
+                            and engine hooks (local executor task:
+                            bootstrap, check, stage, reconcile, purge;
+                            orchestrator task: plan admission,
+                            verification, cancel + two-phase reset,
+                            plan-state ConfigMap marker)
 internal/nodestate/         + next-kernel and update-url accessors
 deploy/                     ConfigMap, RBAC (configmaps role), DS volume
 keys/                       simplek8s-pubring.gpg (LFS)
@@ -573,6 +586,16 @@ keys/                       simplek8s-pubring.gpg (LFS)
     exit 2) — no deprecation shim; an old DS manifest against the new
     binary is a CrashLoop with a clear message, which IS the migration
     signal.
+26. **M2 deliberately breaks M1's stdlib-only rule**: exactly two new
+    third-party dependencies — `github.com/ProtonMail/go-crypto` (GPG
+    verification) and `github.com/klauspost/compress` (zstd) — because
+    M2 installs kernels unattended (no human in the loop), which makes
+    signature verification mandatory. No YAML library, no x/sys/unix.
+27. **Non-plan verify-mismatch resets the single node** (leader, at M1
+    `completed`, §3.10): no active plan → `next-kernel := running` for
+    that node only, no plan ConfigMap write; a `failed` reboot does not
+    reset (node still prepared for the operator's retry). The plan case
+    (§3.8) is the same rule at plan scope.
 
 ## 7. Deferred (see TODO.md)
 
