@@ -165,14 +165,26 @@ logs), `update-channel` (single `url` key instead).
      `/boot/simplek8s/` (local, never the repo).
   3. `/boot/simplek8s/` missing or empty → no annotation; retry next
      cycle.
-- **Writer discipline** (the annotation has three writer classes):
-  - **Local pod**: (a) bootstrap when absent; (b) staging when the
-    current value is `== running` or absent (i.e. the node is
-    quiescent); (c) defensive re-staging. It NEVER overwrites a
-    non-quiescent value (an operator pin).
-  - **Leader**: uniform reset on plan cancel (§3.8).
-  - **Operator**: any version present in `/boot/simplek8s/` — re-launch
-    after a cancelled plan, rollback, manual pin.
+- **Writer discipline** (the annotation has three writer classes; every
+  controller write is a conditional RMW on the M1 nodestate
+  primitives — read → check precondition → patch carrying the read
+  `resourceVersion` — so a concurrent operator edit is re-evaluated,
+  never clobbered):
+  - **Local pod**: (a) bootstrap, only when the annotation is absent;
+    (b) staging anchor `next-kernel := V`, only when the value at
+    **write time** is `== running` or absent (node quiescent). On
+    precondition failure the anchor is skipped and the pin stands (the
+    files were still staged to disk — harmless, and the node is ready
+    if the operator releases the hold). (c) Defensive re-staging
+    touches only files, never the annotation (the annotation already
+    holds the missing version).
+  - **Leader**: uniform reset on plan cancel (§3.8) —
+    `next-kernel := running` per member, precondition: value still
+    `== V` at **write time**. A member the operator re-pinned in the
+    meantime is skipped, not clobbered.
+  - **Operator**: any version present in `/boot/simplek8s/` —
+    re-launch after a cancelled plan, rollback, manual pin.
+    Unconditional; the operator wins by definition.
 - **Operator operations** (all one annotation edit, the bootloader
   follows on the next cycle):
   - **Re-launch**: after a cancelled plan, set `next-kernel := V` on the
@@ -272,10 +284,12 @@ re-stage that version locally. No plan implications.
   existing conditional Lease update). On takeover, the new leader
   resumes from it: in-flight members continue (M1 reboot state is
   annotation-derivative), not-yet-admitted members are admitted, a
-  failed member triggers cancel. The entry is cleared when the plan
-  completes or is cancelled. (Edge: a crash between "staging done" and
-  "marker written" leaves staged nodes without a plan — the operator
-  reboots them via the M1 API; window is one engine cycle.)
+   failed member triggers cancel. The reset is idempotent and the
+   entry is cleared **only after it completes**: a leader crash
+   mid-reset is re-applied by the new leader from the still-present
+   marker. (Edge: a crash between "staging done" and "marker written"
+   leaves staged nodes without a plan — the operator reboots them via
+   the M1 API; window is one engine cycle.)
 - **Success**: member reaches M1 `completed` and
   `running == V` → quiescent (annotation == running, nothing to clean).
   All members done → marker entry cleared.
@@ -283,11 +297,13 @@ re-stage that version locally. No plan implications.
   mismatch — node came back but `running != V`):
   - stop admitting new members; the in-flight reboot runs to completion
     (an issued reboot cannot be aborted);
-  - **uniform reset**: for **every** member,
-    `next-kernel :=` that node's `running` (updated nodes: no-op,
-    annotation == running == V; cancelled nodes: annotation and
-    bootloader revert to the old version, which is still in
-    `/boot/simplek8s/`);
+   - **uniform reset**: for **every** member,
+     `next-kernel :=` that node's `running`, written as a per-node
+     conditional RMW (precondition: still `== V` at write time — an
+     operator re-pin made during the cancel is skipped, not
+     clobbered). Effect: updated nodes no-op (annotation == running
+     == V); cancelled nodes revert (annotation and bootloader back to
+     the old version, still in `/boot/simplek8s/`);
   - clear the marker entry.
   - No branching between "updated" and "cancelled" — one rule, applied
     to all.
@@ -481,6 +497,9 @@ keys/                       simplek8s-pubring.gpg (LFS)
     no new RBAC, not the ConfigMap.
 17. **No new API endpoints** in the MVP.
 18. **No new hostPath in the DS** (privileged + hostPID is sufficient).
+19. **All controller writes to `next-kernel` are conditional RMWs**
+    (precondition checked at write time, not at decision time); the
+    operator's unconditional write always wins a race by design.
 
 ## 7. Deferred (see TODO.md)
 
