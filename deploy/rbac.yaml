@@ -1,0 +1,83 @@
+# Cluster-wide verbs (PLAN 3.11): nodes, pods, evictions, PDBs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: simplek8s-controller
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, delete]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: simplek8s-controller
+subjects:
+  - kind: ServiceAccount
+    name: simplek8s-controller
+    namespace: simplek8s
+roleRef:
+  kind: ClusterRole
+  name: simplek8s-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# The leader Lease lives in the controller's own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: simplek8s-controller
+  namespace: simplek8s
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+---
+# Node Events are cluster-scoped subjects: the API server requires them in
+# the "default" namespace (where kubelet's own node events live).
+# `kubectl get events -n default --field-selector involvedObject.name=<node>`
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: simplek8s-controller-events
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: simplek8s-controller
+  namespace: simplek8s
+subjects:
+  - kind: ServiceAccount
+    name: simplek8s-controller
+    namespace: simplek8s
+roleRef:
+  kind: Role
+  name: simplek8s-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: simplek8s-controller-events
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: simplek8s-controller
+    namespace: simplek8s
+roleRef:
+  kind: Role
+  name: simplek8s-controller-events
+  apiGroup: rbac.authorization.k8s.io

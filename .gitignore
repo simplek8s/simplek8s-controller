@@ -2,7 +2,7 @@
 /bin/
 /dist/
 *.exe
-simplek8s-controller
+/simplek8s-controller
 
 # Go
 vendor/

@@ -131,7 +131,7 @@ Stdlib `net/http` + `crypto/tls` + `encoding/json`. Required verbs
 | CREATE (POST) | `namespaces/{ns}/pods/{pod}/eviction` | `policy/v1` Eviction body; 200 = accepted (the pod goes away up to `terminationGracePeriodSeconds` later), 429 = denied (PDB), 404 = pod already gone (not an error) — there is no separate "pending" code: a pending eviction is simply a pod that still exists (3.5) |
 | DELETE | `pods/{pod}` | Fallback for `force` drain |
 | CREATE/UPDATE | `leases/{simplek8s-controller-leader}` | Leader election: create if absent; **renew** = conditional UPDATE requiring `holderIdentity == self`; **acquire** a stale lease (stale > 30 s) via conditional UPDATE; 409 → re-read, re-evaluate (3.1) |
-| CREATE | `events` (namespaced, regarding the Node) | one per state transition + rate-limited PDB-blocked and no-leader entries (empty namespace, 3.11) |
+| CREATE | `events` (namespaced, regarding the Node) | one per state transition + rate-limited PDB-blocked and no-leader entries (controller namespace, 3.11) |
 
 - TLS: CA from the serviceaccount `ca.crt`; endpoint from
   `KUBERNETES_SERVICE_HOST`/`KUBERNETES_SERVICE_PORT` env (standard
@@ -699,13 +699,18 @@ quorum on multi-CP clusters).
   - `pods`: get, list, delete
   - `pods/eviction`: create
   - `poddisruptionbudgets` (policy): get, list
-- **Role in the empty namespace** (+ RoleBinding for the ServiceAccount
-  there):
+- **Role in the controller's own namespace** (+ RoleBinding for the
+  ServiceAccount there). NOTE: the API server does not permit creating
+  namespaced resources in the **empty namespace** (it is kubelet-only —
+  verified against a live v1.35 cluster: CREATE returns
+  `metadata.namespace: Required value`), so the Lease and Events cannot
+  live there as originally sketched:
   - `leases` (coordination.k8s.io): get, create, update — the leader
-    Lease `simplek8s-controller-leader` lives in the **empty namespace**
-  - `events`: create — Node-related events live in the empty namespace
-    so `kubectl describe node` shows them. One per state transition +
-    rate-limited PDB-blocked and no-leader entries (decision 4)
+    Lease `simplek8s-controller-leader` lives in the controller namespace
+  - `events`: create — Node-related events live in the controller
+    namespace, visible via `kubectl get events -n <ns>` (not via
+    `kubectl describe node`). One per state transition + rate-limited
+    PDB-blocked and no-leader entries (decision 4)
 
 ### 3.12 DaemonSet pod spec (sketch)
 
@@ -822,8 +827,9 @@ gates the drain); validation order reflects that.
 4. **Events in v1**: one Event per state transition, plus rate-limited
    events on entry to PDB-blocked and on no valid leader (the two stuck
    situations that are not transitions); all low cost, operator-visible
-   via `kubectl describe node` (events live in the empty namespace,
-   3.11); structured logs remain the detailed source.
+   via `kubectl get events -n <controller-ns>` (events live in the
+   controller namespace, not the empty namespace — see 3.11); structured
+   logs remain the detailed source.
 5. **Global orchestrator** via a single leader Lease
    `simplek8s-controller-leader` (generic name: it leads the controller,
    not the reboot feature). One decision-maker, no per-node leases, no
