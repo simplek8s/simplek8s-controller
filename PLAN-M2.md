@@ -115,16 +115,24 @@ numbers — both must be quoted to stay strings.
 Semantics:
 
 - **Key absent** → the key's default applies.
-- **ConfigMap absent** → command-line flags apply (they become
-  bootstrap defaults; backward compatible with the current M1 deploy).
+- **ConfigMap absent** → the built-in defaults of the table apply
+  (the controller runs with defaults; nothing is broken).
 - **Unknown key** → warn + ignore (forward compatibility).
 - **Invalid value** (unparseable, out of range) → keep the last valid
   value (or the default), warn; the controller never crashes on a config
   typo.
 - **Reload**: re-read at the start of each engine cycle (get, no watch).
 
-M1 migration: `reboots.*` and `engine.*` move from flags to the
-ConfigMap; the flags remain as bootstrap fallback only.
+M1 migration: `reboots.*` and `engine.*` move from command-line flags
+to the ConfigMap, and **the feature flags are removed** (the DS
+manifest loses its args). The ConfigMap — over the built-in defaults —
+is the single configuration surface. Deployment wiring
+(`listen`, `kube-apiserver`, `creds-dir`, pod/node/namespace env) is
+not feature configuration and stays as flags/env. Migration safety is
+free: the Go `flag` package rejects undefined flags at startup
+(`flag provided but not defined: -max-concurrent-reboots`, exit 2), so
+an old DS manifest against the new binary is a CrashLoop with a clear
+message — the migration signal, no deprecation shim.
 
 ### 3.3 `updates.update-mode`: the single dial
 
@@ -152,11 +160,21 @@ logs), `update-channel` (single `url` key instead).
 - `next-kernel != running` → **prepared to apply**: the bootloader
   points at it; it is applied on the next reboot — either by the plan
   (`full` mode) or by the operator (M1 API).
-- **Bootloader reconciliation**: every cycle, the local pod ensures the
-  bootloader default equals `next-kernel` — unconditionally, whatever
-  changed the annotation. Detection: `<boot>/syslinux/syslinux.cfg` →
-  syslinux (x86), `<boot>/config.txt` → RPi; entry writers ported from
-  the reference project (`simplek8s-update`).
+- **Bootloader reconciliation**: the local pod ensures the bootloader
+  default equals `next-kernel` — whatever changed the annotation — but
+  **change-triggered, never per-cycle** (the boot partition is vfat;
+  mounting it every 2 s would thrash the disk and rapidly degrade RPi
+  SD cards). Mount + file I/O happens only: (a) once at pod start
+  (initial state unknown), (b) when the `next-kernel` value changes
+  from the last value the pod applied (tracked in memory), (c) folded
+  into the staging mount session (staging already has the partition
+  mounted — set the default in the same session, no extra mount).
+  Steady state: zero disk I/O (reading `next-kernel` comes from the
+  Node object, already listed). Detection:
+  `<boot>/syslinux/syslinux.cfg` → syslinux (x86),
+  `<boot>/config.txt` → RPi; entry writers ported from the reference
+  project (`simplek8s-update`). Hand-edits of the bootloader files are
+  out of contract (the annotation is the source of truth).
 - **Bootstrap** (annotation absent, local pod):
   1. running version present in `/boot/simplek8s/` →
      `next-kernel := running` (the normal case).
@@ -178,8 +196,9 @@ logs), `update-channel` (single `url` key instead).
     if the operator releases the hold). (c) Defensive re-staging
     touches only files, never the annotation (the annotation already
     holds the missing version).
-  - **Leader**: uniform reset on plan cancel (§3.8) —
-    `next-kernel := running` per member, precondition: value still
+  - **Leader**: two-phase reset on plan cancel (§3.8) —
+    `next-kernel := running` per member (immediate for non-in-flight,
+    deferred settle for in-flight), precondition: value still
     `== V` at **write time**. A member the operator re-pinned in the
     meantime is skipped, not clobbered.
   - **Operator**: any version present in `/boot/simplek8s/` —
@@ -238,10 +257,13 @@ re-anchor, §3.5).
 Flow (on every node, cluster-wide for that version):
 
 1. **Boot device**: `blkid` by label (`EFI` or `boot` — the partition
-   holding the bootloader files). No labeled device → skip the node +
-   event. Never guess a device.
+   holding the bootloader files), over the host `/dev` (ro hostPath
+   volume, §3.14 — verified on the test cluster: a privileged pod's
+   own `/dev` does NOT contain the host block devices, only runtime
+   loop nodes). No labeled device → skip the node + event. Never guess
+   a device.
 2. **Mount**: `syscall.Mount` (vfat) at a private mountpoint the pod
-   creates. Privileged pod → host `/dev` visible; no D-Bus, no systemd.
+   creates. No D-Bus, no systemd.
 3. **Download** `<url>/simplek8s.<ts>.<arch>.kernel.zst`; verify sha256
    against the GPG-verified index. Capacity pre-check before download
    (free space < file size + margin → skip + event).
@@ -276,37 +298,50 @@ re-stage that version locally. No plan implications.
   through the M1 reboot queue (serialization by
   `reboots.max-concurrent-reboots`, PDB-aware drain, `nsenter`, M1
   verification).
-- **Durability** (leader restart mid-plan): the leader records active
-  plans in an annotation on the leader Lease
-  (`simplek8s-controller-leader`, ns `simplek8s`):
-  `simplek8s.org/update-plans` = JSON `{ "<version>": {"startedAt":
-  ..., "nodes": [...]} }`. The leader is the only writer (inside its
-  existing conditional Lease update). On takeover, the new leader
-  resumes from it: in-flight members continue (M1 reboot state is
-  annotation-derivative), not-yet-admitted members are admitted, a
-   failed member triggers cancel. The reset is idempotent and the
-   entry is cleared **only after it completes**: a leader crash
-   mid-reset is re-applied by the new leader from the still-present
-   marker. (Edge: a crash between "staging done" and "marker written"
-   leaves staged nodes without a plan — the operator reboots them via
-   the M1 API; window is one engine cycle.)
+- **Durability** (leader restart mid-plan): active plans live in a
+  dedicated leader-owned ConfigMap `simplek8s-update-plans` (ns
+  `simplek8s`, key `plans` = JSON `{ "<version>": {"startedAt": ...,
+  "nodes": [...]} }`) — **not** in the leader Lease, which stays a
+  pure heartbeat (plan bytes must not ride on every 10 s renewal
+  write, and unbounded data does not belong on a coordination
+  object). The ConfigMap is written only on plan transitions (start,
+  member settle, cancel/clear) — a few writes per plan — and is
+  human-inspectable (`kubectl -n simplek8s get cm
+  simplek8s-update-plans -o yaml`). The leader is the only writer. On
+  takeover, the new leader reads it and resumes: in-flight members
+  continue (M1 reboot state is annotation-derivative), not-yet-admitted
+  members are admitted, a failed member triggers cancel. The reset is
+  idempotent and the entry is cleared **only after it completes**: a
+  leader crash mid-reset is re-applied by the new leader from the
+  still-present marker. (Edge: a crash between "staging done" and
+  "marker written" leaves staged nodes without a plan — the operator
+  reboots them via the M1 API; window is one engine cycle.)
 - **Success**: member reaches M1 `completed` and
   `running == V` → quiescent (annotation == running, nothing to clean).
-  All members done → marker entry cleared.
+  All members settled → marker entry cleared.
 - **Failure** (drain timeout, no-effect reboot, or verification
   mismatch — node came back but `running != V`):
   - stop admitting new members; the in-flight reboot runs to completion
     (an issued reboot cannot be aborted);
-   - **uniform reset**: for **every** member,
-     `next-kernel :=` that node's `running`, written as a per-node
-     conditional RMW (precondition: still `== V` at write time — an
-     operator re-pin made during the cancel is skipped, not
-     clobbered). Effect: updated nodes no-op (annotation == running
-     == V); cancelled nodes revert (annotation and bootloader back to
-     the old version, still in `/boot/simplek8s/`);
-  - clear the marker entry.
-  - No branching between "updated" and "cancelled" — one rule, applied
-    to all.
+  - **reset in two phases** (per-member conditional RMW, precondition:
+    value still `== V` at write time — an operator re-pin made during
+    the cancel is skipped, not clobbered):
+    - **immediate** — members NOT in flight (no reboot annotation):
+      `next-kernel :=` the node's `running`;
+    - **deferred** — members in `draining`/`rebooting` are excluded
+      from the immediate pass: a node physically rebooting into V
+      still reports the OLD kernel in nodeInfo, so anchoring it to
+      "running" now would leave `next-kernel` = old version after it
+      boots V — a silent downgrade on its next reboot. Instead each
+      in-flight member **settles** when its M1 state lands: outcome
+      consistent (`running == next-kernel`) → keep (an updated node on
+      V); mismatch (fell back to the old kernel) →
+      `next-kernel := running`;
+  - the marker entry is cleared when **all** members have settled
+    (immediate + deferred).
+  - No branching between "updated" and "cancelled" — one rule for
+    every member, the only difference being *when* in-flight nodes can
+    be safely evaluated.
 - **Accepted consequences** (discussed and closed):
   1. Re-launching a cancelled plan is a two-step operator action
      (re-anchor `next-kernel` + M1 reboot API). The updater never
@@ -322,17 +357,20 @@ re-stage that version locally. No plan implications.
 
 ### 3.9 Plan durability details
 
-See §3.8 (Lease annotation). Rationale: no new object, no new RBAC,
-lifecycle tied to the leader, readable by the standby at takeover. The
-ConfigMap is deliberately NOT used for plan state (it is
-operator-owned configuration).
+See §3.8 (dedicated ConfigMap `simplek8s-update-plans`). Rationale:
+lifecycle tied to the leader, readable by the standby at takeover,
+human-inspectable, and written only on transitions — not on every
+heartbeat. The **operator configuration** ConfigMap
+(`simplek8s-controller`) is deliberately not used for plan state: two
+separate ConfigMaps, one per concern (operator-owned config vs
+leader-owned state).
 
 ### 3.10 Verification
 
 - **Leader-side**, per plan member, when the member reaches M1
   `completed` (or returns Ready after reboot): compare `running`
   (nodeInfo) with V. Equal → OK. Different → plan failure → cancel +
-  uniform reset (§3.8).
+  two-phase reset (§3.8).
 - The local pod performs **no** update verification (the leader owns
   plan outcomes).
 - Consistency with non-plan reboots: an operator reboots a node whose
@@ -353,7 +391,7 @@ Events (namespace `default`, M1 rules — PLAN.FIXME #5):
 | `UpdateStaged` | per node | version staged on this node |
 | `UpdateCheckError` | per node | check failure (network/GPG/parse), rate-limited |
 | `UpdatePlanStarted` | cluster | plan admitted to the reboot queue |
-| `UpdatePlanCanceled` | cluster | plan failed; uniform reset applied |
+| `UpdatePlanCanceled` | cluster | plan failed; two-phase reset applied (in-flight members settle when their M1 state lands) |
 | `UpdateNodeFailed` | per node | a plan member failed (drain/no-effect/verify mismatch) |
 
 Plan reboots additionally emit the existing M1 reboot events
@@ -370,9 +408,12 @@ not planned.)
 
 ### 3.13 RBAC
 
-M1 RBAC + one `Role` in ns `simplek8s`: `configmaps: [get, list]`.
-(Lease annotation writes are covered by the existing `leases`
-create/update.)
+M1 RBAC + one `Role` in ns `simplek8s`:
+`configmaps: [get, list, create, update]` — `get/list` for the operator
+config ConfigMap, `create/update` for the leader-owned plan-state
+ConfigMap (`simplek8s-update-plans`, §3.8). Caveat: K8s RBAC cannot
+scope by resource name, so the verbs technically cover the operator
+config ConfigMap too; the code only ever writes the plan-state one.
 
 ### 3.14 Deployment (image, DaemonSet, keyring)
 
@@ -385,9 +426,12 @@ create/update.)
 - **DaemonSet**: one optional Secret volume
   (`simplek8s-controller-keyring`, `optional: true`) mounted at
   `/etc/simplek8s/custom` (key `pubring.gpg` →
-  `/etc/simplek8s/custom/pubring.gpg`), read-only. **No new hostPath**:
-  privileged + hostPID already expose `/dev` and `/proc`; the boot
-  partition is mounted by the pod itself (§3.7).
+  `/etc/simplek8s/custom/pubring.gpg`), read-only; one **read-only
+  hostPath volume: host `/dev` → `/dev`** — a privileged pod's own
+  `/dev` does not contain the host block devices (verified on the test
+  cluster: only runtime loop nodes; `/sys` and `mknod` are available,
+  but the ro bind is the standard, boring choice); the boot partition
+  is mounted by the pod itself (§3.7).
 - **ConfigMap manifest** in `deploy/` with the defaults of §3.2.
 - **README**: operations section (update-mode, url, the two
   annotations, re-launch, rollback, keyring override, UTC note).
@@ -408,15 +452,15 @@ API's nodeInfo, not `uname`), an xz decoder.
 
 ```
 internal/config/            new: flat-key ConfigMap loader (parse, validate,
-                            last-valid-wins, unknown-key warn, absent→flags)
+                            last-valid-wins, unknown-key warn, absent→defaults)
 internal/features/update/   k8s-agnostic core: index/check, gpg+sha verify,
                             keyring resolution, versions, stage, purge,
-                            reconcile (bootloader writers), boot device
+                             reconcile (bootloader writers), boot device
 internal/features/update/   engine hooks (same package, M1 style):
-                            local executor task (bootstrap, check, stage,
-                            reconcile, purge), orchestrator task (plan
-                            admission, verification, cancel + reset,
-                            Lease marker)
+                             local executor task (bootstrap, check, stage,
+                             reconcile, purge), orchestrator task (plan
+                             admission, verification, cancel + two-phase
+                             reset, plan-state ConfigMap marker)
 internal/nodestate/         + next-kernel and update-url accessors
 deploy/                     ConfigMap, RBAC (configmaps role), DS volume
 keys/                       simplek8s-pubring.gpg (LFS)
@@ -433,8 +477,8 @@ keys/                       simplek8s-pubring.gpg (LFS)
    download.
 3. **Custom installs without labeled partitions**: the node is skipped
    with an event; updates never touch an unverified device.
-4. **Leader crash mid-plan**: resumed via the Lease marker + M1's
-   annotation-derivative reboot state (§3.8/§3.9).
+4. **Leader crash mid-plan**: resumed via the plan-state ConfigMap +
+   M1's annotation-derivative reboot state (§3.8/§3.9).
 5. **Race between staging and the marker write**: staged nodes wait;
    operator reboots via the M1 API (documented edge, one-cycle window).
 6. **YAML 1.1 traps in the ConfigMap manifest** (`off`, numbers):
@@ -450,11 +494,11 @@ keys/                       simplek8s-pubring.gpg (LFS)
 
 | # | Milestone | Content |
 |---|---|---|
-| M1 | Config | `internal/config` (flat keys, validation, last-valid-wins, unknown-key warn, absent→flags); migrate `reboots.*` + `engine.*`; `deploy/` ConfigMap manifest; unit tests (absent key / absent ConfigMap / invalid value / unknown key / mixed); regression: re-run the reboot E2E subset (A1, B1, C1) on the test cluster to prove no regression. |
+| M1 | Config | `internal/config` (flat keys, validation, last-valid-wins, unknown-key warn, absent→defaults); migrate `reboots.*` + `engine.*` and **remove the feature flags** (DS args out); `deploy/` ConfigMap manifest; unit tests (absent key / absent ConfigMap / invalid value / unknown key / mixed); **doc updates**: E2E.md flag references (C4/D15 `--reboot-drain-timeout`, D10 `--reboot-issue-grace`, D14 `--max-concurrent-reboots=2`) become ConfigMap keys, and the README flags section becomes the ConfigMap section; regression: re-run the reboot E2E subset (A1, B1, C1) on the test cluster to prove no regression. (PLAN-M1.md stays as the historical shipped design — flag-based.) |
 | M2 | Check | index fetch, GPG verification (go-crypto) + keyring resolution (embedded + optional Secret), sha256, arch/version mapping, per-node URL precedence, bootstrap (3 cases) + writer discipline, defensive re-staging, events; unit tests (fake HTTP server + test keyring); kubetest for annotation accessors. |
 | M3 | Staging | boot-device discovery (blkid labels), `syscall.Mount`, download + verify + capacity check, zstd extraction, syslinux + rpi entry writers (ported from the reference project), purge (`preserve` + `max-percent-usage` + never-delete-running), unmount; unit tests (temp-dir writers, real zst fixtures, loop device for mount). |
-| M4 | Plan + verify | Lease plan marker, admission of staged nodes to the M1 queue, leader-side verification, all-or-nothing cancel + uniform reset, takeover resume; unit tests with kubetest (including mid-plan leadership change). |
-| M5 | Deployment | Dockerfile (deps + keyring ADD + util-linux), `.gitattributes` LFS + `keys/simplek8s-pubring.gpg`, DS optional Secret volume, ConfigMap manifest, RBAC `configmaps` role, README operations section. |
+| M4 | Plan + verify | plan-state ConfigMap marker, admission of staged nodes to the M1 queue, leader-side verification, all-or-nothing cancel + two-phase reset (immediate + deferred settle), takeover resume; unit tests with kubetest (including mid-plan leadership change and in-flight cancel). |
+| M5 | Deployment | Dockerfile (deps + keyring ADD + util-linux), `.gitattributes` LFS + `keys/simplek8s-pubring.gpg`, DS optional Secret volume + ro hostPath `/dev`, ConfigMap manifest, RBAC `configmaps` role, README operations section. |
 | M6 | E2E | E2E-UPDATE campaign (U0–U8) on the test cluster; U5 requires the maintainer to publish a new dev release. |
 
 ## 6. Decision log (closed)
@@ -476,13 +520,14 @@ keys/                       simplek8s-pubring.gpg (LFS)
    read from the API (no `uname`, no x/sys/unix).
 7. **`next-kernel` replaces `update-state`**: permanent, never deleted,
    source of truth; `== running` is quiescent; the bootloader must
-   always reflect it (reconciliation every cycle).
+   always reflect it (change-triggered reconciliation, §3.5).
 8. **The plan is action-based**: triggered only by fresh staging (a
    version not previously in `/boot`), all-or-nothing, cluster-wide. No
    standing "pending → reboot" policy.
-9. **Cancel semantics**: in-flight reboot completes; uniform
-   `next-kernel := running` on all members; no branching between updated
-   and cancelled nodes.
+9. **Cancel semantics**: in-flight reboot completes;
+   `next-kernel := running` on all members in **two phases**
+   (immediate for non-in-flight, deferred settle for draining/rebooting
+   — §3.8); no branching between updated and cancelled nodes.
 10. **Re-launch is two-step operator action** (re-anchor + M1 API); no
     `POST /updates` endpoint; no auto-retry of a failed version.
 11. **Rollback = one annotation edit** to the older preserved version
@@ -493,13 +538,41 @@ keys/                       simplek8s-pubring.gpg (LFS)
 14. **`reboots.windows` deferred** to a future PLAN-M3 (semantics agreed,
     see TODO.md).
 15. **Docs and code in English** (maintainer requirement).
-16. **Plan durability via the leader Lease annotation** — no new object,
-    no new RBAC, not the ConfigMap.
+16. ~~**Plan durability via the leader Lease annotation**~~ —
+   superseded by decision 23 (plan bytes on the heartbeat object).
 17. **No new API endpoints** in the MVP.
-18. **No new hostPath in the DS** (privileged + hostPID is sufficient).
+18. ~~**No new hostPath in the DS**~~ — superseded by decision 24
+   (a privileged pod's `/dev` does not contain the host block devices).
 19. **All controller writes to `next-kernel` are conditional RMWs**
     (precondition checked at write time, not at decision time); the
     operator's unconditional write always wins a race by design.
+20. **No command-line flags for feature configuration** — the
+    ConfigMap (over built-in defaults) is the single configuration
+    surface; the M1 feature flags are removed at the config
+    migration. Deployment wiring (listen, apiserver, creds,
+    pod/node/namespace) stays as flags/env.
+21. **Bootloader reconciliation is change-triggered** (pod start,
+    `next-kernel` value change, folded into the staging mount session)
+    — never per-cycle: the boot partition is vfat; mounting it every
+    engine cycle would thrash the disk and degrade RPi SD cards.
+22. **Cancel reset is two-phase**: immediate for non-in-flight members;
+    in-flight (draining/rebooting) members settle individually when
+    their M1 state lands (consistent → keep; mismatch → reset) — a node
+    mid-reboot still reports the old kernel in nodeInfo, so an immediate
+    reset would anchor it to the old version (silent downgrade).
+23. **Plan state in a dedicated leader-owned ConfigMap**
+    `simplek8s-update-plans` (supersedes 16): the Lease stays a pure
+    heartbeat; the operator config ConfigMap stays config-only; written
+    only on plan transitions, human-inspectable.
+24. **One read-only hostPath in the DS: host `/dev`** (supersedes 18) —
+    verified on the test cluster: a privileged pod's `/dev` holds only
+    runtime loop nodes (no `vda*`), while `/sys` is visible and
+    `mknod` works; the ro bind is the standard pattern and the pod is
+    already privileged (no exposure increase).
+25. **Removed feature flags are fatal at startup** (Go `flag` package,
+    exit 2) — no deprecation shim; an old DS manifest against the new
+    binary is a CrashLoop with a clear message, which IS the migration
+    signal.
 
 ## 7. Deferred (see TODO.md)
 

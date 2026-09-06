@@ -26,7 +26,9 @@ E2E.md apply (`$API`, `$AUTH`, events in namespace `default`).
   campaign and restored afterwards.
 - **Reboots regression subset**: after PLAN-M2 milestone M1 (flags →
   ConfigMap), re-run E2E cases A1, B1, C1 before starting this campaign
-  (proves the config migration caused no regression).
+  (proves the config migration caused no regression). M1 also rewrites
+  the flag references in E2E.md (C4/D15, D10, D14) and the README flags
+  section to ConfigMap keys.
 
 ## Progress
 
@@ -69,13 +71,13 @@ E2E.md apply (`$API`, `$AUTH`, events in namespace `default`).
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U5 | full cluster update | `updates.update-mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `max-concurrent-reboots` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan marker cleared → cluster fully on the new version; no `failed` |
+| U5 | full cluster update | `updates.update-mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `max-concurrent-reboots` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan-state ConfigMap entry cleared → cluster fully on the new version; no `failed` |
 
 ## U6 — plan failure → all-or-nothing cancel
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U6 | drain timeout mid-plan | `full` mode with a new release; make one node's drain fail (stuck pod / PDB `maxUnavailable:0`) | that node `failed` (M1) → `UpdatePlanCanceled`; in-flight reboots (if any) complete; **uniform reset**: updated nodes keep the new version (`next-kernel == running == V`, no-op); cancelled nodes reset to the old version (`next-kernel := running`, bootloader default back to the old one, old kernel still in `/boot`); marker cleared; next check does **not** auto-retry (V in `/boot` → nothing) |
+| U6 | drain timeout mid-plan | `full` mode with a new release; make one node's drain fail (stuck pod / PDB `maxUnavailable:0`) | that node `failed` (M1) → `UpdatePlanCanceled`; in-flight reboots (if any) complete; **two-phase reset**: non-in-flight members reset immediately to `next-kernel := running`; in-flight members settle when their M1 state lands — the failing node comes back on the old kernel (mismatch) → reset, any completed+verified node keeps V (`next-kernel == running == V`, no-op); bootloader defaults back to the old version where reset applied; the plan-state ConfigMap entry is cleared only when **all** members have settled; next check does **not** auto-retry (V in `/boot` → nothing) |
 
 ## U7 — operator re-launch
 
