@@ -44,17 +44,23 @@ type Config struct {
 	Store BootStore
 	// HTTPClient for release-repo fetches.
 	HTTPClient *http.Client
-	Now        func() time.Time
-	Log        *slog.Logger
+	// PlanConfigMapNamespace/PlanConfigMapName is the leader-owned plan
+	// state ConfigMap (default "simplek8s-update-plans"; PLAN-M2 3.8/3.9).
+	PlanConfigMapNamespace string
+	PlanConfigMapName      string
+	Now                    func() time.Time
+	Log                    *slog.Logger
 }
 
-// Feature is the distro-update feature (local executor role only in
-// M2/M3; the leader-side plan logic lands in M4).
+// Feature is the distro-update feature: the per-node release check,
+// staging, and (M4) the leader-side all-or-nothing reboot plan.
 type Feature struct {
-	kube *kube.Client
-	cfg  Config
-	log  *slog.Logger
-	http *http.Client
+	kube  *kube.Client
+	leas  *engine.Leaser
+	plans *plansStore
+	cfg   Config
+	log   *slog.Logger
+	http  *http.Client
 
 	mu        sync.Mutex
 	lastCheck map[string]time.Time // node -> last check attempt
@@ -82,8 +88,13 @@ func New(e *engine.Engine, cfg Config) *Feature {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 5 * time.Minute}
 	}
+	if cfg.PlanConfigMapName == "" {
+		cfg.PlanConfigMapName = "simplek8s-update-plans"
+	}
 	f := &Feature{
 		kube:      e.Kube(),
+		leas:      e.Leaser(),
+		plans:     newPlansStore(e.Kube(), cfg.PlanConfigMapNamespace, cfg.PlanConfigMapName),
 		cfg:       cfg,
 		log:       cfg.Log,
 		http:      cfg.HTTPClient,
@@ -91,7 +102,8 @@ func New(e *engine.Engine, cfg Config) *Feature {
 		notified:  map[string]bool{},
 		availSeen: map[string]bool{},
 	}
-	e.RegisterLocal(f.RunLocal)
+	e.Register(f)               // leader-only: the reboot plan (M4)
+	e.RegisterLocal(f.RunLocal) // every pod: check + stage (M2/M3)
 	return f
 }
 
@@ -198,6 +210,14 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
 
+	// freshStage is the genuine new-version stage (target 2 below): a
+	// release not already local and not already the anchor. Only this —
+	// never the defensive re-stage of an already-anchored version — sets
+	// the reboot-eligible plan trigger (PLAN-M2 3.8: a plan is the
+	// consequence of staging a version not in /boot before).
+	freshStage := res.Available && res.Latest != "" && res.Latest != running &&
+		!localSet[res.Latest] && ui.NextKernel != res.Latest
+
 	var targets []string
 	// (1) anchored version missing locally (defensive; never the anchor value).
 	if ui.NextKernelPresent && ui.NextKernelParseErr == "" &&
@@ -211,7 +231,7 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	}
 	for _, v := range targets {
 		if f.stageOne(ctx, node, fc, res, v) && v == res.Latest {
-			f.anchor(ctx, node, res.Latest, running)
+			f.anchor(ctx, node, res.Latest, running, fc.UpdateMode == "full" && freshStage)
 		}
 	}
 }
@@ -251,15 +271,23 @@ func (f *Feature) stageOne(ctx context.Context, node *kube.Node, fc config.Confi
 
 // anchor sets next-kernel := version when the node is quiescent (writer
 // discipline, PLAN-M2 3.5): a held/re-pinned value is never clobbered.
-func (f *Feature) anchor(ctx context.Context, node *kube.Node, version, running string) {
-	if err := nodestate.PatchTransition(ctx, f.kube, node.Metadata.Name, 3,
-		nodestate.NextKernelBuild(version, nodestate.PrecondQuiescent(running))); err != nil {
+// When eligible is true (a fresh full-mode stage) it also sets the
+// reboot-eligible plan trigger in the same conditional patch, so the
+// trigger and the anchor can never diverge (PLAN-M2 3.8).
+func (f *Feature) anchor(ctx context.Context, node *kube.Node, version, running string, eligible bool) {
+	var build nodestate.BuildFunc
+	if eligible {
+		build = nodestate.NextKernelEligibleBuild(version, nodestate.PrecondQuiescent(running))
+	} else {
+		build = nodestate.NextKernelBuild(version, nodestate.PrecondQuiescent(running))
+	}
+	if err := nodestate.PatchTransition(ctx, f.kube, node.Metadata.Name, 3, build); err != nil {
 		if err != nodestate.ErrAbort {
 			f.log.Warn("update: anchor failed", "node", node.Metadata.Name, "version", version, "err", err)
 		}
 		return
 	}
-	f.log.Info("update: anchored next-kernel", "node", node.Metadata.Name, "version", version)
+	f.log.Info("update: anchored next-kernel", "node", node.Metadata.Name, "version", version, "eligible", eligible)
 }
 
 // --- Check (PLAN-M2 3.6) ------------------------------------------------

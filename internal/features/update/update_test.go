@@ -15,6 +15,7 @@ import (
 
 	"github.com/simplek8s/simplek8s-controller/internal/engine"
 	"github.com/simplek8s/simplek8s-controller/internal/kubetest"
+	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
 
 type clock struct{ t time.Time }
@@ -211,6 +212,10 @@ func (h *updateHarness) tick() { h.eng.Cycle(context.Background()) }
 
 func (h *updateHarness) nextKernel() string {
 	return h.fake.NodeAnnotation("w1", "simplek8s.org/next-kernel")
+}
+
+func (h *updateHarness) rebootEligible() string {
+	return h.fake.NodeAnnotation("w1", nodestate.AnnRebootEligible)
 }
 
 func (h *updateHarness) eventCount(reason string) int {
@@ -483,5 +488,55 @@ func TestStagingFailureFiresEventNoAnnotationChange(t *testing.T) {
 	}
 	if h.eventCount("UpdateStaged") != 0 {
 		t.Fatalf("UpdateStaged = %d, want 0", h.eventCount("UpdateStaged"))
+	}
+}
+
+// --- Reboot-eligible plan trigger (PLAN-M2 3.8) --------------------------
+
+// TestFreshFullStageSetsRebootEligible: a genuine fresh full-mode stage
+// (a release not yet local and not the current anchor) sets next-kernel AND
+// the reboot-eligible plan trigger in one conditional patch.
+func TestFreshFullStageSetsRebootEligible(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("next-kernel = %q, want anchored 202608291203", got)
+	}
+	if got := h.rebootEligible(); got != "202608291203" {
+		t.Fatalf("reboot-eligible = %q, want 202608291203 (fresh full-mode stage)", got)
+	}
+}
+
+// TestStageModeDoesNotSetRebootEligible: staging mode stages and anchors the
+// release but never sets the plan trigger (plans are a full-mode concern).
+func TestStageModeDoesNotSetRebootEligible(t *testing.T) {
+	h := newUpdateHarness(t, "stage", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("next-kernel = %q, want anchored 202608291203", got)
+	}
+	if got := h.rebootEligible(); got != "" {
+		t.Fatalf("reboot-eligible = %q, want absent in staging mode", got)
+	}
+}
+
+// TestDefensiveRestageDoesNotSetRebootEligible: re-staging a version that is
+// already the anchor (files missing locally) is not a fresh stage, so it does
+// not set the plan trigger (a plan is the consequence of staging a version
+// not in /boot before).
+func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("next-kernel = %q, want unchanged 202608291203", got)
+	}
+	if got := h.rebootEligible(); got != "" {
+		t.Fatalf("reboot-eligible = %q, want absent (defensive re-stage)", got)
 	}
 }

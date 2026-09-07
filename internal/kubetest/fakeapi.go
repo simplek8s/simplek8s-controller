@@ -41,6 +41,12 @@ type PDB struct {
 	Allowed   int32
 }
 
+// fakeCM is a mutable fake ConfigMap with a tracked resourceVersion.
+type fakeCM struct {
+	rv   int
+	data map[string]string
+}
+
 // FakeAPI is an in-memory Kubernetes API server.
 type FakeAPI struct {
 	*httptest.Server
@@ -51,7 +57,7 @@ type FakeAPI struct {
 	pods       []*Pod
 	pdbs       []*PDB
 	leases     map[string]map[string]any
-	configmaps map[string]map[string]string // "ns/name" -> data
+	configmaps map[string]*fakeCM // "ns/name" -> cm
 	events     []map[string]any
 	// EvictDeny decides whether an eviction is PDB-denied (429).
 	// The default (nil) never denies.
@@ -60,6 +66,8 @@ type FakeAPI struct {
 	PodGone func(ns, pod string) bool
 	// FailNext lists errors to inject (shifted per attempt, per path suffix).
 	FailNext map[string]int
+	// ConfigMapConflicts forces the next N ConfigMap updates to 409.
+	ConfigMapConflicts int
 	// DelayNext applies a delay to the next matching request (path suffix).
 	DelayNext map[string]time.Duration
 	// Down makes every request fail with connection refused semantics by
@@ -74,7 +82,7 @@ func NewFakeAPI() *FakeAPI {
 	f := &FakeAPI{
 		nodes:      map[string]map[string]any{},
 		leases:     map[string]map[string]any{},
-		configmaps: map[string]map[string]string{},
+		configmaps: map[string]*fakeCM{},
 		FailNext:   map[string]int{},
 		DelayNext:  map[string]time.Duration{},
 	}
@@ -215,11 +223,11 @@ func (f *FakeAPI) InjectFailure(suffix string, n int) {
 }
 
 // Lease returns a copy of the lease.
-// SetConfigMap upserts a fake ConfigMap's data.
+// SetConfigMap upserts a fake ConfigMap's data (bumps resourceVersion).
 func (f *FakeAPI) SetConfigMap(ns, name string, data map[string]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.configmaps[ns+"/"+name] = data
+	f.configmaps[ns+"/"+name] = &fakeCM{rv: f.rv(), data: data}
 }
 
 // RemoveConfigMap deletes a fake ConfigMap (subsequent GETs 404).
@@ -227,6 +235,20 @@ func (f *FakeAPI) RemoveConfigMap(ns, name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.configmaps, ns+"/"+name)
+}
+
+// ConfigMapData returns a copy of a fake ConfigMap's data (nil if absent).
+func (f *FakeAPI) ConfigMapData(ns, name string) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if cm, ok := f.configmaps[ns+"/"+name]; ok {
+		out := make(map[string]string, len(cm.data))
+		for k, v := range cm.data {
+			out[k] = v
+		}
+		return out
+	}
+	return nil
 }
 
 func (f *FakeAPI) Lease(ns, name string) (map[string]any, bool) {
@@ -303,10 +325,14 @@ func (f *FakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.Contains(path, "/configmaps/") && r.Method == http.MethodGet:
 		parts := strings.Split(strings.TrimPrefix(path, "api/v1/namespaces/"), "/")
 		if len(parts) == 3 && parts[1] == "configmaps" {
-			if data, ok := f.configmaps[parts[0]+"/"+parts[2]]; ok {
+			if cm, ok := f.configmaps[parts[0]+"/"+parts[2]]; ok {
 				writeJSON(w, map[string]any{
-					"metadata": map[string]any{"name": parts[2], "namespace": parts[0]},
-					"data":     data,
+					"metadata": map[string]any{
+						"name":            parts[2],
+						"namespace":       parts[0],
+						"resourceVersion": strconv.Itoa(cm.rv),
+					},
+					"data": cm.data,
 				})
 			} else {
 				httpError(w, 404, "NotFound", "configmap "+parts[2])
@@ -314,6 +340,10 @@ func (f *FakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		} else {
 			httpError(w, 404, "NotFound", path)
 		}
+	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.HasSuffix(path, "/configmaps") && r.Method == http.MethodPost:
+		f.createConfigMap(w, r, path)
+	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.Contains(path, "/configmaps/") && r.Method == http.MethodPut:
+		f.updateConfigMap(w, r, path)
 	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.HasSuffix(path, "/events") && r.Method == http.MethodPost:
 		f.createEvent(w, r, path)
 	default:
@@ -566,6 +596,81 @@ func (f *FakeAPI) createEvent(w http.ResponseWriter, r *http.Request, path strin
 	e["metadata"] = map[string]any{"name": "event-" + strconv.Itoa(len(f.events)+1), "resourceVersion": strconv.Itoa(f.rv())}
 	f.events = append(f.events, e)
 	writeJSON(w, e)
+}
+
+func (f *FakeAPI) createConfigMap(w http.ResponseWriter, r *http.Request, path string) {
+	var cm map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&cm); err != nil {
+		httpError(w, 400, "BadRequest", err.Error())
+		return
+	}
+	ns := strings.TrimSuffix(strings.TrimPrefix(path, "api/v1/namespaces/"), "/configmaps")
+	name := ""
+	if md, ok := cm["metadata"].(map[string]any); ok {
+		name, _ = md["name"].(string)
+	}
+	key := ns + "/" + name
+	if _, exists := f.configmaps[key]; exists {
+		httpError(w, 409, "AlreadyExists", key)
+		return
+	}
+	stored := &fakeCM{rv: f.rv(), data: cmData(cm)}
+	f.configmaps[key] = stored
+	writeJSON(w, map[string]any{
+		"metadata": map[string]any{"name": name, "namespace": ns, "resourceVersion": strconv.Itoa(stored.rv)},
+		"data":     stored.data,
+	})
+}
+
+func (f *FakeAPI) updateConfigMap(w http.ResponseWriter, r *http.Request, path string) {
+	parts := strings.Split(strings.TrimPrefix(path, "api/v1/namespaces/"), "/")
+	if len(parts) != 3 || parts[1] != "configmaps" {
+		httpError(w, 404, "NotFound", path)
+		return
+	}
+	key := parts[0] + "/" + parts[2]
+	cur, exists := f.configmaps[key]
+	if !exists {
+		httpError(w, 404, "NotFound", key)
+		return
+	}
+	if f.ConfigMapConflicts > 0 {
+		f.ConfigMapConflicts--
+		httpError(w, 409, "Conflict", "forced conflict")
+		return
+	}
+	var cm map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&cm); err != nil {
+		httpError(w, 400, "BadRequest", err.Error())
+		return
+	}
+	if md, ok := cm["metadata"].(map[string]any); ok {
+		if rv, present := md["resourceVersion"]; present {
+			if fmt.Sprint(rv) != strconv.Itoa(cur.rv) {
+				httpError(w, 409, "Conflict", "resourceVersion conflict")
+				return
+			}
+		}
+	}
+	cur.data = cmData(cm)
+	cur.rv = f.rv()
+	writeJSON(w, map[string]any{
+		"metadata": map[string]any{"name": parts[2], "namespace": parts[0], "resourceVersion": strconv.Itoa(cur.rv)},
+		"data":     cur.data,
+	})
+}
+
+// cmData extracts the ConfigMap data map from a decoded object.
+func cmData(cm map[string]any) map[string]string {
+	data := map[string]string{}
+	if raw, ok := cm["data"].(map[string]any); ok {
+		for k, v := range raw {
+			if s, ok := v.(string); ok {
+				data[k] = s
+			}
+		}
+	}
+	return data
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

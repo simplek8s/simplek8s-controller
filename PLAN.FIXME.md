@@ -172,3 +172,50 @@ puramente informativo.
 Nota de escape (no es del controller): en esta distribución (k8s 1.37), el
 kubelet **no** re-registra un objeto Node borrado en caliente — el nodo
 queda fuera del cluster hasta `systemctl restart kubelet` en el host.
+
+---
+
+## 7. (M4, PLAN-M2 3.8/3.10) Notas de implementación del plan de reinicio
+
+No son errores de `PLAN-M2.md`, sino decisiones concretas tomadas al
+implementar el plan de reinicio (`full` mode). Se documentan aquí para
+trazabilidad.
+
+- **Disparador del plan (3.8).** El plan se dispara *solo* como consecuencia
+  de un staging "fresco" en modo `full`. "Fresco" (`freshStage`) significa:
+  hay una release disponible, `res.Latest != running`, la release **aún no
+  está local** (`!localSet[res.Latest]`) y **no es ya el ancla actual**
+  (`ui.NextKernel != res.Latest`). Esto garantiza que un re-staging
+  defensivo (los archivos de una versión ya anclada desaparecen de
+  `/boot`) **no** re-dispara un plan.
+- **Plegado en un solo patch.** Cuando `freshStage && UpdateMode == "full"`,
+  la anotación `simplek8s.org/reboot-eligible: <V>` se pliega en el **mismo**
+  `PatchTransition` que fija `next-kernel := V` (ancla). El nodo queda así
+  "anclado + elegible" atómicamente. En modo `stage` (o en re-staging) se usa
+  la ancla sin elegibilidad. El líder es el único que lee
+  `reboot-eligible` para formar la membresía del plan.
+- **Un plan activo a la vez.** El ConfigMap de estado del plan
+  (`simplek8s-update-plans`, clave `plans`, JSON `map[version]PlanEntry`)
+  admite un solo plan; el líder no empieza ninguno si ya existe alguno.
+  `PlanEntry` = `{startedAt, nodes[], canceling}`.
+- **Membresía.** Son miembros los nodos con `reboot-eligible == V` que **no**
+  están en quiescencia. Se admite con `EnqueueBuild` (pone
+  `reboot-state: requested` y limpia exec/status; **no** emite reboot-request
+  directo, de modo que el drenado sigue siendo gobernable por PDB vía M1).
+- **Verificación (3.10).** Miembro en `completed` con `running == V` →
+  asentado. `completed` con `running != V` → cancela. Miembro `failed` →
+  cancela. Reinicio **no** de plan (fuera del plan) en `completed` con
+  `next-kernel != running` → reset solo de ese nodo a `running`; un `failed`
+  fuera de plan **no** resetea (el nodo queda preparado para el reintento del
+  operador).
+- **Cancel en dos fases.** Al cancelarse, los miembros **en vuelo**
+  (`InFlight`: `draining`/`rebooting`) se **diferen**: no se re-encola ni se
+  resetea hasta que su estado M1 aterriza (entonces, si `running == V` se
+  mantiene; si no, se resetea a `running`). El plan se borra del ConfigMap
+  solo cuando **todos** los miembros están en quiescencia.
+- **Tests.** `planstate_test.go` (almacenamiento del plan, reintentos en 409,
+  preservación de claves ajenas) y `plan_test.go` (orquestador: arranque +
+  admisión, happy-path, mismatch/failed → cancel, takeover, miembro en vuelo
+  diferido, verificación no-de-plan, borrado del disparador al asentarse).
+  Además, `update_test.go` verifica que solo un staging fresco en `full` fija
+  `reboot-eligible` (y que `stage`/re-staging no lo hacen).

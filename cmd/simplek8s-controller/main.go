@@ -102,7 +102,12 @@ func main() {
 		EventNamespace: "default",
 		Features:       e.FeatureConfig,
 		Store:          update.NewPhysicalStore(update.PhysicalStoreConfig{Log: log}),
-		Log:            log,
+		// Leader-owned plan state lives in the controller's own namespace
+		// (the standby reads it at takeover; human-inspectable),
+		// separate from the operator ConfigMap (PLAN-M2 3.8/3.9).
+		PlanConfigMapNamespace: podNS,
+		PlanConfigMapName:      "simplek8s-update-plans",
+		Log:                    log,
 	})
 
 	srv := api.New(api.Config{

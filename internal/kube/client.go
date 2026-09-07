@@ -439,6 +439,25 @@ func (c *Client) GetConfigMap(ctx context.Context, ns, name string) (*ConfigMap,
 	return &cm, nil
 }
 
+// CreateConfigMap creates a namespaced ConfigMap (409 when it already
+// exists). The POST goes to the collection path; the name comes from the
+// body.
+func (c *Client) CreateConfigMap(ctx context.Context, cm *ConfigMap) error {
+	return c.Do(ctx, http.MethodPost,
+		"/api/v1/namespaces/"+cm.Metadata.Namespace+"/configmaps",
+		nil, cm, nil, doOpts{})
+}
+
+// UpdateConfigMap rewrites a namespaced ConfigMap. The caller must carry
+// a fresh metadata.resourceVersion for the conditional update; on 409
+// (IsConflict) the caller re-reads and re-applies (PLAN-M2 3.8: the plan
+// ConfigMap is a leader-only read-modify-write).
+func (c *Client) UpdateConfigMap(ctx context.Context, cm *ConfigMap) error {
+	return c.Do(ctx, http.MethodPut,
+		"/api/v1/namespaces/"+cm.Metadata.Namespace+"/configmaps/"+cm.Metadata.Name,
+		nil, cm, nil, doOpts{})
+}
+
 // --- Events (PLAN 3.11) --------------------------------------------------
 
 // CreateEvent creates a v1 Event in the given namespace. Events for

@@ -302,6 +302,34 @@ func AdmissionPatch(rv string, since time.Time, reqID, by string, force bool) ma
 	})
 }
 
+// EnqueuePatch (update plan, PLAN-M2 3.8): set reboot-state to requested
+// WITHOUT a reboot-request (so M1 treats it as force=false, PDB-gated —
+// not forced) and clear exec and status atomically. The M1 orchestrator
+// then drains/reboots/confirms it like any queued reboot.
+func EnqueuePatch(rv string, since time.Time) map[string]any {
+	return annotationsPatch(rv, map[string]any{
+		AnnState:   StateValue(Requested, since),
+		AnnRequest: nil,
+		AnnExec:    nil,
+		AnnStatus:  nil,
+	})
+}
+
+// EnqueueBuild returns a BuildFunc that enqueues a node into the M1 reboot
+// queue (reboot-state := requested) only when the node is NOT already in
+// the reboot lifecycle on the fresh node (a node mid-drain/reboot or
+// already queued is never clobbered; a concurrent operator request is
+// re-evaluated, never overwritten).
+func EnqueueBuild(since time.Time) BuildFunc {
+	return func(node *kube.Node) (map[string]any, bool) {
+		st := Parse(node.Metadata.Annotations)
+		if st.InLifecycle() {
+			return nil, false
+		}
+		return EnqueuePatch(node.Metadata.ResourceVersion, since), true
+	}
+}
+
 // ToDrainingPatch (orchestrator): state+status(+cordonedPrev) and the cordon
 // in one atomic patch; blockedBy is dropped from the fresh status.
 func ToDrainingPatch(rv string, now time.Time, freshStatusRaw string, wasCordoned bool) map[string]any {
