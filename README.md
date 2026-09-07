@@ -122,6 +122,95 @@ Deployment wiring is not feature configuration and stays as a flag:
 are gone; an old DaemonSet manifest still passing them fails at startup
 with `flag provided but not defined` (the intended migration signal).
 
+## Distro updates (M4/M5)
+
+The update feature stages new SimpleK8s releases on each node's boot
+partition and (in `full` mode) orchestrates an all-or-nothing cluster-wide
+reboot to bring them up. It is gated entirely by `updates.update-mode`:
+
+- **`off`** (default): inert. No release checks, downloads, staging, or
+  plans. A per-node `next-kernel` already set is still honored at boot.
+- **`stage`**: check + GPG/sha256-verified staging of the newest release +
+  `next-kernel := V`. No automatic reboot — the operator reboots via the
+  M1 API when ready.
+- **`full`**: staging **plus** the leader's reboot plan: a fresh stage
+  triggers a plan that admits the staged nodes to the M1 reboot queue,
+  verifies the result, and on any mismatch/failure cancels the plan and
+  two-phase-resets the members (the running version is always preserved).
+
+### Release source
+
+The global repo is `updates.url` (root of `SHA256SUMS` +
+`SHA256SUMS.gpg`, GPG-verified). A node can override it with the
+`simplek8s.org/update-url` annotation. Every release file is verified
+against the signed index (sha256) before it is staged — an untrusted repo
+can never write to `/boot`.
+
+### The two operator annotations
+
+| Annotation | Meaning |
+|---|---|
+| `simplek8s.org/next-kernel` | Per-node **boot intent**: the release version the node should boot. Always a version present in `/boot/simplek8s/`. Written by the updater (staging) and the leader (plan-cancel reset); the operator may also pin it. Never deleted. |
+| `simplek8s.org/update-url` | Per-node release repo override (takes precedence over `updates.url`). |
+
+(The third, `simplek8s.org/reboot-eligible`, is internal: set by a fresh
+`full`-mode stage to hand the node to the leader's plan. Do not set it by
+hand.)
+
+### Re-launching after a cancelled plan
+
+A plan cancel is not a failure of the release — it stops the coordinated
+reboot and resets members that had not yet come up on the new version. To
+proceed, re-point the boot intent and reboot through the M1 API (the
+updater does **not** auto-plan a version that is already in `/boot`):
+
+```sh
+kubectl annotate node <node> --overwrite simplek8s.org/next-kernel=<V>
+# then POST /api/v1/reboots for the node(s)
+```
+
+### Rollback
+
+Set `next-kernel` back to the currently running version and reboot; the
+old kernel is always kept (the purge never deletes the running version):
+
+```sh
+kubectl annotate node <node> --overwrite simplek8s.org/next-kernel=<running-V>
+```
+
+### Keyring override
+
+The image embeds the distro public key at
+`/etc/simplek8s/pubring.gpg`. To verify a **custom** release repo signed by
+a **custom** key, create a Secret (mounted read-only at
+`/etc/simplek8s/custom/pubring.gpg`; when the file exists it wins over the
+embedded one):
+
+```sh
+kubectl -n simplek8s create secret generic simplek8s-controller-keyring \
+  --from-file=pubring.gpg=/path/to/custom-pubring.gpg
+```
+
+Then set `updates.url` (or the per-node `update-url` annotation) to the
+custom repo. Absent Secret → the embedded keyring is used.
+
+### Observing updates
+
+Updates emit the same kinds of Node Events as reboots, in the `default`
+namespace: `UpdateAvailable`, `UpdateStaged`, `UpdateStagingSkipped`,
+`UpdatePlanStarted`, `UpdatePlanCanceled`, `UpdateNodeFailed`. The active
+plan (leader-owned) is inspectable in the ConfigMap:
+
+```sh
+kubectl -n simplek8s get configmap simplek8s-update-plans -o yaml
+kubectl -n default get events --field-selector "involvedObject.name=<node>"
+```
+
+> **UTC note**: all timestamps the feature uses — release versions
+> (`<ts>`), annotation `since` values, plan `startedAt` — are **UTC**
+> (RFC3339 `Z`). The distro's release tooling stamps UTC; do not compare
+> against local time.
+
 ## Scheduling reboots (API)
 
 Plain HTTP on the pod port (Service `simplek8s-controller` in namespace
