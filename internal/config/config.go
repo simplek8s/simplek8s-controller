@@ -36,7 +36,7 @@ func Defaults() Config {
 		MaxConcurrentReboots:  1,
 		OnRebootFailure:       "pause",
 		RebootDrainTimeout:    10 * time.Minute,
-		RebootIssueGrace:      5 * time.Minute,
+		RebootIssueGrace:      15 * time.Minute,
 		UpdateMode:            "off",
 		UpdateURL:             "https://dl.simplek8s.org/simplek8s/stable",
 		UpdateCheckInterval:   12 * time.Hour,

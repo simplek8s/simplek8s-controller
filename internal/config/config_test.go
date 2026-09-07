@@ -19,8 +19,8 @@ func TestDefaults(t *testing.T) {
 	if d.RebootDrainTimeout != 10*time.Minute {
 		t.Errorf("RebootDrainTimeout = %v, want 10m", d.RebootDrainTimeout)
 	}
-	if d.RebootIssueGrace != 5*time.Minute {
-		t.Errorf("RebootIssueGrace = %v, want 5m", d.RebootIssueGrace)
+	if d.RebootIssueGrace != 15*time.Minute {
+		t.Errorf("RebootIssueGrace = %v, want 15m", d.RebootIssueGrace)
 	}
 	if d.UpdateMode != "off" {
 		t.Errorf("UpdateMode = %q, want off", d.UpdateMode)

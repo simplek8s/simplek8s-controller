@@ -13,7 +13,7 @@ data:
   reboots.max-concurrent-reboots: "1"
   reboots.on-reboot-failure: pause
   reboots.reboot-drain-timeout: 10m
-  reboots.reboot-issue-grace: 5m
+  reboots.reboot-issue-grace: 15m
   updates.update-mode: "off"
   updates.url: "https://dl.simplek8s.org/simplek8s/stable"
   updates.check-interval: 12h

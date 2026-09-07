@@ -96,7 +96,7 @@ data:
   reboots.max-concurrent-reboots: "1"
   reboots.on-reboot-failure: pause
   reboots.reboot-drain-timeout: 10m
-  reboots.reboot-issue-grace: 5m
+  reboots.reboot-issue-grace: 15m
   updates.update-mode: "off"
   updates.url: "https://dl.simplek8s.org/simplek8s/stable"
   updates.check-interval: 12h
@@ -113,7 +113,7 @@ numbers — both must be quoted to stay strings.
 | `reboots.max-concurrent-reboots` | int ≥ 0 | `1` | Max concurrent reboots (M1, migrated). |
 | `reboots.on-reboot-failure` | `pause`\|`continue` | `pause` | Queue behavior on failure (M1, migrated). |
 | `reboots.reboot-drain-timeout` | duration | `10m` | Drain deadline (M1, migrated). |
-| `reboots.reboot-issue-grace` | duration | `5m` | No-effect-reboot grace (M1, migrated). |
+| `reboots.reboot-issue-grace` | duration | `15m` | No-effect-reboot grace (M1, migrated). |
 | `updates.update-mode` | `off`\|`stage`\|`full` | `off` | The single update dial (§3.3). |
 | `updates.url` | URL | `https://dl.simplek8s.org/simplek8s/stable` | Full release repo URL for the cluster; per-node override via the `update-url` annotation. |
 | `updates.check-interval` | duration | `12h` | How often each node checks its repo. |

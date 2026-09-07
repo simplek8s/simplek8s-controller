@@ -108,7 +108,7 @@ typo never crashes the controller.
 | `reboots.max-concurrent-reboots` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
 | `reboots.on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
 | `reboots.reboot-drain-timeout` | `10m` | wall-clock cap on the drain phase |
-| `reboots.reboot-issue-grace` | `5m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
+| `reboots.reboot-issue-grace` | `15m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
 | `updates.update-mode` | `off` | `off`: no release checks, staging or plans (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + orchestrated update plan (M4) |
 | `updates.url` | `https://dl.simplek8s.org/simplek8s/stable` | release repo (root of `SHA256SUMS` + `SHA256SUMS.gpg`). Overridable per node with the `simplek8s.org/update-url` annotation |
 | `updates.check-interval` | `12h` | how often each node re-checks its release repo |
