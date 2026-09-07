@@ -120,6 +120,23 @@ func (f *FakeAPI) SetNodeReady(name string, ready bool) {
 	n["metadata"].(map[string]any)["resourceVersion"] = strconv.Itoa(f.rv())
 }
 
+// SetNodeInfo sets the node's status.nodeInfo (kernelVersion,
+// architecture). Bumps resourceVersion.
+func (f *FakeAPI) SetNodeInfo(name, kernelVersion, architecture string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.nodes[name]
+	if !ok {
+		return
+	}
+	st := n["status"].(map[string]any)
+	st["nodeInfo"] = map[string]any{
+		"kernelVersion": kernelVersion,
+		"architecture":  architecture,
+	}
+	n["metadata"].(map[string]any)["resourceVersion"] = strconv.Itoa(f.rv())
+}
+
 // RemoveNode deletes a node (simulates the node leaving the cluster).
 func (f *FakeAPI) RemoveNode(name string) {
 	f.mu.Lock()

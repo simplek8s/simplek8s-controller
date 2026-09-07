@@ -107,7 +107,15 @@ type Node struct {
 	} `json:"spec"`
 	Status struct {
 		Conditions []NodeCondition `json:"conditions"`
+		NodeInfo   NodeInfo        `json:"nodeInfo"`
 	} `json:"status"`
+}
+
+// NodeInfo is the subset of v1.NodeSystemInfo the controller uses
+// (PLAN-M2 3.6: the running kernel version and the machine architecture).
+type NodeInfo struct {
+	KernelVersion string `json:"kernelVersion,omitempty"`
+	Architecture  string `json:"architecture,omitempty"`
 }
 
 // NodeCondition is a subset of v1.NodeCondition.

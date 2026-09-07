@@ -109,6 +109,11 @@ typo never crashes the controller.
 | `reboots.on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
 | `reboots.reboot-drain-timeout` | `10m` | wall-clock cap on the drain phase |
 | `reboots.reboot-issue-grace` | `5m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
+| `updates.update-mode` | `off` | `off`: no release checks, staging or plans (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + orchestrated update plan (M4) |
+| `updates.url` | `https://dl.simplek8s.org/simplek8s/stable` | release repo (root of `SHA256SUMS` + `SHA256SUMS.gpg`). Overridable per node with the `simplek8s.org/update-url` annotation |
+| `updates.check-interval` | `12h` | how often each node re-checks its release repo |
+| `updates.preserve` | `3` | how many released versions to keep on the boot partition after a successful update (the running version is never purged) |
+| `updates.max-percent-usage` | `75` | after an update, purge oldest versions until the boot partition usage is at or below this percentage |
 
 Deployment wiring is not feature configuration and stays as a flag:
 `--listen` (default `:8080`, API bind address). The old feature flags
@@ -257,9 +262,10 @@ Layout:
 cmd/simplek8s-controller/   entrypoint (flags, env, wiring)
 internal/config/            flat-key ConfigMap config (defaults, last-valid-wins)
 internal/kube/              stdlib REST client + minimal K8s types
-internal/nodestate/         the four annotations: schema, parse, patches
+internal/nodestate/         the six annotations: schema, parse, patches
 internal/engine/            poll loop, leader election (Lease), roles
 internal/features/reboot/   orchestrator, executor, drain, PDB
+internal/features/update/   release check (verified index), staging, plans
 internal/api/               HTTP API (token auth, reboots endpoints)
 internal/kubetest/          fake API server for tests (stdlib only)
 deploy/                     kustomize bundle

@@ -15,6 +15,7 @@ import (
 	"github.com/simplek8s/simplek8s-controller/internal/api"
 	"github.com/simplek8s/simplek8s-controller/internal/engine"
 	"github.com/simplek8s/simplek8s-controller/internal/features/reboot"
+	"github.com/simplek8s/simplek8s-controller/internal/features/update"
 )
 
 // Build information, injected at compile time via -ldflags (see Makefile
@@ -87,6 +88,18 @@ func main() {
 	reboot.New(e, reboot.Config{
 		NodeName:       nodeName,
 		PodUID:         podUID,
+		EventNamespace: "default",
+		Features:       e.FeatureConfig,
+		Log:            log,
+	})
+
+	// Distro updates (PLAN-M2): release check (verified index), events,
+	// bootstrap and defensive re-staging detection. The physical boot
+	// store (device discovery, mount, staging) is M3 and is injected
+	// here when it lands; until then Store is nil and the boot-partition
+	// logic is inert.
+	update.New(e, update.Config{
+		NodeName:       nodeName,
 		EventNamespace: "default",
 		Features:       e.FeatureConfig,
 		Log:            log,

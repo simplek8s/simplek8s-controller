@@ -1,0 +1,423 @@
+package update
+
+import (
+	"bytes"
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/simplek8s/simplek8s-controller/internal/engine"
+	"github.com/simplek8s/simplek8s-controller/internal/kubetest"
+)
+
+type clock struct{ t time.Time }
+
+func (c *clock) Now() time.Time          { return c.t }
+func (c *clock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+
+type fakeStore struct {
+	mu   sync.Mutex
+	vers []string
+}
+
+func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.vers...), nil
+}
+
+func (s *fakeStore) set(vers ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vers = vers
+}
+
+// countingRepo serves a re-signable release index and counts index hits.
+type countingRepo struct {
+	key       *testKey
+	srv       *httptest.Server
+	mu        sync.Mutex
+	index     []byte
+	sig       []byte
+	indexHits int
+}
+
+func newCountingRepo(t *testing.T, key *testKey) *countingRepo {
+	t.Helper()
+	r := &countingRepo{key: key}
+	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		switch req.URL.Path {
+		case "/SHA256SUMS":
+			r.indexHits++
+			w.Write(r.index)
+		case "/SHA256SUMS.gpg":
+			w.Write(r.sig)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(r.srv.Close)
+	return r
+}
+
+func (r *countingRepo) URL() string { return r.srv.URL }
+
+// set replaces the served index, re-signing it with the repo key.
+func (r *countingRepo) set(t *testing.T, files map[string][]byte) {
+	t.Helper()
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var index bytes.Buffer
+	for _, n := range names {
+		index.WriteString(sha256line(files[n], n) + "\n")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.index = index.Bytes()
+	r.sig = r.key.sign(t, r.index, true)
+}
+
+func (r *countingRepo) hits() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.indexHits
+}
+
+type updateHarness struct {
+	t      *testing.T
+	fake   *kubetest.FakeAPI
+	eng    *engine.Engine
+	cl     *clock
+	f      *Feature
+	store  *fakeStore
+	repo   *countingRepo
+	key    *testKey
+	logBuf *bytes.Buffer
+}
+
+func newUpdateHarness(t *testing.T, mode string, kernelVersion string, anns map[string]string, storeVers []string) *updateHarness {
+	return newUpdateHarnessKey(t, mode, kernelVersion, anns, storeVers, newTestKey(t, true))
+}
+
+// newUpdateHarnessKey is the harness with an explicit signing key (used
+// to build second repos sharing the pod's keyring).
+func newUpdateHarnessKey(t *testing.T, mode string, kernelVersion string, anns map[string]string, storeVers []string, key *testKey) *updateHarness {
+	t.Helper()
+	fake := kubetest.NewFakeAPI()
+	t.Cleanup(fake.Close)
+	fake.SetNode("w1", anns, false, nil, "uid-w1")
+	fake.SetNodeInfo("w1", kernelVersion, "amd64")
+
+	cl := &clock{t: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}
+	logBuf := &bytes.Buffer{}
+	log := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	repo := newCountingRepo(t, key)
+	repo.set(t, kernelIndex())
+	store := &fakeStore{}
+	store.set(storeVers...)
+
+	creds, err := kubetest.MakeCreds(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := map[string]string{
+		"updates.update-mode":    mode,
+		"updates.url":            repo.URL(),
+		"updates.check-interval": "1h",
+	}
+	fake.SetConfigMap("default", "simplek8s-controller", cm)
+
+	eng, err := engine.New(engine.Config{
+		CredsDir:           creds.Dir,
+		APIEndpoint:        fake.Server.URL,
+		Identity:           "pod-x/uid-x",
+		NodeName:           "w1",
+		LeaseNamespace:     "default",
+		LeaseName:          engine.LeaseName,
+		ConfigMapNamespace: "default",
+		ConfigMapName:      "simplek8s-controller",
+		Now:                cl.Now,
+		Sleep:              func(ctx context.Context, d time.Duration) error { return nil },
+		Log:                log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &updateHarness{
+		t: t, fake: fake, eng: eng, cl: cl, store: store, repo: repo,
+		key: key, logBuf: logBuf,
+	}
+	h.f = New(eng, Config{
+		NodeName:        "w1",
+		EventNamespace:  "default",
+		Features:        eng.FeatureConfig,
+		EmbeddedKeyring: key.keyring,
+		CustomKeyring:   filepath.Join(t.TempDir(), "absent-custom.gpg"),
+		Store:           store,
+		Now:             cl.Now,
+		Log:             log,
+	})
+	return h
+}
+
+// tick runs one engine cycle (config reload + all local tasks).
+func (h *updateHarness) tick() { h.eng.Cycle(context.Background()) }
+
+func (h *updateHarness) nextKernel() string {
+	return h.fake.NodeAnnotation("w1", "simplek8s.org/next-kernel")
+}
+
+func (h *updateHarness) eventCount(reason string) int {
+	n := 0
+	for _, e := range h.fake.Events() {
+		if e["reason"] == reason {
+			n++
+		}
+	}
+	return n
+}
+
+func (h *updateHarness) logs() string { return h.logBuf.String() }
+
+// --- Bootstrap (PLAN-M2 3.5) ------------------------------------------------
+
+func TestBootstrapAnchorsRunning(t *testing.T) {
+	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)", nil,
+		[]string{"202501010000", "202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202601010000" {
+		t.Fatalf("next-kernel = %q, want running version", got)
+	}
+	// Idempotent: a second cycle changes nothing.
+	h.tick()
+	if got := h.nextKernel(); got != "202601010000" {
+		t.Fatalf("next-kernel after second tick = %q", got)
+	}
+}
+
+func TestBootstrapAnchorsNewestLocal(t *testing.T) {
+	// Node does not run a simplek8s kernel: anchor the newest local.
+	h := newUpdateHarness(t, "off", "6.18.48 (amd64)", nil,
+		[]string{"202501010000", "202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202601010000" {
+		t.Fatalf("next-kernel = %q, want newest local", got)
+	}
+}
+
+func TestBootstrapRetriesWhenNoLocalVersions(t *testing.T) {
+	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)", nil, nil)
+	h.tick()
+	if got := h.nextKernel(); got != "" {
+		t.Fatalf("next-kernel = %q, want empty (nothing local)", got)
+	}
+	h.store.set("202601010000")
+	h.tick()
+	if got := h.nextKernel(); got != "202601010000" {
+		t.Fatalf("next-kernel = %q after versions appeared", got)
+	}
+}
+
+func TestBootstrapNeverOverwritesOperatorPin(t *testing.T) {
+	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202609090909"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202609090909" {
+		t.Fatalf("operator pin clobbered: %q", got)
+	}
+}
+
+// --- Off mode -----------------------------------------------------------------
+
+func TestOffModeIsInert(t *testing.T) {
+	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000"})
+	h.tick()
+	if h.repo.hits() != 0 {
+		t.Fatalf("off mode must not check the repo: %d hits", h.repo.hits())
+	}
+	if h.eventCount("UpdateAvailable") != 0 {
+		t.Fatal("off mode must not fire UpdateAvailable")
+	}
+	if h.eventCount("UpdateCheckError") != 0 {
+		t.Fatal("off mode must not fire UpdateCheckError")
+	}
+}
+
+// --- Check + events (PLAN-M2 3.6/3.11) ---------------------------------------
+
+func TestUpdateAvailableOncePerVersion(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.eventCount("UpdateAvailable"); got != 1 {
+		t.Fatalf("UpdateAvailable = %d, want 1", got)
+	}
+	if h.repo.hits() != 1 {
+		t.Fatalf("repo hits = %d, want 1", h.repo.hits())
+	}
+
+	// Within the check interval: no re-check, no repeat event.
+	h.tick()
+	if got := h.eventCount("UpdateAvailable"); got != 1 {
+		t.Fatalf("UpdateAvailable after 2nd tick = %d, want 1", got)
+	}
+	if h.repo.hits() != 1 {
+		t.Fatalf("repo hits after 2nd tick = %d, want 1", h.repo.hits())
+	}
+
+	// Past the interval: re-check, but the same version does not
+	// re-fire the event.
+	h.cl.Advance(time.Hour + time.Second)
+	h.tick()
+	if h.repo.hits() != 2 {
+		t.Fatalf("repo hits after interval = %d, want 2", h.repo.hits())
+	}
+	if got := h.eventCount("UpdateAvailable"); got != 1 {
+		t.Fatalf("UpdateAvailable after re-check = %d, want 1 (once per version)", got)
+	}
+}
+
+func TestNoEventWhenUpToDate(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202608291203 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
+		[]string{"202608291203"})
+	h.tick()
+	if h.eventCount("UpdateAvailable") != 0 {
+		t.Fatal("no event expected when already on latest")
+	}
+	if h.eventCount("UpdateCheckError") != 0 {
+		t.Fatal("no error event expected on a successful check")
+	}
+}
+
+func TestURLPrecedenceAnnotationOverConfig(t *testing.T) {
+	// Both repos are signed by the pod's key (the keyring is per-pod,
+	// not per-repo), so both would verify. The per-repo hit counters
+	// reveal which URL was actually used.
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)", nil,
+		[]string{"202601010000"})
+	repo2 := newCountingRepo(t, h.key)
+	repo2.set(t, kernelIndex())
+	// Anchor + point the per-node override at repo2.
+	h.fake.SetNode("w1", map[string]string{
+		"simplek8s.org/next-kernel": "202601010000",
+		"simplek8s.org/update-url":  repo2.URL(),
+	}, false, nil, "uid-w1")
+	h.fake.SetNodeInfo("w1", "6.18.48-simplek8s-202601010000 (amd64)", "amd64")
+
+	h.tick()
+	if repo2.hits() != 1 {
+		t.Fatalf("annotation repo hits = %d, want 1", repo2.hits())
+	}
+	if h.repo.hits() != 0 {
+		t.Fatalf("config repo hits = %d, want 0 (annotation must win)", h.repo.hits())
+	}
+	if h.eventCount("UpdateAvailable") != 1 {
+		t.Fatalf("UpdateAvailable = %d, want 1", h.eventCount("UpdateAvailable"))
+	}
+}
+
+func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000"})
+	// Serve an index signed by a FORKEY: verification must fail.
+	forger := newTestKey(t, true)
+	forge := newCountingRepo(t, forger)
+	forge.set(t, kernelIndex())
+	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
+		"updates.update-mode":    "full",
+		"updates.url":            forge.URL(),
+		"updates.check-interval": "1h",
+	})
+
+	h.tick() // check fails
+	if got := h.eventCount("UpdateCheckError"); got != 1 {
+		t.Fatalf("UpdateCheckError = %d, want 1", got)
+	}
+	// Still failing past the interval: rate-limited, no new event.
+	h.cl.Advance(time.Hour + time.Second)
+	h.tick()
+	if got := h.eventCount("UpdateCheckError"); got != 1 {
+		t.Fatalf("UpdateCheckError after repeat failure = %d, want 1", got)
+	}
+
+	// Recovery: the good repo is restored, the failing stretch ends.
+	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
+		"updates.update-mode":    "full",
+		"updates.url":            h.repo.URL(),
+		"updates.check-interval": "1h",
+	})
+	h.cl.Advance(time.Hour + time.Second)
+	h.tick()
+	if got := h.eventCount("UpdateAvailable"); got != 1 {
+		t.Fatalf("UpdateAvailable after recovery = %d, want 1", got)
+	}
+
+	// A new failing stretch fires the event again.
+	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
+		"updates.update-mode":    "full",
+		"updates.url":            forge.URL(),
+		"updates.check-interval": "1h",
+	})
+	h.cl.Advance(time.Hour + time.Second)
+	h.tick()
+	if got := h.eventCount("UpdateCheckError"); got != 2 {
+		t.Fatalf("UpdateCheckError after new failing stretch = %d, want 2", got)
+	}
+}
+
+// --- Defensive re-staging detection (PLAN-M2 3.7) -----------------------------
+
+func TestDefensiveRestageDetectsMissingLocalVersion(t *testing.T) {
+	// Anchored to a version that is NOT on the local boot partition and
+	// not running: detection must log, and must not touch the annotation.
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("annotation must be untouched by re-staging: %q", got)
+	}
+	if !strings.Contains(h.logs(), "missing locally") {
+		t.Fatalf("expected defensive re-staging log, got: %s", h.logs())
+	}
+}
+
+func TestDefensiveRestageQuietWhenVersionLocal(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
+		[]string{"202601010000", "202608291203"})
+	h.tick()
+	if strings.Contains(h.logs(), "missing locally") {
+		t.Fatalf("no re-staging expected when the version is local: %s", h.logs())
+	}
+}
+
+func TestDefensiveRestageQuietWhenQuiescent(t *testing.T) {
+	// next-kernel == running: quiescent, never re-staged.
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{})
+	h.tick()
+	if strings.Contains(h.logs(), "missing locally") {
+		t.Fatalf("quiescent node must not trigger re-staging: %s", h.logs())
+	}
+}
