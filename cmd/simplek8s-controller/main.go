@@ -94,14 +94,14 @@ func main() {
 	})
 
 	// Distro updates (PLAN-M2): release check (verified index), events,
-	// bootstrap and defensive re-staging detection. The physical boot
-	// store (device discovery, mount, staging) is M3 and is injected
-	// here when it lands; until then Store is nil and the boot-partition
-	// logic is inert.
+	// bootstrap, defensive re-staging and physical staging. The physical
+	// boot store discovers the boot device over the host /dev and mounts
+	// it (M3); without a labeled device it skips the node + events.
 	update.New(e, update.Config{
 		NodeName:       nodeName,
 		EventNamespace: "default",
 		Features:       e.FeatureConfig,
+		Store:          update.NewPhysicalStore(update.PhysicalStoreConfig{Log: log}),
 		Log:            log,
 	})
 

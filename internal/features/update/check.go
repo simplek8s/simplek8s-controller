@@ -19,9 +19,13 @@ const (
 // CheckResult is the outcome of one verified check for one node.
 type CheckResult struct {
 	URL       string
-	Latest    string // newest ts for this node's arch in the verified index
-	Running   string // ts from nodeInfo.kernelVersion
-	Available bool   // Latest newer than Running
+	Arch      string            // node's release arch (x86-64/aarch64)
+	Latest    string            // newest ts for this node's arch in the verified index
+	Running   string            // ts from nodeInfo.kernelVersion
+	Available bool              // Latest newer than Running
+	Artifact  string            // filename of the latest kernel artifact
+	Checksum  string            // sha256 of that artifact (verified index)
+	Sums      map[string]string // the full verified index (filename -> sha256)
 }
 
 // Check performs the per-node release check (PLAN-M2 3.6): fetch the
@@ -67,6 +71,8 @@ func (f *Feature) Check(ctx context.Context, node *kube.Node, repoURL string) (C
 	if !ok {
 		return res, fmt.Errorf("unsupported node architecture %q", node.Status.NodeInfo.Architecture)
 	}
+	res.Arch = arch
+	res.Sums = sums
 	for file := range sums {
 		ts, fileArch, isKernel := ParseKernelRelease(file)
 		if !isKernel || fileArch != arch {
@@ -80,6 +86,8 @@ func (f *Feature) Check(ctx context.Context, node *kube.Node, repoURL string) (C
 	res.Running = RunningVersion(node.Status.NodeInfo.KernelVersion)
 	if res.Latest != "" {
 		res.Available = res.Running == "" || NewerTS(res.Latest, res.Running)
+		res.Artifact = kernelArtifactName(res.Latest, arch)
+		res.Checksum = sums[res.Artifact]
 	}
 	return res, nil
 }

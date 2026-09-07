@@ -3,12 +3,12 @@ package update
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,8 +23,10 @@ func (c *clock) Now() time.Time          { return c.t }
 func (c *clock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 type fakeStore struct {
-	mu   sync.Mutex
-	vers []string
+	mu     sync.Mutex
+	vers   []string
+	staged []StageRequest
+	err    error
 }
 
 func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
@@ -33,10 +35,41 @@ func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
 	return append([]string(nil), s.vers...), nil
 }
 
+func (s *fakeStore) Stage(ctx context.Context, req StageRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staged = append(s.staged, req)
+	if s.err == nil {
+		for _, v := range s.vers {
+			if v == req.Version {
+				return nil
+			}
+		}
+		s.vers = append(s.vers, req.Version)
+	}
+	return s.err
+}
+
 func (s *fakeStore) set(vers ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.vers = vers
+}
+
+func (s *fakeStore) setStageErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+func (s *fakeStore) stagedVersions() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.staged))
+	for i, r := range s.staged {
+		out[i] = r.Version
+	}
+	return out
 }
 
 // countingRepo serves a re-signable release index and counts index hits.
@@ -384,40 +417,71 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 	}
 }
 
-// --- Defensive re-staging detection (PLAN-M2 3.7) -----------------------------
+// --- Staging (PLAN-M2 3.7) -------------------------------------------------
 
-func TestDefensiveRestageDetectsMissingLocalVersion(t *testing.T) {
-	// Anchored to a version that is NOT on the local boot partition and
-	// not running: detection must log, and must not touch the annotation.
+// TestStagesAvailableReleaseAndAnchors: a quiescent node with a newer
+// release available (not local) gets it staged AND anchored.
+func TestStagesAvailableReleaseAndAnchors(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000"})
+	h.tick()
+	if got := h.store.stagedVersions(); len(got) != 1 || got[0] != "202608291203" {
+		t.Fatalf("staged = %v, want [202608291203]", got)
+	}
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("next-kernel = %q, want anchored 202608291203", got)
+	}
+	if h.eventCount("UpdateStaged") != 1 {
+		t.Fatalf("UpdateStaged = %d, want 1", h.eventCount("UpdateStaged"))
+	}
+}
+
+// TestDefensiveRestageStagesMissingAnchoredVersion: the node is anchored
+// to a version whose files are missing locally; it is re-staged, and the
+// (already set) annotation is left untouched (anchor is gated quiescent).
+func TestDefensiveRestageStagesMissingAnchoredVersion(t *testing.T) {
 	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202601010000"})
 	h.tick()
-	if got := h.nextKernel(); got != "202608291203" {
-		t.Fatalf("annotation must be untouched by re-staging: %q", got)
+	if got := h.store.stagedVersions(); len(got) != 1 || got[0] != "202608291203" {
+		t.Fatalf("staged = %v, want [202608291203]", got)
 	}
-	if !strings.Contains(h.logs(), "missing locally") {
-		t.Fatalf("expected defensive re-staging log, got: %s", h.logs())
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("annotation must be untouched: %q", got)
 	}
 }
 
-func TestDefensiveRestageQuietWhenVersionLocal(t *testing.T) {
+// TestStagingSkippedWhenVersionAlreadyLocal: nothing to stage.
+func TestStagingSkippedWhenVersionAlreadyLocal(t *testing.T) {
 	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202601010000", "202608291203"})
 	h.tick()
-	if strings.Contains(h.logs(), "missing locally") {
-		t.Fatalf("no re-staging expected when the version is local: %s", h.logs())
+	if got := h.store.stagedVersions(); len(got) != 0 {
+		t.Fatalf("staged = %v, want none (already local)", got)
+	}
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("next-kernel = %q, want unchanged", got)
 	}
 }
 
-func TestDefensiveRestageQuietWhenQuiescent(t *testing.T) {
-	// next-kernel == running: quiescent, never re-staged.
+// TestStagingFailureFiresEventNoAnnotationChange: a failed stage fires
+// UpdateStagingSkipped and never changes the annotation.
+func TestStagingFailureFiresEventNoAnnotationChange(t *testing.T) {
 	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
-		[]string{})
+		[]string{"202601010000"})
+	h.store.setStageErr(errors.New("disk full"))
 	h.tick()
-	if strings.Contains(h.logs(), "missing locally") {
-		t.Fatalf("quiescent node must not trigger re-staging: %s", h.logs())
+	if got := h.nextKernel(); got != "202601010000" {
+		t.Fatalf("next-kernel = %q, want unchanged after failed stage", got)
+	}
+	if h.eventCount("UpdateStagingSkipped") != 1 {
+		t.Fatalf("UpdateStagingSkipped = %d, want 1", h.eventCount("UpdateStagingSkipped"))
+	}
+	if h.eventCount("UpdateStaged") != 0 {
+		t.Fatalf("UpdateStaged = %d, want 0", h.eventCount("UpdateStaged"))
 	}
 }
