@@ -88,18 +88,18 @@ func TestApplyPurgeRemovesOnlyNamedKernels(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{"simplek8s.202601010000.x86-64.kernel", "simplek8s.202602010000.x86-64.kernel"} {
+	for _, n := range []string{"simplek8s.202601010000.x86-64.efi", "simplek8s.202602010000.x86-64.efi"} {
 		if err := os.WriteFile(filepath.Join(root, dir, n), []byte("x"), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := applyPurge(root, dir, []string{"simplek8s.202601010000.x86-64.kernel"}); err != nil {
+	if err := applyPurge(root, dir, []string{"simplek8s.202601010000.x86-64.efi"}); err != nil {
 		t.Fatal(err)
 	}
-	if fileExists(filepath.Join(root, dir, "simplek8s.202601010000.x86-64.kernel")) {
+	if fileExists(filepath.Join(root, dir, "simplek8s.202601010000.x86-64.efi")) {
 		t.Fatal("purged kernel still present")
 	}
-	if !fileExists(filepath.Join(root, dir, "simplek8s.202602010000.x86-64.kernel")) {
+	if !fileExists(filepath.Join(root, dir, "simplek8s.202602010000.x86-64.efi")) {
 		t.Fatal("untouched kernel was removed")
 	}
 }

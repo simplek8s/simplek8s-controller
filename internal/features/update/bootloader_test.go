@@ -52,7 +52,7 @@ func TestSyslinuxSetAndGetDefaultReplacesExistingDefault(t *testing.T) {
 	orig := "TIMEOUT 20\nDEFAULT old\n\nLABEL old\n KERNEL old.kernel\n"
 	writeRel(t, root, syslinuxConfigRel, orig)
 
-	newKernel := "simplek8s/simplek8s.202601010000.x86-64.kernel"
+	newKernel := "simplek8s/simplek8s.202601010000.x86-64.efi"
 	if err := SetBootloaderDefault(BootloaderSyslinux, root, newKernel, "/"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestSyslinuxSetAndGetDefaultReplacesExistingDefault(t *testing.T) {
 func TestSyslinuxSetDefaultAddsMissingLabel(t *testing.T) {
 	root := t.TempDir()
 	writeRel(t, root, syslinuxConfigRel, "TIMEOUT 20\nDEFAULT old\n")
-	newKernel := "simplek8s/simplek8s.202601010000.x86-64.kernel"
+	newKernel := "simplek8s/simplek8s.202601010000.x86-64.efi"
 	if err := SetBootloaderDefault(BootloaderSyslinux, root, newKernel, "/"); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSyslinuxSetDefaultAddsMissingLabel(t *testing.T) {
 func TestRpiSetAndGetDefault(t *testing.T) {
 	root := t.TempDir()
 	writeRel(t, root, rpiConfigRel, "boot_delay=1\nkernel=old.kernel\n")
-	newKernel := "simplek8s/simplek8s.202601010000.aarch64.kernel"
+	newKernel := "simplek8s/simplek8s.202601010000.aarch64.efi"
 	if err := SetBootloaderDefault(BootloaderRpi, root, newKernel, "/"); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestRpiSetAndGetDefault(t *testing.T) {
 func TestAutoBootloaderResolvesByDetection(t *testing.T) {
 	root := t.TempDir()
 	writeRel(t, root, rpiConfigRel, "kernel=old.kernel\n")
-	newKernel := "simplek8s/simplek8s.202601010000.aarch64.kernel"
+	newKernel := "simplek8s/simplek8s.202601010000.aarch64.efi"
 	if err := SetBootloaderDefault(BootloaderAuto, root, newKernel, "/"); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestAutoBootloaderResolvesByDetection(t *testing.T) {
 }
 
 func TestKernelBasename(t *testing.T) {
-	if got := kernelBasename("simplek8s/simplek8s.202601010000.x86-64.kernel"); got != "simplek8s.202601010000.x86-64" {
+	if got := kernelBasename("simplek8s/simplek8s.202601010000.x86-64.efi"); got != "simplek8s.202601010000.x86-64" {
 		t.Fatalf("kernelBasename = %q", got)
 	}
 }

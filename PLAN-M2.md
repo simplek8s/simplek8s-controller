@@ -13,7 +13,8 @@ closed with the maintainer (2026-09-06), pending implementation.
 
 The second feature of the controller: distro updates. It detects a new
 SimpleK8s kernel release in the release repository, stages it on each
-node's boot partition (`/boot/simplek8s/`), points the bootloader at it
+node's boot partition (the `simplek8s/` dir at its root, abbreviated
+`/boot/simplek8s/` throughout this doc), points the bootloader at it
 through the `next-kernel` annotation (the source of truth for what the
 node should boot), and — in `full` mode — runs an all-or-nothing,
 cluster-wide reboot plan on top of the existing M1 reboot machinery,
@@ -23,13 +24,20 @@ Release format (one file per version+arch, served over HTTP from the
 release repo URL):
 
 ```
-<url>/SHA256SUMS                          index: "<sha256>  simplek8s.<ts>.<arch>.kernel.zst"
+<url>/SHA256SUMS                          index: "<sha256>  <file>" (one line per artifact)
 <url>/SHA256SUMS.gpg                      detached GPG signature over SHA256SUMS
-<url>/simplek8s.<ts>.<arch>.kernel.zst    zstd of kernel + initrd
+<url>/simplek8s.<ts>.<arch>.efi.zst       zstd of the kernel+initrd image (what the controller downloads)
+<url>/simplek8s.<ts>.<arch>.efi           uncompressed kernel+initrd (served, not downloaded)
+<url>/simplek8s.<ts>.<arch>.img[.zst]     full disk image (served, not consumed)
+<url>/simplek8s.<ts>.<arch>.info.json     release metadata (served, not consumed)
+<url>/simplek8s.latest.<arch>.*           alias of the newest release
 ```
 
 - `ts` = timestamp of the release (the version), `arch` = `x86-64` /
-  `aarch64`.
+  `aarch64`. The kernel+initrd image is `.efi`; `.kernel` was the
+  pre-2024 name and is no longer produced or consumed. The controller
+  downloads the `.efi.zst` form on purpose (bandwidth); the uncompressed
+  `.efi` is served but not fetched.
 - The node's running version is the kernel release string
   (`simplek8s-<ts>`), read from `Node.status.nodeInfo.kernelVersion`.
 - The node's arch is `Node.status.nodeInfo.architecture`
@@ -264,11 +272,11 @@ Flow (on every node, cluster-wide for that version):
    a device.
 2. **Mount**: `syscall.Mount` (vfat) at a private mountpoint the pod
    creates. No D-Bus, no systemd.
-3. **Download** `<url>/simplek8s.<ts>.<arch>.kernel.zst`; verify sha256
-   against the GPG-verified index. Capacity pre-check before download
-   (free space < file size + margin → skip + event).
-4. **Extract** zstd → `<boot>/simplek8s/simplek8s.<ts>.<arch>`
-   (+ initrd).
+3. **Download** `<url>/simplek8s.<ts>.<arch>.efi.zst`; verify sha256
+    against the GPG-verified index. Capacity pre-check before download
+    (free space < file size + margin → skip + event).
+4. **Extract** zstd → `<boot>/simplek8s/simplek8s.<ts>.<arch>.efi`
+    (the kernel+initrd image).
 5. **Bootloader entry**: add the version to the syslinux/rpi config
    (writers ported from the reference project).
 6. **Purge**: keep the newest `updates.preserve` versions, then enforce
@@ -285,6 +293,41 @@ local), retried at the next check.
 **Defensive re-staging**: if `next-kernel != running` and that version
 is not in `/boot/simplek8s/` (file deleted, hand-edited layout) →
 re-stage that version locally. No plan implications.
+
+**Boot partition layout (ground truth, verified on the test cluster,
+2026-09-07):** the boot device is the FAT partition labelled `EFI`
+(PARTLABEL `boot`); the pod mounts it at a private scratch directory, so
+`<boot>` below is that mount point, not a literal host path.
+
+```
+<boot>/
+├── EFI/                        UEFI boot tools (HashTool.EFI, LOADER.EFI, …)
+├── simplek8s/
+│   ├── simplek8s.<ts>.<arch>.efi    kernel+initrd image (0755), one per staged version
+│   └── simplek8s.yaml
+└── syslinux/
+    ├── ldlinux.c32 / ldlinux.e64 / ldlinux.sys
+    └── syslinux.cfg
+```
+
+`syslinux.cfg` keeps one label per staged kernel; `DEFAULT` names the
+active one (label = the kernel basename, `KERNEL` = its absolute path
+rooted at the mount point):
+
+```
+DEFAULT simplek8s.<ts>.<arch>
+LABEL simplek8s.<ts>.<arch>
+ KERNEL /simplek8s/simplek8s.<ts>.<arch>.efi
+```
+
+The `.efi` image boots **both** BIOS (via syslinux) and UEFI. On RPi the
+kernels live in the same `simplek8s/` dir and the partition-root
+`config.txt` (`kernel=<path>`) selects one. The controller only writes
+into `simplek8s/` and the bootloader config (`syslinux/syslinux.cfg` or
+`config.txt`); it never touches `EFI/`. Labels the controller appends for
+newly staged versions carry the `.efi` suffix in their name; the
+pre-2024 image-written labels do not — both coexist and `DEFAULT` always
+points at the active kernel.
 
 ### 3.8 Reboot plan (`full` mode) — action-based, all-or-nothing
 

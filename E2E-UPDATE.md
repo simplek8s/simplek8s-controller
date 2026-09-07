@@ -7,18 +7,22 @@ E2E.md apply (`$API`, `$AUTH`, events in namespace `default`).
 ## Prerequisites
 
 - **Mock release server**: a small HTTP server on one of the cluster
-  nodes serving a `dev/`-style layout:
-  `SHA256SUMS`, `SHA256SUMS.gpg`, `simplek8s.<ts>.<arch>.kernel.zst`.
+   nodes serving a `dev/`-style layout:
+   `SHA256SUMS`, `SHA256SUMS.gpg`, `simplek8s.<ts>.<arch>.efi.zst`.
   The access log doubles as the "did the controller talk to the repo?"
   evidence (U0).
 - **Test keyring**: a generated keypair signs the mock `SHA256SUMS`; the
   public keyring is embedded in a **variant controller image** at the
   same fixed path (`/etc/simplek8s/pubring.gpg`) — the D10/D11 variant
   pattern from E2E.md.
-- **Mock "new version"**: for staging tests the `.kernel.zst` content
-  can be dummy files — staging verifies the container's sha256 + GPG,
-  not the kernel's bootability. The filename's `ts` must be newer than
-  the running one.
+- **Mock "new version"**: for staging tests the `.efi.zst` content can
+  be dummy files — staging verifies the container's sha256 + GPG, not
+  the kernel's bootability. The filename's `ts` must be newer than the
+  running one.
+- **Boot layout**: kernels live in the `simplek8s/` dir at the root of
+  the (temporarily mounted) boot partition; `/boot/simplek8s/` in the
+  cases below is shorthand for that dir. See PLAN-M2.md §3.7
+  (ground-truth layout).
 - **Real new release** (U5 only): the maintainer publishes a dev release
   newer than the running `ts` on the test cluster.
 - **ConfigMap**: `updates.url` pointed at the mock; `updates.update-mode`

@@ -107,7 +107,7 @@ func TestCheckArchFiltering(t *testing.T) {
 
 func TestCheckNoKernelForArch(t *testing.T) {
 	k := newTestKey(t, true)
-	files := map[string][]byte{"simplek8s.202601010000.x86-64.kernel.zst": []byte("k")}
+	files := map[string][]byte{"simplek8s.202601010000.x86-64.efi.zst": []byte("k")}
 	srv := releaseRepo(t, k, true, files)
 	f := testFeature(t, k)
 
@@ -151,7 +151,7 @@ func TestCheckMissingIndex(t *testing.T) {
 
 func TestCheckBadSignature(t *testing.T) {
 	k := newTestKey(t, true)
-	index := "deadbeef  simplek8s.202601010000.x86-64.kernel.zst\n"
+	index := "deadbeef  simplek8s.202601010000.x86-64.efi.zst\n"
 	forger := newTestKey(t, true)
 	sig := forger.sign(t, []byte(index), true)
 	mux := http.NewServeMux()

@@ -8,12 +8,16 @@ import (
 // Release file naming (PLAN-M2 3.6, ported from the simplek8s-update
 // release grammar): simplek8s.<ts>.<arch>.<component>[.<compression>],
 // where the controller only consumes kernel releases, e.g.
-// simplek8s.202608291203.x86-64.kernel.zst.
-var kernelReleaseRe = regexp.MustCompile(`^simplek8s\.([0-9]+)\.([A-Za-z0-9_-]+)\.kernel\.(zst|xz)$`)
+// simplek8s.202608291203.x86-64.efi.zst. The .efi image is the
+// kernel+initrd; .kernel was the pre-2024 legacy name. The repo also
+// serves the uncompressed .efi (and .img), but the controller downloads
+// the .zst form on purpose (bandwidth).
+var kernelReleaseRe = regexp.MustCompile(`^simplek8s\.([0-9]+)\.([A-Za-z0-9_-]+)\.efi\.(zst|xz)$`)
 
-// ParseKernelRelease parses a release filename into (ts, arch).
-// Non-kernel components (efi, img, info.json) and bare/other files do
-// not match.
+// ParseKernelRelease parses a release filename into (ts, arch). Only the
+// compressed kernel artifacts (.efi.zst / .efi.xz) match; the
+// uncompressed .efi is served by the repo but not consumed. Non-kernel
+// components (img, info.json) do not match.
 func ParseKernelRelease(filename string) (ts, arch string, ok bool) {
 	m := kernelReleaseRe.FindStringSubmatch(filename)
 	if m == nil {

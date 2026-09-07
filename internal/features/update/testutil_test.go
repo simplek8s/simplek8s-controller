@@ -106,15 +106,16 @@ func releaseRepo(t *testing.T, key *testKey, armoredSig bool, files map[string][
 	return srv
 }
 
-// kernelIndex is a realistic index: two x86-64 kernel releases, one
-// aarch64, plus non-kernel files that must be ignored.
+// kernelIndex is a realistic index: two x86-64 kernel releases and one
+// aarch64 (.efi.zst), plus non-kernel and legacy .kernel files that must
+// be ignored.
 func kernelIndex() map[string][]byte {
 	return map[string][]byte{
-		"simplek8s.202601010000.x86-64.kernel.zst":  []byte("old-kernel"),
-		"simplek8s.202608291203.x86-64.kernel.zst":  []byte("new-kernel"),
-		"simplek8s.202605050000.aarch64.kernel.zst": []byte("arm-kernel"),
-		"simplek8s.202608291203.x86-64.efi.zst":     []byte("efi"),
-		"simplek8s.202608291203.x86-64.img.zst":     []byte("img"),
-		"info.json":                                 []byte("{}"),
+		"simplek8s.202601010000.x86-64.efi.zst":    []byte("old-kernel"),
+		"simplek8s.202608291203.x86-64.efi.zst":    []byte("new-kernel"),
+		"simplek8s.202605050000.aarch64.efi.zst":   []byte("arm-kernel"),
+		"simplek8s.202608291203.x86-64.kernel.zst": []byte("legacy"), // legacy .kernel: ignored
+		"simplek8s.202608291203.x86-64.img.zst":    []byte("img"),
+		"info.json":                                []byte("{}"),
 	}
 }

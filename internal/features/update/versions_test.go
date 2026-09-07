@@ -8,14 +8,15 @@ func TestParseKernelRelease(t *testing.T) {
 		ts, arch string
 		ok       bool
 	}{
-		{"simplek8s.202608291203.x86-64.kernel.zst", "202608291203", "x86-64", true},
-		{"simplek8s.202608291203.aarch64.kernel.xz", "202608291203", "aarch64", true},
-		{"simplek8s.202608291203.x86-64.efi.zst", "", "", false},
+		{"simplek8s.202608291203.x86-64.efi.zst", "202608291203", "x86-64", true},
+		{"simplek8s.202608291203.aarch64.efi.xz", "202608291203", "aarch64", true},
+		{"simplek8s.202608291203.x86-64.efi", "", "", false},
 		{"simplek8s.202608291203.x86-64.img.zst", "", "", false},
 		{"info.json", "", "", false},
-		{"simplek8s.202608291203.x86-64.kernel.gz", "", "", false},
-		{"simplek8s.202608291203.kernel.zst", "", "", false},
-		{"simplek8s.x86-64.kernel.zst", "", "", false},
+		{"simplek8s.202608291203.x86-64.efi.gz", "", "", false},
+		{"simplek8s.202608291203.x86-64.kernel.zst", "", "", false},
+		{"simplek8s.202608291203.efi.zst", "", "", false},
+		{"simplek8s.x86-64.efi.zst", "", "", false},
 	}
 	for _, tc := range cases {
 		ts, arch, ok := ParseKernelRelease(tc.file)

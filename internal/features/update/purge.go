@@ -16,7 +16,7 @@ import (
 // kernelEntry is one stored kernel on the partition.
 type kernelEntry struct {
 	ts   string
-	name string // basename, e.g. simplek8s.<ts>.<arch>.kernel
+	name string // basename, e.g. simplek8s.<ts>.<arch>.efi
 	size int64
 }
 

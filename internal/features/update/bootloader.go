@@ -46,8 +46,8 @@ func DetectBootloader(partRoot string) (BootloaderType, error) {
 }
 
 // SetBootloaderDefault points the partition's bootloader default at
-// relKernelPath (relative to the partition root, e.g.
-// /simplek8s/simplek8s.<ts>.<arch>.kernel).
+// relKernelPath (rooted at the partition root, e.g.
+// /simplek8s/simplek8s.<ts>.<arch>.efi).
 func SetBootloaderDefault(bootType BootloaderType, partRoot, relKernelPath, relUcode string) error {
 	switch resolveBootloader(bootType) {
 	case BootloaderSyslinux:

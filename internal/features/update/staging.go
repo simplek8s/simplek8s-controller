@@ -32,8 +32,10 @@ type StageRequest struct {
 }
 
 // storedKernelRe matches a decompressed kernel name on the partition:
-// simplek8s.<ts>.<arch>.kernel.
-var storedKernelRe = regexp.MustCompile(`^simplek8s\.([0-9]+)\.([A-Za-z0-9_-]+)\.kernel$`)
+// simplek8s.<ts>.<arch>.efi. The .efi file is the kernel+initrd image (it
+// boots both BIOS and UEFI); .kernel was the pre-2024 legacy name and is no
+// longer produced.
+var storedKernelRe = regexp.MustCompile(`^simplek8s\.([0-9]+)\.([A-Za-z0-9_-]+)\.efi$`)
 
 // versionFromStoredKernel parses a stored kernel basename into its ts.
 func versionFromStoredKernel(filename string) (string, bool) {
@@ -44,14 +46,16 @@ func versionFromStoredKernel(filename string) (string, bool) {
 	return m[1], true
 }
 
-// kernelStoredName is the decompressed kernel filename on the partition.
+// kernelStoredName is the decompressed kernel filename on the partition
+// (the .efi image: kernel + initrd).
 func kernelStoredName(ts, arch string) string {
-	return "simplek8s." + ts + "." + arch + ".kernel"
+	return "simplek8s." + ts + "." + arch + ".efi"
 }
 
-// kernelArtifactName is the compressed artifact filename in the repo.
+// kernelArtifactName is the compressed artifact filename in the repo
+// (zstd of the .efi image).
 func kernelArtifactName(ts, arch string) string {
-	return "simplek8s." + ts + "." + arch + ".kernel.zst"
+	return "simplek8s." + ts + "." + arch + ".efi.zst"
 }
 
 // listPartitionVersions returns the release ts present under
@@ -160,8 +164,10 @@ func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partR
 		return fmt.Errorf("write %s: %w", stored, err)
 	}
 
-	// 6. point the bootloader default at the new kernel.
-	if err := SetBootloaderDefault(req.Bootloader, partRoot, filepath.Join(dir, stored), "/"); err != nil {
+	// 6. point the bootloader default at the new kernel. The path is rooted
+	// at the boot-partition mount point (leading "/"), matching the
+	// reference syslinux/rpi layout.
+	if err := SetBootloaderDefault(req.Bootloader, partRoot, "/"+filepath.Join(dir, stored), "/"); err != nil {
 		return fmt.Errorf("bootloader: %w", err)
 	}
 

@@ -62,7 +62,7 @@ func TestLoadKeyringErrors(t *testing.T) {
 }
 
 func TestVerifyIndex(t *testing.T) {
-	index := []byte("deadbeef  simplek8s.202601010000.x86-64.kernel.zst\n")
+	index := []byte("deadbeef  simplek8s.202601010000.x86-64.efi.zst\n")
 
 	for _, armored := range []bool{true, false} {
 		k := newTestKey(t, true) // keyring always armored is fine

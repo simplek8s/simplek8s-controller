@@ -12,16 +12,16 @@ import (
 )
 
 func TestKernelNaming(t *testing.T) {
-	if got := kernelStoredName("202601010000", "x86-64"); got != "simplek8s.202601010000.x86-64.kernel" {
+	if got := kernelStoredName("202601010000", "x86-64"); got != "simplek8s.202601010000.x86-64.efi" {
 		t.Fatalf("kernelStoredName = %q", got)
 	}
-	if got := kernelArtifactName("202601010000", "x86-64"); got != "simplek8s.202601010000.x86-64.kernel.zst" {
+	if got := kernelArtifactName("202601010000", "x86-64"); got != "simplek8s.202601010000.x86-64.efi.zst" {
 		t.Fatalf("kernelArtifactName = %q", got)
 	}
-	if ts, ok := versionFromStoredKernel("simplek8s.202601010000.x86-64.kernel"); !ok || ts != "202601010000" {
+	if ts, ok := versionFromStoredKernel("simplek8s.202601010000.x86-64.efi"); !ok || ts != "202601010000" {
 		t.Fatalf("versionFromStoredKernel = %q, %v", ts, ok)
 	}
-	if _, ok := versionFromStoredKernel("simplek8s.202601010000.x86-64.efi"); ok {
+	if _, ok := versionFromStoredKernel("simplek8s.202601010000.x86-64.img"); ok {
 		t.Fatal("versionFromStoredKernel matched a non-kernel file")
 	}
 }
@@ -51,7 +51,7 @@ func TestListPartitionVersions(t *testing.T) {
 func TestProtectedSetIncludesRunningVersionAndDefault(t *testing.T) {
 	root := t.TempDir()
 	// Bootloader currently defaults to the 20260201 kernel.
-	writeRel(t, root, syslinuxConfigRel, "DEFAULT simplek8s.202602010000.x86-64\n\nLABEL simplek8s.202602010000.x86-64\n KERNEL simplek8s/simplek8s.202602010000.x86-64.kernel\n")
+	writeRel(t, root, syslinuxConfigRel, "DEFAULT simplek8s.202602010000.x86-64\n\nLABEL simplek8s.202602010000.x86-64\n KERNEL /simplek8s/simplek8s.202602010000.x86-64.efi\n")
 	req := StageRequest{
 		Version:    "202603010000",
 		Running:    "202601010000",
@@ -115,7 +115,7 @@ func TestStagePartitionEndToEnd(t *testing.T) {
 		t.Fatalf("stored kernel content = %q, want %q", got, payload)
 	}
 
-	wantKernel := "simplek8s/" + kernelStoredName(ts, arch)
+	wantKernel := "/" + filepath.Join(dir, kernelStoredName(ts, arch))
 	if def := GetBootloaderDefault(BootloaderSyslinux, partRoot); def != wantKernel {
 		t.Fatalf("bootloader default = %q, want %q", def, wantKernel)
 	}

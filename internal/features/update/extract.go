@@ -1,8 +1,8 @@
 package update
 
 // zstd extraction (PLAN-M2 3.7 step 4). The release artifact
-// simplek8s.<ts>.<arch>.kernel.zst is a single zstd stream; it is
-// decompressed to the stored kernel name (the .zst stripped).
+// simplek8s.<ts>.<arch>.efi.zst is a single zstd stream; it is
+// decompressed to the stored kernel name (the .zst stripped -> .efi).
 
 import (
 	"fmt"
