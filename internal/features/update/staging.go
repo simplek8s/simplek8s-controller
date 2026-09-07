@@ -94,7 +94,9 @@ func protectedSet(req StageRequest, partRoot string) map[string]bool {
 
 // stagePartition stages req onto the mounted partition at partRoot.
 // workDir is a scratch dir (pod temp) for the download + extracted kernel.
-func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partRoot, dir, workDir string) error {
+// log reports the significant steps (download/verify, extract, write);
+// pass discardLogger for pure unit tests.
+func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRequest, partRoot, dir, workDir string) error {
 	if c == nil {
 		c = &http.Client{}
 	}
@@ -103,8 +105,10 @@ func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partR
 
 	// 1. idempotency: already staged -> nothing to do.
 	if fileExists(storedPath) {
+		log.Debug("update: kernel already staged, skipping", "version", req.Version, "stored", stored)
 		return nil
 	}
+	log.Debug("update: staging release", "version", req.Version, "stored", stored)
 
 	// 2. download the artifact and verify its sha256 (verified index).
 	artifact := req.ArtifactFile
@@ -115,14 +119,21 @@ func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partR
 	url := strings.TrimSuffix(req.RepoBase, "/") + "/" + artifact
 	if err := downloadAndVerify(ctx, c, url, req.Checksum, artPath); err != nil {
 		os.Remove(artPath)
+		log.Warn("update: kernel download/verify failed", "version", req.Version, "artifact", artifact, "err", err)
 		return fmt.Errorf("download %s: %w", artifact, err)
 	}
+	var dlBytes int64
+	if st, serr := os.Stat(artPath); serr == nil {
+		dlBytes = st.Size()
+	}
+	log.Info("update: kernel downloaded", "version", req.Version, "artifact", artifact, "bytes", dlBytes)
 	defer os.Remove(artPath)
 
 	// 3. extract the kernel to the scratch dir.
 	extPath := filepath.Join(workDir, stored)
 	if err := extractZstd(artPath, extPath); err != nil {
 		os.Remove(extPath)
+		log.Warn("update: kernel extract failed", "version", req.Version, "artifact", artifact, "err", err)
 		return fmt.Errorf("extract %s: %w", artifact, err)
 	}
 	defer os.Remove(extPath)
@@ -130,6 +141,7 @@ func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partR
 	if err != nil {
 		return err
 	}
+	log.Debug("update: kernel extracted", "version", req.Version, "stored", stored, "bytes", extSize)
 
 	protected := protectedSet(req, partRoot)
 
@@ -163,6 +175,7 @@ func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partR
 	if err := copyFile(extPath, storedPath); err != nil {
 		return fmt.Errorf("write %s: %w", stored, err)
 	}
+	log.Debug("update: kernel written to boot partition", "version", req.Version, "stored", stored)
 
 	// 6. point the bootloader default at the new kernel. The path is rooted
 	// at the boot-partition mount point (leading "/"), matching the
@@ -170,6 +183,7 @@ func stagePartition(ctx context.Context, c *http.Client, req StageRequest, partR
 	if err := SetBootloaderDefault(req.Bootloader, partRoot, "/"+filepath.Join(dir, stored), "/"); err != nil {
 		return fmt.Errorf("bootloader: %w", err)
 	}
+	log.Debug("update: bootloader default updated", "version", req.Version, "target", "/"+filepath.Join(dir, stored))
 
 	// 7. retention purge: keep the newest `preserve`, enforce the usage cap.
 	_, free, _, err = PathInfo(partRoot)

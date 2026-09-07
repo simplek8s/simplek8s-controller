@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +27,22 @@ var (
 	builtAt = "unknown"
 )
 
+// logLevelFromEnv maps the SIMPLEK8S_LOG_LEVEL env (debug/info/warn/error,
+// case-insensitive) to a slog level for the chattier development logging;
+// empty or unknown values fall back to Info.
+func logLevelFromEnv(v string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func main() {
 	// Deployment wiring only. Feature configuration lives in the
 	// flat-key ConfigMap (PLAN-M2 3.2); the old feature flags are
@@ -38,7 +55,8 @@ func main() {
 	)
 	flag.Parse()
 
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log := slog.New(slog.NewJSONHandler(os.Stderr,
+		&slog.HandlerOptions{Level: logLevelFromEnv(os.Getenv("SIMPLEK8S_LOG_LEVEL"))}))
 
 	// Mandatory API token (PLAN 3.9): a deployment without a token is not
 	// supported, so the API is never accidentally exposed tokenless.

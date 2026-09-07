@@ -50,6 +50,7 @@ type PhysicalStoreConfig struct {
 // satisfies it; tests use a stub).
 type Logger interface {
 	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
 }
 
@@ -143,7 +144,7 @@ func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
 		return fmt.Errorf("scratch dir: %w", err)
 	}
 	defer os.RemoveAll(work)
-	return stagePartition(ctx, s.http, req, mnt, s.kernelDir, work)
+	return stagePartition(ctx, s.http, s.log, req, mnt, s.kernelDir, work)
 }
 
 // findBootDevice locates the boot device over the host /dev: first the
@@ -170,10 +171,17 @@ func (s *PhysicalStore) findBootDevice(ctx context.Context) (string, error) {
 // mountDevice mounts dev at a fresh private mountpoint and returns the
 // path plus a cleanup func (unmount + remove the mountpoint).
 func (s *PhysicalStore) mountDevice(dev string) (string, func(), error) {
+	// os.MkdirTemp does not create parents; the mount root (pod /run, a
+	// writable tmpfs) may not exist yet. Ensure it before making the
+	// private mountpoint, or every scan/stage fails silently.
+	if err := os.MkdirAll(s.mountRoot, 0o755); err != nil {
+		return "", func() {}, fmt.Errorf("mount root %s: %w", s.mountRoot, err)
+	}
 	target, err := os.MkdirTemp(s.mountRoot, "mnt-")
 	if err != nil {
 		return "", func() {}, fmt.Errorf("mountpoint: %w", err)
 	}
+	s.log.Debug("update: mounting boot device", "device", dev, "target", target, "fstype", s.fstype)
 	mounted := false
 	cleanup := func() {
 		if mounted {
@@ -255,4 +263,5 @@ func realBlkid(args ...string) (string, error) {
 type discardLogger struct{}
 
 func (discardLogger) Debug(string, ...any) {}
+func (discardLogger) Info(string, ...any)  {}
 func (discardLogger) Warn(string, ...any)  {}

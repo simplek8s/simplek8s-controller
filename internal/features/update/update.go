@@ -180,11 +180,11 @@ func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) {
 	if err := nodestate.PatchTransition(ctx, f.kube, node.Metadata.Name, 3,
 		nodestate.NextKernelBuild(target, nodestate.PrecondAbsent)); err != nil {
 		if err != nodestate.ErrAbort {
-			f.log.Warn("update: bootstrap anchor failed", "node", node.Metadata.Name, "version", target, "err", err)
+			f.log.Warn("update: bootstrap anchor failed", "version", target, "err", err)
 		}
 		return
 	}
-	f.log.Info("update: bootstrapped next-kernel", "node", node.Metadata.Name, "version", target)
+	f.log.Info("update: bootstrapped next-kernel", "version", target)
 }
 
 // --- Staging (PLAN-M2 3.7) --------------------------------------------
@@ -199,8 +199,14 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 		return
 	}
 	local, err := f.cfg.Store.Versions(ctx)
+	f.mu.Lock()
 	if err != nil {
-		f.log.Debug("update: local version scan failed", "err", err)
+		f.noteScanErrorLocked(f.cfg.NodeName, true, err)
+	} else {
+		f.noteScanErrorLocked(f.cfg.NodeName, false, nil)
+	}
+	f.mu.Unlock()
+	if err != nil {
 		return
 	}
 	localSet := make(map[string]bool, len(local))
@@ -244,7 +250,7 @@ func (f *Feature) stageOne(ctx context.Context, node *kube.Node, fc config.Confi
 	checksum, ok := res.Sums[artifact]
 	if !ok {
 		f.log.Warn("update: no verified checksum for version; not staging",
-			"node", node.Metadata.Name, "version", v, "artifact", artifact)
+			"version", v, "artifact", artifact)
 		return false
 	}
 	req := StageRequest{
@@ -258,14 +264,14 @@ func (f *Feature) stageOne(ctx context.Context, node *kube.Node, fc config.Confi
 		Running:         RunningVersion(node.Status.NodeInfo.KernelVersion),
 	}
 	if err := f.cfg.Store.Stage(ctx, req); err != nil {
-		f.log.Warn("update: staging skipped", "node", node.Metadata.Name, "version", v, "err", err)
+		f.log.Warn("update: staging skipped", "version", v, "err", err)
 		f.event(node.Metadata.Name, "UpdateStagingSkipped",
 			fmt.Sprintf("staging %s skipped: %v", v, err), true)
 		return false
 	}
 	f.event(node.Metadata.Name, "UpdateStaged",
 		fmt.Sprintf("staged release %s on %s", v, node.Status.NodeInfo.Architecture), false)
-	f.log.Info("update: staged release", "node", node.Metadata.Name, "version", v)
+	f.log.Info("update: staged release", "version", v)
 	return true
 }
 
@@ -283,11 +289,11 @@ func (f *Feature) anchor(ctx context.Context, node *kube.Node, version, running 
 	}
 	if err := nodestate.PatchTransition(ctx, f.kube, node.Metadata.Name, 3, build); err != nil {
 		if err != nodestate.ErrAbort {
-			f.log.Warn("update: anchor failed", "node", node.Metadata.Name, "version", version, "err", err)
+			f.log.Warn("update: anchor failed", "version", version, "err", err)
 		}
 		return
 	}
-	f.log.Info("update: anchored next-kernel", "node", node.Metadata.Name, "version", version, "eligible", eligible)
+	f.log.Info("update: anchored next-kernel", "version", version, "eligible", eligible)
 }
 
 // --- Check (PLAN-M2 3.6) ------------------------------------------------
@@ -312,7 +318,7 @@ func (f *Feature) doCheck(ctx context.Context, node *kube.Node, fc config.Config
 			f.availSeen[res.Latest] = true
 			f.event(node.Metadata.Name, "UpdateAvailable",
 				fmt.Sprintf("release %s available (running %s, repo %s)", res.Latest, res.Running, res.URL), false)
-			f.log.Info("update: new release available", "node", node.Metadata.Name,
+			f.log.Info("update: new release available",
 				"latest", res.Latest, "running", res.Running, "url", res.URL)
 		}
 		f.noteCheckErrorLocked(node.Metadata.Name, false)
@@ -321,7 +327,7 @@ func (f *Feature) doCheck(ctx context.Context, node *kube.Node, fc config.Config
 	}
 	f.mu.Unlock()
 	if failed {
-		f.log.Warn("update: check failed", "node", node.Metadata.Name, "url", repoURL, "err", err)
+		f.log.Warn("update: check failed", "url", repoURL, "err", err)
 	}
 	return res, err
 }
@@ -334,6 +340,22 @@ func (f *Feature) noteCheckErrorLocked(nodeName string, active bool) {
 	if active && !f.notified[key] {
 		f.notified[key] = true
 		f.event(nodeName, "UpdateCheckError", "release check failed; see controller logs", true)
+	}
+	if !active {
+		delete(f.notified, key)
+	}
+}
+
+// noteScanErrorLocked logs a Warn on the false->true edge of a boot-
+// partition scan failure (rate-limited: one line per failing stretch, not
+// every check cycle). The node is the local one (constant per pod), so it
+// is used only as the rate-limit key, not echoed in the line. Callers hold
+// f.mu.
+func (f *Feature) noteScanErrorLocked(nodeName string, active bool, err error) {
+	key := "scanerror:" + nodeName
+	if active && !f.notified[key] {
+		f.notified[key] = true
+		f.log.Warn("update: boot partition scan failed; not staging", "err", err)
 	}
 	if !active {
 		delete(f.notified, key)

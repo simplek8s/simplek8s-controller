@@ -56,6 +56,10 @@ spec:
                 secretKeyRef:
                   name: simplek8s-api-token
                   key: token
+            # Chatty development logging: "debug" surfaces the staging steps
+            # (mount, download, extract, write, bootloader) and config reloads.
+            - name: SIMPLEK8S_LOG_LEVEL
+              value: "info"
           ports:
             - name: api
               containerPort: 8080
@@ -65,13 +69,6 @@ spec:
             # keyring is used (PLAN-M2 3.6/3.14).
             - name: keyring
               mountPath: /etc/simplek8s/custom
-              readOnly: true
-            # A privileged pod's own /dev holds only runtime loop nodes,
-            # not the host block devices; the ro bind gives staging
-            # access to the real /dev (verified on the test cluster;
-            # PLAN-M2 3.14, decision 24).
-            - name: dev
-              mountPath: /dev
               readOnly: true
           # Liveness must not depend on API-server reachability (3.12).
           livenessProbe:
@@ -89,7 +86,3 @@ spec:
           secret:
             secretName: simplek8s-controller-keyring
             optional: true
-        - name: dev
-          hostPath:
-            path: /dev
-            type: Directory

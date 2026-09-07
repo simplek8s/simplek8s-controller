@@ -116,3 +116,38 @@ func TestFindBootDeviceBlkidError(t *testing.T) {
 		t.Fatal("findBootDevice = no error, want an error (blkid failed)")
 	}
 }
+
+// TestMountDeviceCreatesMissingMountRoot covers the pod /run case: the
+// mount root (e.g. /run/simplek8s-controller) does not pre-exist, so
+// mountDevice must create it before os.MkdirTemp (which does not make
+// parents). Without the fix every scan/stage failed at the mountpoint step.
+func TestMountDeviceCreatesMissingMountRoot(t *testing.T) {
+	base := t.TempDir()
+	mountRoot := filepath.Join(base, "does-not-exist", "simplek8s-controller")
+	mounted := false
+	s := NewPhysicalStore(PhysicalStoreConfig{
+		DevRoot:   t.TempDir(),
+		MountRoot: mountRoot,
+		Log:       discardLogger{},
+		Mount: func(device, target, fstype string) error {
+			mounted = true
+			return nil
+		},
+		Unmount: func(target string) error { return nil },
+		Blkid:   func(args ...string) (string, error) { return "", nil },
+	})
+	path, cleanup, err := s.mountDevice("/dev/vda1")
+	if err != nil {
+		t.Fatalf("mountDevice: %v", err)
+	}
+	if !mounted {
+		t.Fatal("mount seam was not called")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("mountpoint missing: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("mountpoint still present after cleanup: %v", err)
+	}
+}

@@ -102,7 +102,7 @@ func TestStagePartitionEndToEnd(t *testing.T) {
 		Running:      "",
 		Bootloader:   BootloaderSyslinux,
 	}
-	if err := stagePartition(context.Background(), srv.Client(), req, partRoot, dir, workDir); err != nil {
+	if err := stagePartition(context.Background(), srv.Client(), discardLogger{}, req, partRoot, dir, workDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +126,7 @@ func TestStagePartitionEndToEnd(t *testing.T) {
 	}
 
 	// Idempotency: staging the same version again is a no-op.
-	if err := stagePartition(context.Background(), srv.Client(), req, partRoot, dir, workDir); err != nil {
+	if err := stagePartition(context.Background(), srv.Client(), discardLogger{}, req, partRoot, dir, workDir); err != nil {
 		t.Fatalf("second stagePartition: %v", err)
 	}
 }
@@ -154,7 +154,7 @@ func TestStagePartitionChecksumMismatchFails(t *testing.T) {
 		RepoBase:     srv.URL,
 		Bootloader:   BootloaderSyslinux,
 	}
-	if err := stagePartition(context.Background(), srv.Client(), req, partRoot, dir, t.TempDir()); err == nil {
+	if err := stagePartition(context.Background(), srv.Client(), discardLogger{}, req, partRoot, dir, t.TempDir()); err == nil {
 		t.Fatal("stagePartition = no error on checksum mismatch")
 	}
 	if fileExists(filepath.Join(partRoot, dir, kernelStoredName(ts, arch))) {

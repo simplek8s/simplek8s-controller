@@ -178,7 +178,15 @@ func (e *Engine) loadConfig(ctx context.Context) {
 		return
 	}
 	e.featMu.Lock()
+	changed := next != e.feat
 	e.feat = next
+	if changed {
+		e.cfg.Log.Info("feature config reloaded",
+			"update-mode", next.UpdateMode,
+			"update-url", next.UpdateURL,
+			"update-check-interval", next.UpdateCheckInterval.String(),
+			"engine-interval", next.EngineInterval.String())
+	}
 	key := strings.Join(warns, "|")
 	if key != e.featWarns {
 		e.featWarns = key
