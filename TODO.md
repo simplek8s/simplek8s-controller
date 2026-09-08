@@ -198,9 +198,25 @@ This is not limited to manual-then-auto: it also breaks **successive
 auto-updates** (update N's `completed` reboot-state poisons update N+1's
 plan).
 
-Fix direction (to study): scope a plan's verification to its own reboots —
-ignore a `completed` whose `reboot-exec.issuedAt` predates the plan's
-`StartedAt`; or enqueue members before the first verify; or clear stale
-`reboot-state` when a plan starts. (Workaround used in the test: clear the
-stale `reboot-state`/`reboot-exec`/`reboot-request` annotations and remove the
-new kernel from the boot partition to force a fresh re-stage.)
+**Fix (implemented 2026-09-08):** clear the stale terminal state when a plan
+starts. In `maybeStartPlan` (`update/plan.go`), after the plan is persisted the
+leader runs `resetStaleRebootState`: for each member it conditionally clears a
+present, uncorrupt terminal `reboot-state` (`completed`/`failed`) back to the
+resting state — `nodestate.ClearStaleRebootStateBuild` only touches a terminal
+state, so an absent/queued/in-flight node is never clobbered — guarded by a
+`VerifyOwnership` check (consistent with `admitMember`/`clearSettled`). The
+in-memory view is updated on success so the **same-cycle** `managePlan` verify
+(which reads the snapshot, not a re-read) sees the cleared state and does not
+cancel. Chosen over scoping verify to the plan's own reboots (option 1) because
+that leaves a misleading `completed` visible to operators and does not address
+the in-memory same-cycle read.
+
+Status: implemented + unit/integration tested
+(`TestPlanStaleCompletedAtStartDoesNotCancel`,
+`TestPlanStaleFailedAtStartDoesNotCancel`, `TestClearStaleRebootStateBuild`).
+Pending E2E re-run on the 3-CP test VMs (successive auto-update) to confirm the
+deadlock is gone end-to-end.
+
+(Workaround previously used in the test: clear the stale
+`reboot-state`/`reboot-exec`/`reboot-request` annotations and remove the new
+kernel from the boot partition to force a fresh re-stage.)

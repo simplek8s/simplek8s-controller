@@ -134,3 +134,8 @@ staged-but-never-rebooted. Unblocked by clearing the stale M1 annotations
 from the boot partition to force a fresh re-stage. Documented in TODO.md item
 12; also
 affects successive auto-updates (not only manual-then-auto).
+
+**Fixed (2026-09-08):** a fresh plan start now clears each member's stale
+terminal `reboot-state` before its first verify (`resetStaleRebootState`,
+`update/plan.go`; `nodestate.ClearStaleRebootStateBuild`), so the same-cycle
+verify no longer false-cancels. Unit/integration tested; E2E re-run pending.

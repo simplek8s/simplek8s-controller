@@ -427,3 +427,65 @@ func TestClearSettledRemovesQuiescentTrigger(t *testing.T) {
 		t.Fatalf("a quiescent stale trigger must not start a plan: %+v", h.plans())
 	}
 }
+
+// TestPlanStaleCompletedAtStartDoesNotCancel (BUG 12): a member carrying the
+// fresh staging trigger but also a stale `completed` M1 state from a previous
+// reboot must NOT have its plan canceled in the cycle the plan is created.
+// The stale state is reset to the resting state at plan start (in-memory view
+// included, so the same-cycle verify sees it cleared), and the member is
+// enqueued as usual.
+func TestPlanStaleCompletedAtStartDoesNotCancel(t *testing.T) {
+	const v = "202608291203"
+	const old = "6.18.48-simplek8s-202601010000 (amd64)"
+	h := newPlanHarness(t)
+	// w1 is staged for v (eligible=v, next-kernel=v) but still runs the old
+	// kernel, and carries a stale `completed` reboot-state left over from an
+	// earlier (previous update's) reboot.
+	h.node("w1", old, map[string]string{
+		nodestate.AnnState:          nodestate.StateValue(nodestate.Completed, h.cl.Now()),
+		nodestate.AnnNextKernel:     v,
+		nodestate.AnnRebootEligible: v,
+	})
+	h.leader()
+	h.orch() // start + reset stale state + admit
+
+	if h.eventCount("UpdatePlanCanceled") != 0 {
+		t.Fatalf("UpdatePlanCanceled = %d, want 0 (stale completed must not cancel the plan)", h.eventCount("UpdatePlanCanceled"))
+	}
+	if got := h.stateOf("w1"); got != nodestate.Requested {
+		t.Fatalf("w1 state = %q, want requested (enqueued after the stale reset)", got)
+	}
+	// Not reset back to the running kernel: the plan kept its target.
+	if got := h.ann("w1", nodestate.AnnNextKernel); got != v {
+		t.Fatalf("next-kernel = %q, want kept %q (not reset to running)", got, v)
+	}
+	if len(h.plans()) != 1 {
+		t.Fatalf("plan = %+v, want exactly one active plan", h.plans())
+	}
+}
+
+// TestPlanStaleFailedAtStartDoesNotCancel (BUG 12, failed variant): a stale
+// `failed` M1 state is reset the same way, so it cannot cancel the plan at
+// start either.
+func TestPlanStaleFailedAtStartDoesNotCancel(t *testing.T) {
+	const v = "202608291203"
+	const old = "6.18.48-simplek8s-202601010000 (amd64)"
+	h := newPlanHarness(t)
+	h.node("w1", old, map[string]string{
+		nodestate.AnnState:          nodestate.StateValue(nodestate.Failed, h.cl.Now()),
+		nodestate.AnnNextKernel:     v,
+		nodestate.AnnRebootEligible: v,
+	})
+	h.leader()
+	h.orch()
+
+	if h.eventCount("UpdatePlanCanceled") != 0 {
+		t.Fatalf("UpdatePlanCanceled = %d, want 0 (stale failed must not cancel the plan)", h.eventCount("UpdatePlanCanceled"))
+	}
+	if got := h.stateOf("w1"); got != nodestate.Requested {
+		t.Fatalf("w1 state = %q, want requested (enqueued after the stale reset)", got)
+	}
+	if len(h.plans()) != 1 {
+		t.Fatalf("plan = %+v, want exactly one active plan", h.plans())
+	}
+}

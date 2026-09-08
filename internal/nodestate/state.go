@@ -330,6 +330,27 @@ func EnqueueBuild(since time.Time) BuildFunc {
 	}
 }
 
+// ClearStaleRebootStateBuild (update plan, BUG 12): reset a node's stale
+// terminal M1 reboot state (completed or failed) back to the resting state —
+// all four reboot annotations cleared — at plan start. A stale completed or
+// failed would otherwise be read by the plan's first verify as "came up on
+// the wrong kernel" / "failed its reboot" and cancel the plan in the very
+// cycle it is created (before the plan enqueues the member). Only a present,
+// uncorrupt terminal state is cleared; a node that is absent (nothing to do),
+// queued (requested), or in flight (draining/rebooting/corrupt) is left alone.
+func ClearStaleRebootStateBuild() BuildFunc {
+	return func(node *kube.Node) (map[string]any, bool) {
+		st := Parse(node.Metadata.Annotations)
+		if st.State == nil || !st.State.Present || st.State.ParseError != "" {
+			return nil, false
+		}
+		if st.State.State != Completed && st.State.State != Failed {
+			return nil, false
+		}
+		return ClearPatch(node.Metadata.ResourceVersion, false), true
+	}
+}
+
 // ToDrainingPatch (orchestrator): state+status(+cordonedPrev) and the cordon
 // in one atomic patch; blockedBy is dropped from the fresh status.
 func ToDrainingPatch(rv string, now time.Time, freshStatusRaw string, wasCordoned bool) map[string]any {

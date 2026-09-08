@@ -103,9 +103,42 @@ func (f *Feature) maybeStartPlan(ctx context.Context, views map[string]*pnode, n
 		f.log.Warn("update: failed to persist new plan", "version", v, "err", err)
 		return
 	}
+	f.resetStaleRebootState(ctx, members, views)
 	f.event("", "UpdatePlanStarted",
 		fmt.Sprintf("update plan %s started for %d node(s): %s", v, len(members), strings.Join(members, ", ")), false)
 	f.log.Info("update: plan started", "version", v, "members", len(members))
+}
+
+// resetStaleRebootState (BUG 12) resets each new plan member's stale terminal
+// M1 reboot state (completed or failed) to the resting state before the plan's
+// first verify. A stale completed would otherwise be read by managePlan's
+// verify as "came up on the wrong kernel" and cancel the plan in the very
+// cycle it is created, before the plan has a chance to enqueue the member.
+// Each reset is a conditional RMW (ClearStaleRebootStateBuild only touches a
+// present, uncorrupt terminal state — an absent, queued, or in-flight node is
+// left alone) guarded by an ownership check, and the in-memory view is updated
+// so this same cycle's verify (which reads the snapshot, not a re-read) sees
+// the reset state.
+func (f *Feature) resetStaleRebootState(ctx context.Context, members []string, views map[string]*pnode) {
+	for _, m := range members {
+		pn := views[m]
+		if pn == nil {
+			continue
+		}
+		if !f.leas.VerifyOwnership(ctx) {
+			return
+		}
+		err := nodestate.PatchTransition(ctx, f.kube, m, 3, nodestate.ClearStaleRebootStateBuild())
+		switch {
+		case err == nil:
+			pn.st.State = &nodestate.StateInfo{} // reflect the reset in this cycle's view
+			f.log.Info("update: reset member's stale reboot-state before plan", "node", m)
+		case err == nodestate.ErrAbort:
+			// not a stale terminal state (absent/queued/in-flight): nothing to reset
+		default:
+			f.log.Warn("update: failed to reset member's stale reboot-state", "node", m, "err", err)
+		}
+	}
 }
 
 // managePlan drives one plan for the cycle: verify (may cancel), admit
