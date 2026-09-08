@@ -107,7 +107,7 @@ a time, `max-concurrent-reboots: 1`) **without the API losing quorum**.
 `next-kernel` + the boot-partition `DEFAULT` flipped to the previous kernel
 (`202608291203`) on all 5, then a full M1 reboot (workers→CP, serialized).
 All 5 came back quiescent on the old kernel (`running == next-kernel`); the
-API stayed up; then the new `.efi` was removed from `/boot` so the
+API stayed up; then the new `.efi` was removed from the boot partition so the
 auto-updater would have to re-download it.
 
 ### Phase B — auto re-update
@@ -127,9 +127,10 @@ cancels a plan in the very cycle it is created when a member reads
 `completed` + `running != plan-version` (`managePlan` verifies at
 `plan.go:116` before it enqueues at `plan.go:127`). The plan was cancelled,
 members reset to `running`, and the eligible triggers cleared — and because
-the new kernel was now local in `/boot`, it was not re-anchored (not a
-"fresh stage", `update/update.go:224`), leaving the cluster
+the new kernel was now local on the boot partition, it was not re-anchored
+(not a "fresh stage", `update/update.go:224`), leaving the cluster
 staged-but-never-rebooted. Unblocked by clearing the stale M1 annotations
 (`reboot-state`/`reboot-exec`/`reboot-request`) and removing the new kernel
-from `/boot` to force a fresh re-stage. Documented in TODO.md item 12; also
+from the boot partition to force a fresh re-stage. Documented in TODO.md item
+12; also
 affects successive auto-updates (not only manual-then-auto).

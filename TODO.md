@@ -188,8 +188,9 @@ verifies (`plan.go:116`) before it admits/enqueues (`plan.go:127`). Seeing
 wrong kernel" and **cancels the plan in the same cycle it was created**. The
 members are then reset to `running` (`resetMembers`/`resetToRunning`,
 `plan.go:200,230`) and their eligible triggers cleared (`clearSettled`) — so
-the update never applies. Worse: the kernel is now **local** in `/boot`, so on
-the next cycle `maybeStage` does not re-anchor it (it is not a "fresh stage",
+the update never applies. Worse: the kernel is now **local on the boot
+partition**, so on the next cycle `maybeStage` does not re-anchor it (it is
+not a "fresh stage",
 `update/update.go:224`) and the eligible trigger is never re-set → the cluster
 is left **staged-but-never-rebooted** (deadlock until an operator intervenes).
 
@@ -202,4 +203,4 @@ ignore a `completed` whose `reboot-exec.issuedAt` predates the plan's
 `StartedAt`; or enqueue members before the first verify; or clear stale
 `reboot-state` when a plan starts. (Workaround used in the test: clear the
 stale `reboot-state`/`reboot-exec`/`reboot-request` annotations and remove the
-new kernel from `/boot` to force a fresh re-stage.)
+new kernel from the boot partition to force a fresh re-stage.)
