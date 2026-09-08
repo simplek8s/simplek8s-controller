@@ -22,6 +22,18 @@ test VMs from this repo.
 - Disk layout: `vda1` vfat boot (LABEL `EFI`); `vda2` ext4 (LABEL `var`)
   mounted at `/var` (the OS lives under `/var`).
 
+## Building the controller image
+
+- Build it with **`make image`** (or the repo `Dockerfile`) — the only
+  correct path. Do **not** hand-roll a separate Dockerfile or a
+  single-stage / pre-built-binary build "around" it.
+- A base image (`golang:1.27`, `alpine:3.20`) being **absent from the
+  local docker cache is not a blocker** — the build pulls it. Never treat a
+  cache-miss as "can't build"; if it needs a pull, let it pull. (A
+  single-stage detour was once taken on a self-invented "no network"
+  assumption, after the very `docker pull` that disproved it — it wasted time
+  and tokens for zero savings.)
+
 ## Key references
 
 - Per-node boot-intent annotation: `simplek8s.org/next-kernel` (the release
