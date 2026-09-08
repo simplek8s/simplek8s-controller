@@ -29,6 +29,17 @@ test VMs from this repo.
 - Update ConfigMap: `simplek8s/simplek8s-controller` — keys
   `updates.update-mode` (`off`|`stage`|`full`), `updates.check-interval`,
   `updates.url`, `updates.preserve`, `updates.max-percent-usage`.
-- Release repo: `https://dl.simplek8s.org/simplek8s/dev/`.
+- Release repo (**PROD, not a mock**):
+  `https://dl.simplek8s.org/simplek8s/dev/` (latest dev releases) and
+  `https://dl.simplek8s.org/simplek8s/stable` (also PROD, same keyring,
+  but lagging — does not carry the newest releases). Real signed kernels;
+  there is **no mock release server** and no test keyring.
+- Release keyring (**PROD**): the standard image embeds
+  `keys/simplek8s-pubring.gpg` (LFS) at `/etc/simplek8s/pubring.gpg`; the
+  same PROD key is on the machines. The PROD repo is signed by that key,
+  so the standard image verifies it directly — no variant image and no
+  custom keyring needed. The optional `simplek8s-controller-keyring`
+  Secret (`pubring.gpg` → `/etc/simplek8s/custom/`) is only for a
+  genuinely custom (non-PROD) repo/key.
 - Reboot API: `POST/GET/DELETE /api/v1/reboots[/{node}]` (see
   `internal/api/api.go`).

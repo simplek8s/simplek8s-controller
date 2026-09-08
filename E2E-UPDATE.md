@@ -6,28 +6,32 @@ E2E.md apply (`$API`, `$AUTH`, events in namespace `default`).
 
 ## Prerequisites
 
-- **Mock release server**: a small HTTP server on one of the cluster
-   nodes serving a `dev/`-style layout:
-   `SHA256SUMS`, `SHA256SUMS.gpg`, `simplek8s.<ts>.<arch>.efi.zst`.
-  The access log doubles as the "did the controller talk to the repo?"
-  evidence (U0).
-- **Test keyring**: a generated keypair signs the mock `SHA256SUMS`; the
-  public keyring is embedded in a **variant controller image** at the
-  same fixed path (`/etc/simplek8s/pubring.gpg`) — the D10/D11 variant
-  pattern from E2E.md.
-- **Mock "new version"**: for staging tests the `.efi.zst` content can
-  be dummy files — staging verifies the container's sha256 + GPG, not
-  the kernel's bootability. The filename's `ts` must be newer than the
-  running one.
+- **Release server**: the real **PROD** release repo — *not* a mock —
+  `https://dl.simplek8s.org/simplek8s/dev/` (the latest dev releases we
+  test against) and `https://dl.simplek8s.org/simplek8s/stable` (also
+  PROD, same keyring, but lagging — it does not carry the newest
+  releases). Layout: `SHA256SUMS`, `SHA256SUMS.gpg`,
+  `simplek8s.<ts>.<arch>.efi.zst`. There is **no mock server**; the
+  access-log "did the controller talk to the repo?" evidence (U0) is
+  observed on the server side.
+- **Keyring**: the standard image embeds the **PROD** public keyring at
+  `/etc/simplek8s/pubring.gpg` (from `keys/simplek8s-pubring.gpg`, LFS);
+  the same PROD key is on the test machines. The PROD releases are signed
+  by that key, so the standard image verifies them directly — no variant
+  image and no custom keyring are needed. The optional Secret
+  `simplek8s-controller-keyring` is only for a genuinely custom
+  (non-PROD) repo/key.
+- **A newer release**: staging/`full` cases need a release newer than the
+  running `ts` in the repo. After an update, to make the repo's newest
+  "newer" again, downgrade the cluster to an older `ts` (the U9
+  successive-update setup).
 - **Boot layout**: kernels live in the `simplek8s/` dir at the root of
   the (temporarily mounted) boot partition; `/boot/simplek8s/` in the
   cases below is shorthand for that dir. See PLAN-M2.md §3.7
   (ground-truth layout).
-- **Real new release** (U5 only): the maintainer publishes a dev release
-  newer than the running `ts` on the test cluster.
-- **ConfigMap**: `updates.url` pointed at the mock; `updates.update-mode`
-  set per case; `updates.check-interval` shortened (e.g. `30s`) for the
-  campaign and restored afterwards.
+- **ConfigMap**: `updates.url` pointed at the PROD repo (`dev/`);
+  `updates.update-mode` set per case; `updates.check-interval` shortened
+  (e.g. `30s`) for the campaign and restored afterwards.
 - **Reboots regression subset**: after PLAN-M2 milestone M1 (flags →
   ConfigMap), re-run E2E cases A1, B1, C1 before starting this campaign
   (proves the config migration caused no regression). M1 also rewrites
@@ -46,32 +50,32 @@ E2E.md apply (`$API`, `$AUTH`, events in namespace `default`).
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U0 | no update activity | `updates.update-mode: "off"`, mock reachable with a newer version | no HTTP traffic to the mock (access log empty), no annotations created, no update events, engine + reboot API healthy |
+| U0 | no update activity | `updates.update-mode: "off"`, PROD repo reachable with a newer version | no HTTP traffic to the repo (server access log empty), no annotations created, no update events, engine + reboot API healthy |
 
-## U1 — staging, `stage` mode (mock)
+## U1 — staging, `stage` mode
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U1 | full staging happy path | `updates.update-mode: stage`; mock has a signed newer version | every node: `UpdateAvailable` then `UpdateStaged`; `/boot/simplek8s/` contains the new version + bootloader entry; `next-kernel := V` on all nodes; bootloader default points at V; **nodes keep running the old version** (no reboots); purge respected: running version NOT deleted, old versions pruned per `preserve` |
+| U1 | full staging happy path | `updates.update-mode: stage`; the PROD repo has a newer version | every node: `UpdateAvailable` then `UpdateStaged`; `/boot/simplek8s/` contains the new version + bootloader entry; `next-kernel := V` on all nodes; bootloader default points at V; **nodes keep running the old version** (no reboots); purge respected: running version NOT deleted, old versions pruned per `preserve` |
 | U1b | idempotent re-check | wait for the next check interval | no re-download (V already in `/boot`), no annotation change, no plan — "V in /boot → nothing" rule |
 
 ## U2 — GPG rejection
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U2 | bad signature | mock `SHA256SUMS.gpg` signed with an unknown/wrong key | no staging, no annotation change, `UpdateCheckError` event (rate-limited), nodes untouched, next check retries |
+| U2 | bad signature | a `SHA256SUMS.gpg` signed with an unknown/wrong key (tampered or non-PROD key) | no staging, no annotation change, `UpdateCheckError` event (rate-limited), nodes untouched, next check retries |
 
 ## U3 — sha256 rejection
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U3 | corrupted payload | valid signature, but the served `.kernel.zst` does not match the index hash | download rejected, **no partial file** left in `/boot/simplek8s/`, `UpdateCheckError` event, next check retries |
+| U3 | corrupted payload | valid signature, but the served `.efi.zst` does not match the index hash | download rejected, **no partial file** left in `/boot/simplek8s/`, `UpdateCheckError` event, next check retries |
 
 ## U4 — per-node URL override
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U4 | `update-url` annotation | one node annotated with a second mock URL serving a *different* version | only that node stages its own version (different V); the other nodes stage the cluster `updates.url` version; both `next-kernel` values correct per node |
+| U4 | `update-url` annotation | one node annotated with a second release URL (e.g. `.../stable`) serving a *different* version | only that node stages its own version (different V); the other nodes stage the cluster `updates.url` version; both `next-kernel` values correct per node |
 
 ## U5 — `full` mode, real release (the big one)
 

@@ -220,3 +220,17 @@ deadlock is gone end-to-end.
 (Workaround previously used in the test: clear the stale
 `reboot-state`/`reboot-exec`/`reboot-request` annotations and remove the new
 kernel from the boot partition to force a fresh re-stage.)
+
+## 13. Multi-platform container image (amd64 + aarch64)
+
+SimpleK8s nodes can be `x86-64` **or** `aarch64` (= arm64) — the release
+artifacts are per-arch (`simplek8s.<ts>.x86-64.efi.zst` /
+`simplek8s.<ts>.aarch64.efi.zst`), and the update engine already maps the
+node arch. But the controller **container image** is currently built
+single-arch: the `Makefile` `image:` target runs a plain `docker build`
+(host architecture only), so an `aarch64` node cannot pull/run it. Publish
+the image as a **multi-platform** `linux/amd64,linux/aarch64` image — e.g.
+a buildx builder + `docker buildx build --platform
+linux/amd64,linux/aarch64` (and push a multi-arch manifest). The `Dockerfile`
+itself is arch-agnostic (static Go binary + `util-linux`), so only the
+build/publish step needs the multi-arch treatment.
