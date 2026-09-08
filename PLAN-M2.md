@@ -545,6 +545,14 @@ keys/                       simplek8s-pubring.gpg (LFS)
    documented.
 9. **Failed boot with bootloader fallback**: detected as verify mismatch
    → cancel + reset (desired behavior, §3.10).
+10. **Control-plane availability during a `full` update**: reboots
+    serialize workers-first, CP-last, so a worker's drain never depends on
+    a CP that is itself rebooting. On a **single-CP** cluster, rebooting
+    the only CP drops the API server for the duration of the reboot (the
+    control plane is unavailable, not just that node). A **multi-CP**
+    (stacked etcd, 3 members) control plane tolerates this — verified on
+    the test cluster: hard-downing one of three CPs kept the API answering
+    and etcd quorum (2/3), and the CP rejoined on restart.
 
 ## 5. Milestones
 
@@ -649,3 +657,7 @@ keys/                       simplek8s-pubring.gpg (LFS)
 - Rollback automation/ergonomics (the manual path is already one
   annotation edit).
 - Keyring leaving the distro once the CLI exists.
+- Syslinux stale-entry cleanup (bootloader entries accumulate across
+  updates; TODO.md item 6).
+- Reboot orchestration success observability (no `Info` log on the happy
+  path; TODO.md item 7).
