@@ -5,8 +5,11 @@ test VMs from this repo.
 
 ## SimpleK8s VM operations
 
+- **CRITICAL — reach the VMs by IP, NEVER by hostname.** Always target the
+  node's IP directly — read it from the cluster
+  (`kubectl get nodes -o wide` → `INTERNAL-IP`).
 - **SimpleK8s does NOT mount `/boot`** — there is no `/boot` on a running
-  node. The boot partition is `/dev/vda1` (vfat, LABEL `EFI`, PARTLABEL
+  node. The boot partition is PARTLABEL
   `boot`), unmounted at runtime. To inspect or change kernels / the
   bootloader, mount it yourself to a temp dir and unmount when done:
 
@@ -15,24 +18,15 @@ test VMs from this repo.
       # bootloader: /mnt/boot/syslinux.conf
       umount /mnt/boot
 
-  (This mirrors what the controller does during staging.)
 - **`scp` fails on SimpleK8s** — its SSH SFTP needs the legacy protocol:
   use `scp -O`, or push a script via
   `ssh host 'sh -s arg1 arg2' < script.sh`.
-- Disk layout: `vda1` vfat boot (LABEL `EFI`); `vda2` ext4 (LABEL `var`)
-  mounted at `/var` (the OS lives under `/var`).
 
 ## Building the controller image
 
-- Build it with **`make image`** (or the repo `Dockerfile`) — the only
-  correct path. Do **not** hand-roll a separate Dockerfile or a
-  single-stage / pre-built-binary build "around" it.
+- Build it with **`make image`** (or the repo `Dockerfile`).
 - A base image (`golang:1.27`, `alpine:3.20`) being **absent from the
-  local docker cache is not a blocker** — the build pulls it. Never treat a
-  cache-miss as "can't build"; if it needs a pull, let it pull. (A
-  single-stage detour was once taken on a self-invented "no network"
-  assumption, after the very `docker pull` that disproved it — it wasted time
-  and tokens for zero savings.)
+  local docker cache is not a blocker** — the build pulls it.
 
 ## Key references
 
