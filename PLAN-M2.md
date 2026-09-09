@@ -2,23 +2,36 @@
 
 > **Planning index**
 > - [PLAN-M1.md](PLAN-M1.md) — node reboots (shipped)
-> - [PLAN-M2.md](PLAN-M2.md) — distro updates (this document; in planning)
+> - [PLAN-M2.md](PLAN-M2.md) — distro updates (this document; implemented, E2E in progress)
+> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop (in planning)
 > - [E2E.md](E2E.md) — reboots E2E campaign (28/28 PASS)
 > - [E2E-UPDATE.md](E2E-UPDATE.md) — updates E2E campaign
 
-Phase: **PLAN** (design & planning). Status: v1 — all design decisions
-closed with the maintainer (2026-09-06), pending implementation.
+Phase: **IMPLEMENTED** (E2E campaign in progress, see E2E-UPDATE.md).
+Status: v2 — design decisions closed with the maintainer (2026-09-06);
+implemented and under E2E validation. PLAN-M3.md reworks §3.8–3.10: the
+reboot-plan layer (plan ConfigMap, all-or-nothing plans, plan cancel) is
+**abolished** and replaced by the window-open enqueue into the M1 queue +
+per-node verification — read those sections together with PLAN-M3 §3.4.
+It also retires the `updates.check-interval` key (§3.2/§3.6): the window
+occurrence schedule becomes the check schedule.
 
 ## 1. Purpose
 
 The second feature of the controller: distro updates. It detects a new
 SimpleK8s kernel release in the release repository, stages it on each
 node's boot partition (the `simplek8s/` dir at its root, abbreviated
-`/boot/simplek8s/` throughout this doc), points the bootloader at it
-through the `next-kernel` annotation (the source of truth for what the
-node should boot), and — in `full` mode — runs an all-or-nothing,
-cluster-wide reboot plan on top of the existing M1 reboot machinery,
-verifying each node after it comes back.
+`/boot/simplek8s/` throughout this doc — an **obsolete shorthand**, see
+the note below), points the bootloader at it through the `next-kernel`
+annotation (the source of truth for what the node should boot), and — in
+`full` mode — runs an all-or-nothing, cluster-wide reboot plan on top of
+the existing M1 reboot machinery, verifying each node after it comes back
+(the plan layer is abolished by PLAN-M3.md — see the header note).
+
+**Note (M3):** SimpleK8s does not mount `/boot` at runtime. The boot
+partition (vfat, `vda1`) is mounted by the controller pod at a scratch
+mountpoint, used, and unmounted. Every `/boot/simplek8s/` in this document
+means the `simplek8s/` directory at the boot partition root.
 
 Release format (one file per version+arch, served over HTTP from the
 release repo URL):
@@ -650,7 +663,9 @@ keys/                       simplek8s-pubring.gpg (LFS)
 
 ## 7. Deferred (see TODO.md)
 
-- Reboot maintenance windows (`reboots.windows`) — future PLAN-M3.
+- Maintenance windows, the operator-pin bootloader reconciliation, and the
+  window-driven update reboot loop — PLAN-M3 (in planning; abolishes this
+  document's §3.8–3.10 plan layer).
 - `simplek8s-update` CLI (reuses this package; owns `--url`, `--keyring`,
   `--checksign`).
 - Pod split (unprivileged controller + privileged host daemon).

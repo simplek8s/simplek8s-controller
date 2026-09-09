@@ -1,34 +1,14 @@
 # TODO — deferred backlog
 
 Cross-cutting items deliberately left out of the current plans
-(PLAN-M1 shipped, PLAN-M2 in planning). Each item is ready to be picked
-up as its own plan; nothing here is blocking.
+(PLAN-M1 shipped, PLAN-M2 implemented, PLAN-M3 in planning). Each item
+is ready to be picked up as its own plan; nothing here is blocking.
 
-## 1. Reboot maintenance windows (`reboots.windows`) — future PLAN-M3
-
-Optional time windows that gate **only the start** of reboots **and of the
-update-driven reboot plan** (item 11). Semantics already agreed with the
-maintainer:
-
-- **Window forms** (each window is one of): a **time-of-day range**
-  `[start, end)` (may span midnight, e.g. `22:00-06:00`); a **periodic
-  interval** (e.g. `30m` — the intended default for the update plan); a
-  **cron-style** expression; or a **shortcut** (`hourly`/`daily`/`weekly`/
-  `monthly`). A window repeats on its cadence (daily/weekly to study).
-- **Gate start only**: a reboot already in flight (draining/rebooting)
-  is **never** interrupted when a window closes.
-- **Queue waits, never fails**: nodes `requested` outside a window stay
-  queued (`requested`) until a window opens; no timeout, no error.
-- **Multiple windows**: a list; the node may start if any window is
-  open.
-- **UTC always** (no timezone key, same rule as PLAN-M2 §2).
-- **To study**: whether a window needs a maximum-duration guard (a
-  misconfigured tiny window silently holding the queue for days).
-
-Config: a `reboots.windows` key in the controller **ConfigMap** (flat-key
-rule from PLAN-M2 §3.2) — a compact list mixing forms (e.g. `"30m"`,
-`"hourly"`, `"Mo-Fr 22:00-06:00"`, a cron string); absent = no
-restriction (today's behavior).
+**Closed by PLAN-M3** (the numbering is kept stable for
+cross-references, hence the gaps): items 1 (reboot maintenance
+windows), 9 (operator pin → bootloader re-point + `reboot-eligible`)
+and 11 (window-scheduled update reboots) are designed and carried by
+PLAN-M3.md. Item 12 (BUG 12) is closed with it — see its entry.
 
 ## 2. `simplek8s-update` CLI
 
@@ -122,34 +102,12 @@ annotation to: (a) the running kernel if its file exists, else (b) the
 newest version present on the boot partition, else (c) delete the
 annotation. Same for a malformed value.
 
-## 9. Valid `next-kernel` change → re-point the bootloader + mark reboot-eligible
-
-When `next-kernel` changes to a **valid** value whose kernel file already
-exists on the boot partition, the controller should (a) re-point the
-bootloader `DEFAULT` at it, and (b) mark the node **reboot-eligible** for
-the next plan (item 11). Today neither happens for an operator-driven
-change:
-
-- The bootloader `DEFAULT` is re-pointed **only** as a side-effect of
-  staging a not-yet-present kernel (`update/staging.go:183`, the sole
-  caller of `SetBootloaderDefault`). Pointing `next-kernel` at an
-  already-present kernel (e.g. a manual downgrade) leaves the `DEFAULT`
-  stale — the node would boot the old default and ignore its
-  `next-kernel`. (Had to be done by hand, editing `syslinux.cfg`, in the
-  2026-09-07 HA downgrade.)
-- The reboot-eligible trigger is set **only** by `anchor` on a fresh
-  full-mode stage (`update/update.go:240,283`); an operator-set
-  `next-kernel` sets no trigger, so it is never planned.
-
-Making a validated `next-kernel` change drive both is what makes manual
-rollback and operator-pinned kernels actually honored without touching the
-boot partition by hand.
-
 ## 10. Leader-centralized update check + distribution
 
 Today the release check, download and staging are **per-node and
-autonomous**: every pod's `RunLocal` (`update/update.go:111`, throttled to
-`updates.check-interval`) independently fetches the index, downloads the
+autonomous**: every pod's `RunLocal` (`update/update.go:111`; cadence:
+M2's `updates.check-interval`, M3's one-check-per-window-occurrence)
+independently fetches the index, downloads the
 artifact, extracts and stages it. The leader only runs the plan logic
 (`update/plan.go`).
 
@@ -158,68 +116,28 @@ leader downloads it and **distributes it to the nodes** (channel + form to
 study — node-pull via annotation/API, an in-cluster push, or object
 storage) so each deploys it onto its own boot partition. A node, once it
 has validated its local copy, sets `next-kernel`; once validated, it marks
-itself reboot-eligible (item 11). Study the trade-offs: a single download
+itself reboot-eligible (as designed in PLAN-M3 §3.4). Study the
+trade-offs: a single download
 at the leader vs N; the leader as a check-time SPOF; transfer reliability
 and resumability; and how this composes with the per-node `preserve`/purge
 and the pod split (item 3).
 
-## 11. Leader schedules the update reboot plan on a window
+## 12. BUG: stale `reboot-state` poisons a fresh update plan — CLOSED by PLAN-M3
 
-The leader, once it finds nodes **eligible** for a reboot (item 9), should
-**wait for the next available window** (item 1; default a 30 m recurring
-period) and, when the window opens, create the reboot plan with the
-eligible nodes.
+A prior reboot left `reboot-state=completed`, and the M2 plan layer's
+`verifyPlan` read it **before** the plan's own enqueue — concluding the
+member "came up on the wrong kernel" and cancelling the plan in the same
+cycle it was created (reproduced 2026-09-08 in the 3-CP auto-update test;
+also broke successive auto-updates). Fixed 2026-09-08 in the plan layer:
+clear the stale terminal `reboot-state` when a plan starts
+(`resetStaleRebootState`; unit/integration tested).
 
-Current behavior: `maybeStartPlan` (`update/plan.go:75`) starts the plan
-**immediately** on the same leader cycle (the 2 s engine interval) as soon
-as eligible nodes exist and no plan is active — there is no window gating
-and no delay. This adds the wait-for-window step before a plan is created,
-reusing the `reboots.windows` mechanism (item 1).
-
-## 12. BUG: stale `reboot-state` poisons a fresh update plan (`verifyPlan` false cancel)
-
-**Reproduced 2026-09-08 in the 3-CP auto-update test.** A prior reboot —
-a manual M1 reboot or a previous auto-update — leaves `reboot-state=completed`
-on each node. When the auto-updater then stages a newer kernel and the leader
-starts a plan, `verifyPlan` (`update/plan.go:154`) reads each member's
-`reboot-state` **before** the plan's own enqueue overwrites it: `managePlan`
-verifies (`plan.go:116`) before it admits/enqueues (`plan.go:127`). Seeing
-`completed` + `running != plan-version` it concludes "member came up on the
-wrong kernel" and **cancels the plan in the same cycle it was created**. The
-members are then reset to `running` (`resetMembers`/`resetToRunning`,
-`plan.go:200,230`) and their eligible triggers cleared (`clearSettled`) — so
-the update never applies. Worse: the kernel is now **local on the boot
-partition**, so on the next cycle `maybeStage` does not re-anchor it (it is
-not a "fresh stage",
-`update/update.go:224`) and the eligible trigger is never re-set → the cluster
-is left **staged-but-never-rebooted** (deadlock until an operator intervenes).
-
-This is not limited to manual-then-auto: it also breaks **successive
-auto-updates** (update N's `completed` reboot-state poisons update N+1's
-plan).
-
-**Fix (implemented 2026-09-08):** clear the stale terminal state when a plan
-starts. In `maybeStartPlan` (`update/plan.go`), after the plan is persisted the
-leader runs `resetStaleRebootState`: for each member it conditionally clears a
-present, uncorrupt terminal `reboot-state` (`completed`/`failed`) back to the
-resting state — `nodestate.ClearStaleRebootStateBuild` only touches a terminal
-state, so an absent/queued/in-flight node is never clobbered — guarded by a
-`VerifyOwnership` check (consistent with `admitMember`/`clearSettled`). The
-in-memory view is updated on success so the **same-cycle** `managePlan` verify
-(which reads the snapshot, not a re-read) sees the cleared state and does not
-cancel. Chosen over scoping verify to the plan's own reboots (option 1) because
-that leaves a misleading `completed` visible to operators and does not address
-the in-memory same-cycle read.
-
-Status: implemented + unit/integration tested
-(`TestPlanStaleCompletedAtStartDoesNotCancel`,
-`TestPlanStaleFailedAtStartDoesNotCancel`, `TestClearStaleRebootStateBuild`).
-Pending E2E re-run on the 3-CP test VMs (successive auto-update) to confirm the
-deadlock is gone end-to-end.
-
-(Workaround previously used in the test: clear the stale
-`reboot-state`/`reboot-exec`/`reboot-request` annotations and remove the new
-kernel from the boot partition to force a fresh re-stage.)
+**Closed by PLAN-M3:** the plan layer it lived in is abolished (the
+`simplek8s-update-plans` ConfigMap and plan start/cancel/verify are
+replaced by the window-open enqueue into the M1 queue + per-node
+verification, PLAN-M3 §3.4), so the bug class no longer exists. The
+pending E2E re-run (successive auto-update) is superseded by the
+E2E-WINDOWS campaign, case W5.
 
 ## 13. Multi-platform container image (amd64 + aarch64)
 
