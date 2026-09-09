@@ -1,15 +1,16 @@
-# PLAN-M3 — simplek8s-controller: maintenance windows & the update reboot loop
+# PLAN-M3 — simplek8s-controller: maintenance windows, the update reboot loop & boot-partition hygiene
 
 > **Planning index**
 > - [PLAN-M1.md](PLAN-M1.md) — node reboots (shipped)
 > - [PLAN-M2.md](PLAN-M2.md) — distro updates (implemented; E2E campaign in progress)
-> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop (this document; in planning)
+> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop + boot-partition hygiene (this document; in planning)
 > - [E2E.md](E2E.md) — reboots E2E campaign (28/28 PASS)
 > - [E2E-UPDATE.md](E2E-UPDATE.md) — updates E2E campaign (redrawn by this plan)
 > - [E2E-WINDOWS.md](E2E-WINDOWS.md) — windows E2E campaign (created in M5)
 
-Phase: **PLAN** (design & planning). Status: v1 — all design decisions
-closed with the maintainer (2026-09-09), pending implementation.
+Phase: **PLAN** (design & planning). Status: v2 — all design decisions
+closed with the maintainer (2026-09-09; scope extended with TODO 6/8 and
+the TODO 13 build half), pending implementation.
 
 Terminology: the node's boot partition (vfat, `vda1`) is mounted by the
 controller pod at a scratch mountpoint, used, and unmounted — SimpleK8s
@@ -19,7 +20,7 @@ and refers to the release directory at its root as `simplek8s/`.
 ## 1. Purpose
 
 The third feature, built on the shipped M1 reboot machinery and the M2
-update engine. It closes three TODO items that interlock:
+update engine. It closes five TODO items plus the build half of a sixth:
 
 - **TODO 1 — reboot maintenance windows.** Cron-style time windows,
   configured in the flat ConfigMap, that gate **when reboots may
@@ -39,10 +40,25 @@ update engine. It closes three TODO items that interlock:
   the boot partition, the local pod re-points the bootloader `DEFAULT`
   and marks the node `reboot-eligible` — the change-triggered bootloader
   reconciliation designed in PLAN-M2 §3.5 but not yet implemented.
+- **TODO 6 — syslinux stale-entry cleanup.** The bootloader entry writer
+  only ever appends, so `syslinux.cfg` on the boot partition grows one
+  entry per staged kernel. Entries for kernels the purge has already
+  deleted are pruned in the same mounted session (§3.9).
+- **TODO 8 — `next-kernel` validation & safe-state recovery.** The
+  annotation is the node's boot goal and it is **file-first**: no
+  controller writer sets a value whose file is not on the boot partition
+  (audited, §3.10). The residual stuck case — a malformed value, or a
+  value the repository can no longer satisfy — is corrected back to a
+  **safe state** instead of being left dangling (§3.10).
+- **TODO 13 (build half) — multi-platform image build.** The controller
+  image is built for **both** `linux/amd64` and `linux/aarch64` by
+  `make image` (§3.11); the public `v*` publishing half stays in the
+  backlog (no registry, tag scheme undecided, §7).
 
 Together these make the controller a safe unattended mechanism: nothing
 reboots (and no update work happens) outside the windows an operator has
-explicitly configured.
+explicitly configured, and the boot partition stays bounded and
+consistent over time.
 
 ## 2. Constraints
 
@@ -255,6 +271,8 @@ anything):
    (`running == next-kernel`) while carrying a marker, the marker is
    stale (its intent was achieved by other means, e.g. an operator
    reboot) → delete it (conditional RMW; write only on the anomaly).
+   Extended in §3.10: a marker whose version file is **absent** from the
+   partition is stale as well.
 
 **Window-open enqueue (leader, replaces `maybeStartPlan`).** Every
 engine cycle, if `updates.windows` is non-empty and a window is open:
@@ -340,7 +358,8 @@ affected by M3:
 | Local pod | Fresh-stage anchor `next-kernel := V` (unchanged, M2) | value at write time `== running` or absent. |
 | Local pod | **Fresh full-mode staging → `reboot-eligible := V`** (M3) | staging of `V` completed new-to-partition; `next-kernel == V` at write time. |
 | Local pod | **Operator pin → `reboot-eligible := V`** (M3, §3.7) | the pin value `V` is valid, present on the partition, and still `== next-kernel` at write time; modes `stage`/`full`. |
-| Local pod | **Stale-marker sweep → delete `reboot-eligible`** (M3) | node quiescent (`running == next-kernel`) with a marker present. |
+| Local pod | **Stale-marker sweep → delete `reboot-eligible`** (M3) | node quiescent (`running == next-kernel`) with a marker present, **or** the marker's version file is absent from the partition (§3.10). |
+| Local pod | **Goal correction → `next-kernel := <safe state>` or delete** (M3, §3.10) | value malformed (node state, ungated), or file absent and the verified index does not contain the value (window occurrence); re-checked on the fresh read. |
 | Local pod | **Check claim → `update-last-check := O`** (M3, §3.4) | window open; stored value absent or older than the claimed occurrence `O`; re-checked on the fresh read. |
 | Leader | **Window-open enqueue: `reboot-state := requested` + delete marker, one RMW** (M3, §3.4) | marker present and valid; non-quiescent; M1 state resting (absent/`completed`); re-checked on the fresh read. |
 | ~~Leader~~ | ~~Two-phase plan cancel/reset~~ (M2, **abolished**) | — |
@@ -385,6 +404,7 @@ Events (namespace `default`, rate-limited per key as in M1/M2):
 | `UpdateHeldWindow` | leader (update) | eligible node(s) waiting for an `updates.windows` window (keyed per node). |
 | `UpdateApplied` | leader (update) | node quiescent on `next-kernel` after a reboot (keyed per node+version). |
 | `UpdateMismatch` | leader (update) | node came back `running != next-kernel`; no auto-retry (keyed per node). |
+| `UpdateGoalCorrected` | local pod (update) | `next-kernel` corrected to its safe state (malformed, or unreachable — §3.10) (keyed per node). |
 
 Existing events are kept (`QueueHeldNotReady`, `PDBBlocked`,
 `RebootCompleted`, `UpdateStagingSkipped`, …). Structured logs:
@@ -393,6 +413,141 @@ each enqueue, and on each pin re-point; `Warn` on invalid config
 (last-valid-wins), on mismatch, on the one-shot stale-ConfigMap delete.
 The `NoWindowsConfigured` rejection is returned in the API response and
 logged at `Info` (an expected operator-visible condition).
+
+### 3.9 Syslinux stale-entry prune (TODO 6)
+
+The syslinux writer (M2 staging step 5, the target of §3.7's
+reconciliation) only ever appends a `LABEL` block and moves `DEFAULT`;
+`syslinux.cfg` therefore grows one entry per staged kernel. The prune
+bounds it:
+
+- **Prune candidate** — an entry block whose `KERNEL` line references
+  one of *our* kernel files (matching the stored-kernel pattern
+  `simplek8s.<ts>.<arch>.efi` under the release directory) **and** whose
+  file no longer exists on the partition. Blocks whose `KERNEL` path
+  does not match our pattern (foreign entries) are **never touched**,
+  file present or not. Global lines (`DEFAULT`, `TIMEOUT`, `PROMPT`, …)
+  are preserved verbatim.
+- **Block** — a block runs from its `LABEL` line to (not including) the
+  next `LABEL` line or EOF — the exact mirror of the writer's block
+  form, so the prune parser and the writer can never disagree about
+  block boundaries.
+- **Protection** — the block named by the current `DEFAULT` is never
+  pruned. In practice it can never be a candidate: the purge's
+  `protectedSet` includes the bootloader default, so that file is never
+  deleted. The guard is belt-and-braces.
+- **Trigger** — the prune runs **only when a purge deleted at least one
+  kernel** (capacity pre-check, staging step 4, or retention, step 7),
+  in the same mounted session, after the staging work. No purge
+  deletion → no rewrite: rewriting `syslinux.cfg` is a vfat write and is
+  not done gratuitously. The rewrite uses the writer's existing
+  discipline (temp file + synchronous `copyOver`).
+- **Scope** — syslinux only. The rpi config (`config.txt`) carries a
+  single `kernel=` line; there is nothing to prune.
+- **The distro's initial entry** (confirmed to reference one of our
+  kernels) is a normal candidate: when the purge deletes that kernel,
+  the entry goes with it. Accepted behavior change — the entry cannot
+  boot once its file is gone, so nothing usable is lost.
+
+### 3.10 `next-kernel` validation & safe-state recovery (TODO 8)
+
+`next-kernel` is the node's boot **goal**, and it is **file-first**: no
+controller writer sets a value whose file is not on the boot partition.
+Audited — all four existing writers satisfy it:
+
+| Writer | Why the file is present |
+|---|---|
+| `bootstrap` (annotation absent) | the target comes from a local partition scan (running-if-local, else newest local). |
+| Fresh-stage `anchor` | runs only after `Store.Stage` succeeded — the file was just written. |
+| Plan-layer resets (×2, M2) | write `running` — the kernel the node is executing, which the purge protects. (Abolished by this plan anyway.) |
+
+The only ways a node can hold a value whose file is absent are an
+**operator pin ahead of staging** (by design — the annotation leads
+staging; the system converges via defensive re-staging, or corrects
+below) and **manual file deletion**. Validation restores a stuck goal to
+a **safe state**:
+
+**Safe state** — (a) the running version, if its file is present on the
+partition; else (b) the newest version present on the partition; else
+(c) delete the annotation. In (a)/(b) the bootloader `DEFAULT` is
+re-pointed to the corrected value; in (c) the bootloader is left alone
+(there is nothing local to point at).
+
+**Correction paths** (local pod; both fire the rate-limited
+`UpdateGoalCorrected` event, keyed per node):
+
+1. **Malformed value** (present but failing the version grammar) —
+   node state, evaluated in the same ungated path as `bootstrap` (no
+   repository involved): correct to the safe state. The correction is
+   an annotation RMW only; the bootloader re-point follows via the
+   change-triggered reconciliation (§3.7), which is already an
+   ungated, change-triggered partition-write path.
+2. **Well-formed value, file absent** — evaluated in the
+   window-occurrence update loop (the defensive re-stage target, §3.4),
+   against the verified index of the node's effective repository:
+   - the check **failed** this occurrence (no verified index) → **no
+     correction**; retried at the next occurrence;
+   - the value **is in the verified index** → the staging failure
+     (download, GPG, checksum — a mismatch included) is **transient** →
+     **no correction**; the defensive re-stage retries at the next
+     occurrence;
+   - the value is **not in the verified index** → positive knowledge of
+     absence (removed from the repo, or a ts that never existed) →
+     **correct** to the safe state, folded into the same mounted
+     session (re-point in the session).
+
+The rule is **stateless** — no failure counters: correction happens
+only on (a) local malformation or (b) positive knowledge of absence,
+never on a transient failure (correcting on a transient failure would
+silently destroy the operator's intent), and a transient failure costs
+at most one occurrence — the same cost as any failed check (§3.4).
+
+**Marker** — the stale sweep (§3.4, item 4) is extended: a node
+carrying `reboot-eligible` whose version file is **absent** from the
+partition loses the marker (conditional RMW, same discipline as the
+quiescent sweep). This covers a marker left stale by a correction and a
+manually deleted file alike.
+
+**Leader** — no new leader logic: after a correction, the value is
+bootable by construction and the existing per-node verification (§3.4)
+converges (`UpdateApplied` on the next quiescence). An operator pin to
+a version that *is* in the repository is never corrected — it is
+staged when the window allows.
+
+### 3.11 Multi-platform image build (TODO 13, build half)
+
+SimpleK8s nodes can be `x86-64` **or** `aarch64`; the release kernels
+are per-arch, but the controller **image** was built single-arch (host
+architecture), so an `aarch64` node could not run it.
+
+- **`make image` builds for both platforms**: buildx against
+  `linux/amd64,linux/aarch64` — the target **fails if either platform
+  fails**, which is the point (cross-arch surprises surface at build
+  time, not at the first aarch64 deployment). The **host-architecture
+  image is then loaded** into the local docker store as
+  `$(IMAGE):$(TAG)` (a classic store is single-arch; only one platform
+  can be loaded). The deploy flow is unchanged (`docker save` +
+  `scp -O` + `docker load` + `kubectl apply`).
+- **The Dockerfile needs no change** — verified arch-agnostic: static
+  Go binary (`CGO_ENABLED=0`), `alpine:3.20` + `util-linux` (multi-arch
+  package), embedded keyring (a plain file).
+- **Prerequisite (documented)**: on Linux, the foreign-arch `apk add`
+  layer runs a foreign-arch shell, which needs qemu/binfmt_misc
+  registered **once** (`docker run --privileged --rm
+  tonistiigi/binfmt --install arm64`). The Go cross-compile itself
+  needs no emulation.
+- **Out of scope** (decisions 27/28): publishing a public multi-arch
+  `v*` image (no registry exists yet; tag scheme undecided) and CI
+  (explicitly not in M3). Notes for when the CI is built:
+  `actions/checkout` needs `lfs: true` (the keyring is a Git LFS file —
+  otherwise the LFS pointer text is embedded *as the keyring*, a
+  build-successful / runtime-GPG-failing silent failure) and
+  `fetch-depth: 0` (for the `git describe`-based `VERSION`); GitHub
+  runners already have binfmt registered; a release push should use
+  `--provenance=false`.
+- **E2E**: no arm64 test node exists yet — verification is that both
+  platforms build; once an arm64 node is stood up, deploy the aarch64
+  image and run one full auto-update (W4-shaped).
 
 ## 4. Decision log (closed)
 
@@ -419,6 +574,13 @@ logged at `Info` (an expected operator-visible condition).
 | 19 | Invalid windows value → whole key invalid → last-valid-wins + warn | One validation rule for all flat keys (M2 §3.2). |
 | 20 | **`updates.check-interval` retired**; at most one check per window occurrence, no retries within an occurrence | With windows, the interval was a second dial on the same thing (it could only reduce or delay the frequency); per-occurrence checks also bound an always-open window by the occurrence period; the operator expresses the check cadence directly in `updates.windows`. |
 | 21 | The last-checked occurrence is a **node annotation** (`simplek8s.org/update-last-check`, RFC3339 UTC), claimed by the local pod with an RMW **before** the fetch | An in-memory tracker would re-fetch the PROD release repo once per pod restart; a crash loop or rolling restart would amplify into fleet-wide repo traffic. The annotation is the project's established persistence primitive (M1/M2): one small RMW per occurrence, never cleared, and claim-on-start bounds repo traffic even when staging is interrupted (the next occurrence self-heals). Rejected alternatives: shared ConfigMap (write contention, wrong primitive), pod-local volume (stateless pods, none in SimpleK8s), hard-coded minimum interval (a new unconfigurable constant that only dampens, does not bound). |
+| 22 | Prune rule: remove only entry blocks whose `KERNEL` references one of our kernels (`simplek8s.<ts>.<arch>.efi`) **and** whose file no longer exists; foreign entries never touched, file state irrelevant | The writer's naming pattern is the ownership boundary; foreign entries (recovery, non-managed paths) are out of contract like hand-edited files; the existence check is stateless — no "what did we delete" bookkeeping. |
+| 23 | Prune trigger: only when a purge deleted ≥1 kernel, in the same mounted session; no rewrite otherwise | The only situation the rule can apply to by our own doing; no gratuitous vfat writes; the distro's initial entry (one of our kernels, confirmed) is pruned when its file is purged — accepted. |
+| 24 | Goal correction only on (a) a malformed value or (b) a verified index that does not contain the value; fetch failure, or value-in-index with staging failed (including checksum/GPG mismatch) → no correction, retry next occurrence; no failure counters | Correcting on a transient failure would silently destroy operator intent (a pin, an update target); positive knowledge of absence is the only safe trigger; stateless, and a transient failure costs at most one occurrence — the same as any failed check (§3.4). |
+| 25 | Safe state: running (if local) → newest local → delete the annotation; written by the local pod, re-pointing `DEFAULT` in the same session (case (c) leaves the bootloader untouched); `UpdateGoalCorrected` event | Generalizes bootstrap's fallback (M2 §3.5) from the annotation-absent case to the present-but-unreachable case; the corrected value is bootable by construction, so the leader's verification converges with no new logic. |
+| 26 | Marker-sweep extension: `reboot-eligible` whose version file is absent from the partition → cleared | A marker pointing at a version that cannot boot is dead intent; the same conditional-RMW discipline as the quiescent sweep; covers post-correction stale markers and manual file deletion. |
+| 27 | `make image` = buildx for `linux/amd64,linux/aarch64` (fails if either fails) + host-arch load into the local store; deploy flow unchanged | The Dockerfile is verified arch-agnostic (static Go, `alpine` + `util-linux`); the maintainer wants cross-arch failure caught at build time; a classic docker store is single-arch, so only the host platform is loadable. |
+| 28 | CI and public release out of M3 (no workflow); TODO 13 reduced to the public `v*` publishing half (registry + tag scheme TBD); qemu/binfmt prerequisite documented | Maintainer decision (2026-09-09); the publishing target does not exist yet; the local multi-arch build check suffices until an arm64 test node is stood up. |
 
 ## 5. Behavior changes & migration
 
@@ -445,14 +607,32 @@ logged at `Info` (an expected operator-visible condition).
 - New node annotation `simplek8s.org/update-last-check` (newest checked
   occurrence, RFC3339 UTC), written once per occurrence by the local
   pod and never cleared — a stale value only ever delays a check.
+- **`syslinux.cfg` can now shrink.** After a purge that deletes
+  kernels, the stale entries for those kernels are pruned in the same
+  session — including the distro's initial entry once its kernel file is
+  purged (accepted: the entry cannot boot once its file is gone).
+  `DEFAULT` and foreign entries are never touched.
+- **The controller can now correct or delete `next-kernel`.** Before
+  M3 it only set the annotation when absent (bootstrap) or after a
+  successful stage (anchor). A malformed value, or a value the verified
+  repository index does not contain, is corrected to the safe state
+  (running → newest local → delete) with an `UpdateGoalCorrected`
+  event. Operator pins ahead of staging are unaffected: a value that is
+  in the repository index is never corrected — it is staged when the
+  window allows.
+- **`reboot-eligible` is also cleared when its version file is absent
+  from the partition** (stale-sweep extension, §3.10).
+- **`make image` now builds for `linux/amd64` and `linux/aarch64`**
+  (fails if either fails) and needs qemu/binfmt_misc registered once on
+  Linux; the deploy flow is unchanged.
 - The `simplek8s-update-plans` ConfigMap is gone; the leader deletes a
   leftover on first cycle.
 - `E2E-UPDATE.md` is **redrawn** by this plan: the plan-layer campaign
   (U-cases around plan create/cancel/verify) is rewritten as window
   cases in the new `E2E-WINDOWS.md`; the pending BUG 12 re-run is
   superseded by case W5.
-- `TODO.md` items 1, 9, 11 are closed by this plan and leave the
-  backlog.
+- `TODO.md` items 1, 6, 8, 9, 11 are closed by this plan and leave the
+  backlog; item 13 is reduced to its public `v*` publishing half.
 - `PLAN-M2.md`'s `/boot/simplek8s/` shorthand is obsolete (SimpleK8s
   does not mount `/boot`); left as-is, corrected here and going forward.
 - `deploy/configmap.yaml` gains the four keys, shipped **present with
@@ -470,7 +650,9 @@ logged at `Info` (an expected operator-visible condition).
 | `internal/config` | Four new keys + `Config` fields (parsed `[]Schedule` + two `time.Duration`); validation per §3.2; `updates.check-interval` no longer parsed (decision 20). |
 | `internal/features/reboot` | Orchestrator: window gate in the per-candidate admission loop, forced bypass, `QueueHeldWindow` event. |
 | `internal/api` | `admit`: `NoWindowsConfigured` (422) for non-forced requests when `reboots.windows` is empty. |
-| `internal/features/update` | `update.go`: window master switch in `RunLocal` + persisted check claim (§3.4, decision 21); operator-pin handler + stale-marker sweep (§3.4/§3.7). New `window.go` (leader): window-open enqueue + per-node verification + one-shot stale-ConfigMap delete. **Delete** `plan.go`, `planstate.go` and their tests. |
+| `internal/features/update` | `update.go`: window master switch in `RunLocal` + persisted check claim (§3.4, decision 21); operator-pin handler + stale-marker sweep (§3.4/§3.7); goal validation & safe-state correction (§3.10); prune hook after purge (§3.9). New `window.go` (leader): window-open enqueue + per-node verification + one-shot stale-ConfigMap delete. **Delete** `plan.go`, `planstate.go` and their tests. |
+| `internal/features/update` (`bootloader.go`) | `pruneSyslinuxEntries` (pure block parse + rewrite, mirror of the writer) + temp-dir unit tests (§3.9). |
+| `Makefile` | `image` target → buildx for `linux/amd64,linux/aarch64` + host-arch load; binfmt prerequisite documented (§3.11). |
 | `internal/nodestate` | New conditional-RMW builds: enqueue (state→`requested` + delete marker, one patch), marker-clear, and check-claim (`update-last-check`, write only if absent/older). |
 | `deploy/configmap.yaml` | The four new keys with their built-in defaults (`reboots.windows: '[]'`, `updates.windows: '["@every 12h"]'`, graces `5m`), commented example; remove `updates.check-interval`. |
 
@@ -507,7 +689,19 @@ logged at `Info` (an expected operator-visible condition).
   preconditions (resting vs in-flight vs `failed`; marker consumed;
   raced operator edits skipped); verification events (applied/mismatch,
   keyed, no auto-retry); one-shot stale-ConfigMap delete (present /
-  absent / error).
+  absent / error); goal validation (malformed → safe-state correction
+  without a repo, ungated; file absent + failed check → no correction;
+  file absent + value in verified index + staging failed → no
+  correction, next occurrence; file absent + value not in verified
+  index → correction; safe-state precedence: running present / running
+  absent → newest local / empty partition → annotation deleted,
+  bootloader untouched); marker-sweep extension (marker file absent →
+  cleared, present → kept).
+- **bootloader (prune, §3.9)**: entry for our kernel with a missing
+  file removed (including the distro's initial-entry shape); foreign
+  entries (non-matching `KERNEL` path) untouched, file present or not;
+  global lines preserved verbatim; the `DEFAULT` block never pruned; no
+  purge deletion → no rewrite; rpi `config.txt` untouched.
 - **nodestate**: enqueue build writes all four annotations + deletes the
   marker in one patch; precondition failures abort; check-claim build
   (absent → write, older → write, newer → skip, race → abort).
@@ -526,6 +720,8 @@ logged at `Info` (an expected operator-visible condition).
 | W8 | Marker waits for the window | node made eligible while the updates window is closed | marker persists + `UpdateHeldWindow`; enqueued at the next open window. |
 | W9 | Leader handover mid-window | delete the leader pod while nodes are queued/eligible | standby recomputes the window from the clock; queued nodes continue, markers are honored; nothing lost. |
 | W10 | M1 regression | quick pass: B1 happy path, C1 (PDB), D9 (pause) | M1 semantics unchanged with windows configured. |
+| W11 | Syslinux prune | stage releases until the purge deletes a kernel (small `updates.preserve` / usage cap) | entries for the purged kernels (and the distro's initial entry, once purged) are gone from `syslinux.cfg`; `DEFAULT` and foreign lines intact; the node still boots. |
+| W12 | Goal validation / safe state | hand-set `next-kernel` to (a) a malformed value, (b) a well-formed ts absent from the repo | (a) corrected promptly to the safe state without waiting for a window; (b) corrected at the next window occurrence; in both: `DEFAULT` re-pointed, `UpdateGoalCorrected` event, and a `reboot-eligible` pointing at an absent version is cleared. |
 
 ### 6.4 Milestones
 
@@ -533,9 +729,10 @@ logged at `Info` (an expected operator-visible condition).
 |---|---|
 | M1 | `internal/cron` + the four window config keys + unit tests (no behavior change). |
 | M2 | Reboot window gate + API rejection + unit tests. |
-| M3 | Update rework: master switch (one check per occurrence, claim persisted in `update-last-check`), pin handler, enqueue, per-node verification, stale-marker sweep, stale-ConfigMap delete, `updates.check-interval` retired; plan layer removed. |
-| M4 | E2E-WINDOWS campaign on the 3-node test VMs (W1–W10). |
-| M5 | Docs: `E2E-WINDOWS.md` results, `E2E-UPDATE.md` redrawn, `TODO.md` (items 1/9/11 out), README, `deploy/configmap.yaml` example; PLAN-M3 marked shipped. |
+| M3 | Update rework: master switch (one check per occurrence, claim persisted in `update-last-check`), pin handler, enqueue, per-node verification, stale-marker sweep (+ §3.10 extension), goal validation & safe-state correction, syslinux prune, stale-ConfigMap delete, `updates.check-interval` retired; plan layer removed. |
+| M4 | E2E-WINDOWS campaign on the 3-node test VMs (W1–W12). |
+| M5 | Docs: `E2E-WINDOWS.md` results, `E2E-UPDATE.md` redrawn, `TODO.md` (items 1/6/8/9/11 out, 13 reduced), README, `deploy/configmap.yaml` example; PLAN-M3 marked shipped. |
+| M6 | Multi-platform image build: `make image` via buildx for `linux/amd64,linux/aarch64` + host-arch load, binfmt prerequisite documented (§3.11). No Go code; independent of M1–M5. |
 
 ## 7. Deferred
 
@@ -546,3 +743,10 @@ logged at `Info` (an expected operator-visible condition).
   of the boot-partition mount/write path.
 - TODO item 12 (BUG 12) is closed by this plan: the plan layer it lived
   in is removed; W5 is its end-to-end regression.
+- **TODO 13 remainder — public `v*` image publishing + CI**: a registry
+  (none exists yet), the tag scheme (timestamp / incremental / semver —
+  undecided), the build-check workflow, and the release push. Explicitly
+  out of M3 (maintainer decision, 2026-09-09); §3.11 carries the notes
+  for when it is built (LFS checkout, binfmt, provenance).
+- **arm64 E2E**: no arm64 test node exists yet; when one is stood up,
+  deploy the aarch64 image and run one full auto-update (W4-shaped).

@@ -3,7 +3,7 @@
 > **Planning index**
 > - [PLAN-M1.md](PLAN-M1.md) — node reboots (shipped)
 > - [PLAN-M2.md](PLAN-M2.md) — distro updates (this document; implemented, E2E in progress)
-> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop (in planning)
+> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop + boot-partition hygiene (in planning)
 > - [E2E.md](E2E.md) — reboots E2E campaign (28/28 PASS)
 > - [E2E-UPDATE.md](E2E-UPDATE.md) — updates E2E campaign
 
@@ -663,16 +663,15 @@ keys/                       simplek8s-pubring.gpg (LFS)
 
 ## 7. Deferred (see TODO.md)
 
-- Maintenance windows, the operator-pin bootloader reconciliation, and the
-  window-driven update reboot loop — PLAN-M3 (in planning; abolishes this
-  document's §3.8–3.10 plan layer).
+- Maintenance windows, the operator-pin bootloader reconciliation, the
+  window-driven update reboot loop, the syslinux stale-entry prune, and
+  `next-kernel` safe-state recovery — PLAN-M3 (in planning; abolishes
+  this document's §3.8–3.10 plan layer).
 - `simplek8s-update` CLI (reuses this package; owns `--url`, `--keyring`,
   `--checksign`).
 - Pod split (unprivileged controller + privileged host daemon).
 - Rollback automation/ergonomics (the manual path is already one
   annotation edit).
 - Keyring leaving the distro once the CLI exists.
-- Syslinux stale-entry cleanup (bootloader entries accumulate across
-  updates; TODO.md item 6).
 - Reboot orchestration success observability (no `Info` log on the happy
   path; TODO.md item 7).

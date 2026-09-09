@@ -6,9 +6,11 @@ is ready to be picked up as its own plan; nothing here is blocking.
 
 **Closed by PLAN-M3** (the numbering is kept stable for
 cross-references, hence the gaps): items 1 (reboot maintenance
-windows), 9 (operator pin → bootloader re-point + `reboot-eligible`)
-and 11 (window-scheduled update reboots) are designed and carried by
-PLAN-M3.md. Item 12 (BUG 12) is closed with it — see its entry.
+windows), 6 (syslinux stale-entry cleanup), 8 (`next-kernel`
+validation & safe-state recovery), 9 (operator pin → bootloader
+re-point + `reboot-eligible`) and 11 (window-scheduled update
+reboots) are designed and carried by PLAN-M3.md. Item 12 (BUG 12) is
+closed with it — see its entry.
 
 ## 2. `simplek8s-update` CLI
 
@@ -57,16 +59,6 @@ carried by the controller image (LFS, PLAN-M2 §3.14) and the CLI
 defaulting to it — the distro file can be removed. Distro-side change,
 tracked here for visibility.
 
-## 6. Syslinux stale-entry cleanup (bootloader)
-
-Each update's staging writes a new syslinux `MENU LABEL`/`KERNEL` entry
-but never prunes the old ones, so `syslinux.conf` in the (vfat) boot
-partition grows unbounded across many updates. Harmless today (the default
-and the fallback keep booting), but should be bounded: remove syslinux
-entries for kernels already deleted by the purge step. Distro/bootloader
-concern — the controller's syslinux writer currently only adds the new
-entry and moves the default.
-
 ## 7. Reboot orchestration success observability
 
 The reboot orchestrator logs the failure path (`Error`) but emits no
@@ -75,32 +67,6 @@ verify sequence is invisible in the controller log (it only shows up in
 the node annotations and the `RebootCompleted` event). Add `Info`-level
 log lines for the completed transitions so "it worked" is observable
 without inspecting each node's annotations.
-
-## 8. `next-kernel` is the source of truth — validate & safe-state recovery
-
-The `next-kernel` annotation is the node's boot **goal** (the kernel it
-should run after its next reboot). The controller should treat it as the
-source of truth: validate that the goal is reachable, and when it is not,
-return the annotation to a **safe state** rather than leaving it stuck.
-
-Current behavior:
-
-- File missing but **downloadable** → `maybeStage` target (1)
-  (`update/update.go:229`) defensively re-stages it (re-download); the
-  goal is achieved.
-- File missing and **unachievable** (no longer in the repo, checksum
-  mismatch, or a malformed ts) → `stageOne` fails → `UpdateStagingSkipped`
-  event → the annotation is **left unchanged** and retried every check
-  cycle (the node points forever at a kernel it can never boot).
-- `bootstrap` (`update/update.go:149`) already implements the safe
-  fallback (running → newest local → leave absent), but **only when the
-  annotation is absent** — not when it is present-but-unachievable.
-
-Desired: generalize that fallback to the present-but-unachievable case.
-When `next-kernel`'s file is missing and cannot be (re)staged, correct the
-annotation to: (a) the running kernel if its file exists, else (b) the
-newest version present on the boot partition, else (c) delete the
-annotation. Same for a malformed value.
 
 ## 10. Leader-centralized update check + distribution
 
@@ -139,16 +105,17 @@ verification, PLAN-M3 §3.4), so the bug class no longer exists. The
 pending E2E re-run (successive auto-update) is superseded by the
 E2E-WINDOWS campaign, case W5.
 
-## 13. Multi-platform container image (amd64 + aarch64)
+## 13. Multi-platform container image — public publishing (build half carried by PLAN-M3)
 
-SimpleK8s nodes can be `x86-64` **or** `aarch64` (= arm64) — the release
-artifacts are per-arch (`simplek8s.<ts>.x86-64.efi.zst` /
-`simplek8s.<ts>.aarch64.efi.zst`), and the update engine already maps the
-node arch. But the controller **container image** is currently built
-single-arch: the `Makefile` `image:` target runs a plain `docker build`
-(host architecture only), so an `aarch64` node cannot pull/run it. Publish
-the image as a **multi-platform** `linux/amd64,linux/aarch64` image — e.g.
-a buildx builder + `docker buildx build --platform
-linux/amd64,linux/aarch64` (and push a multi-arch manifest). The `Dockerfile`
-itself is arch-agnostic (static Go binary + `util-linux`), so only the
-build/publish step needs the multi-arch treatment.
+The multi-platform **build** is closed by PLAN-M3 §3.11: `make image`
+builds the image for `linux/amd64` **and** `linux/aarch64` locally
+(buildx; the arch-agnostic `Dockerfile` needs no change). Remaining —
+publish the image as a public multi-arch `v*` release:
+
+- a registry (none exists yet — today only local builds; `:dev` stays a
+  local development tag);
+- the `v*` tag scheme (timestamp / incremental / semver — undecided);
+- CI (a build-check workflow for both platforms, then a release push on
+  `v*` tags) — deliberately not in PLAN-M3;
+- an arm64 test node for E2E (planned; one full auto-update on the
+  aarch64 image when it is up).

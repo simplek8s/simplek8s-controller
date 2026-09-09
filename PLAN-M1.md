@@ -3,7 +3,7 @@
 > **Planning index**
 > - [PLAN-M1.md](PLAN-M1.md) — node reboots (this document; shipped)
 > - [PLAN-M2.md](PLAN-M2.md) — distro updates (implemented, E2E in progress)
-> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop (in planning)
+> - [PLAN-M3.md](PLAN-M3.md) — maintenance windows + update reboot loop + boot-partition hygiene (in planning)
 > - [E2E.md](E2E.md) — reboots E2E campaign (28/28 PASS)
 > - [E2E-UPDATE.md](E2E-UPDATE.md) — updates E2E campaign
 
