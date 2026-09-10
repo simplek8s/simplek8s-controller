@@ -572,7 +572,15 @@ architecture), so an `aarch64` node could not run it.
   layer runs a foreign-arch shell, which needs qemu/binfmt_misc
   registered **once** (`docker run --privileged --rm
   tonistiigi/binfmt --install arm64`). The Go cross-compile itself
-  needs no emulation.
+  needs no emulation. **`make image` preflights this**: before invoking
+  `buildx build` it checks the foreign platform is actually emulable
+  (on Linux, `qemu-aarch64` present under
+  `/proc/sys/fs/binfmt_misc/`; a host that is itself aarch64 only needs
+  the amd64 half) and, on failure, prints
+  the `docker run --privileged --rm tonistiigi/binfmt --install arm64`
+  remedy — buildx's own failure without binfmt is cryptic (a
+  foreign-arch shell error deep in the build), so the message must come
+  from us.
 - **Out of scope** (decisions 27/28): publishing a public multi-arch
   `v*` image (no registry exists yet; tag scheme undecided) and CI
   (explicitly not in M3). Notes for when the CI is built:
