@@ -449,6 +449,43 @@ bounds it:
   the entry goes with it. Accepted behavior change — the entry cannot
   boot once its file is gone, so nothing usable is lost.
 
+Real sample (captured 2026-09-10 from the `sk8s-cp1` test node's boot
+partition: the distro's initial entry plus one staged by the
+controller) — the reference fixture for the prune unit tests. Newer
+distro images ship a **documentation header** (a block of `#`
+comments at the top of the file) instead of the per-entry `#APPEND`
+hint shown here; existing nodes keep the sample's shape.
+
+```cfg
+DEFAULT simplek8s.202609061935.x86-64
+
+LABEL simplek8s.202608291203.x86-64
+ KERNEL /simplek8s/simplek8s.202608291203.x86-64.efi
+ #APPEND log_buf_len=5M printk.devkmsg=on systemd.debug-shell=1 debug
+
+
+LABEL simplek8s.202609061935.x86-64
+ KERNEL /simplek8s/simplek8s.202609061935.x86-64.efi
+
+```
+
+Parser/fixture notes from the sample:
+
+- The parser must tolerate **extra per-block lines** — the sample's
+  commented-out `#APPEND` hint, and the `INITRD` lines the writer
+  appends when a microcode file is present. Comments inside a pruned
+  block are dropped with the block (maintainer-confirmed: a hint for a
+  kernel that no longer exists is useless); the distro's top-of-file
+  DOC header is a *global* line and survives every rewrite and prune
+  verbatim.
+- `DEFAULT`/`LABEL` names drop the `.efi` suffix; `KERNEL` carries the
+  full `/simplek8s/...` path. Ownership is decided on the `KERNEL`
+  path only — the label name is irrelevant.
+- This sample has no `TIMEOUT`/`PROMPT`, but the rewrite must preserve
+  any global line verbatim; the file ends with a blank line (`\n\n`),
+  and the blank lines after a block belong to that block (pruning
+  block 1 above leaves a clean file).
+
 ### 3.10 `next-kernel` validation & safe-state recovery (TODO 8)
 
 `next-kernel` is the node's boot **goal**, and it is **file-first**: no
@@ -698,10 +735,11 @@ architecture), so an `aarch64` node could not run it.
   bootloader untouched); marker-sweep extension (marker file absent →
   cleared, present → kept).
 - **bootloader (prune, §3.9)**: entry for our kernel with a missing
-  file removed (including the distro's initial-entry shape); foreign
-  entries (non-matching `KERNEL` path) untouched, file present or not;
-  global lines preserved verbatim; the `DEFAULT` block never pruned; no
-  purge deletion → no rewrite; rpi `config.txt` untouched.
+  file removed (including the distro's initial-entry shape and its
+  in-block comment); top-of-file DOC header preserved verbatim;
+  foreign entries (non-matching `KERNEL` path) untouched, file present
+  or not; global lines preserved verbatim; the `DEFAULT` block never
+  pruned; no purge deletion → no rewrite; rpi `config.txt` untouched.
 - **nodestate**: enqueue build writes all four annotations + deletes the
   marker in one patch; precondition failures abort; check-claim build
   (absent → write, older → write, newer → skip, race → abort).
