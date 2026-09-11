@@ -25,10 +25,10 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.3 | Active plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 2 | Constraints |
 > | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 syslinux prune · 3.10 `next-kernel` validation · 3.11 multi-platform build |
-> | 4 | Decision log (closed) — 4.1 M1 · 4.2 M2 · 4.3 M3 (numbers restart per era) |
+> | 4 | Decision log (per era; §4.3 active) — 4.1 M1 · 4.2 M2 · 4.3 M3 (numbers restart per era) |
 > | 5 | Behavior changes & migration |
 > | 6 | Implementation — 6.1 modules · 6.2 unit test matrix · 6.3 phases |
-> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W14) |
+> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17) |
 > | 8 | Deferred |
 > | 9 | Risks & safety notes |
 
@@ -124,9 +124,12 @@ bounded and consistent over time.
   values; unknown keys warned.
 - **UTC always.** No timezone key (same rule as M2 §2).
 - **KISS.** No window ranges/`end` fields, no weekday aliases, no
-  maximum-duration guards, no new API endpoints. One new node
-  annotation (`update-last-check`, §3.4) — and the M2 `reboot-eligible`
-  annotation is **abolished** (eligibility is derived, §3.4).
+  maximum-duration guards, no new API endpoints. One repurposed node
+  annotation (`update-last-check` — shipped in M2, now the occurrence
+  claim, §3.4; a pre-M3 timestamp value is unparseable as an occurrence
+  and therefore treated as absent until overwritten) — and the M2
+  `reboot-eligible` annotation is **abolished** (eligibility is
+  derived, §3.4).
 - **M1 invariants untouched.** The window is one more gate on *start*.
   Serialization, workers-before-CP ordering, the CP gate, PDB (for
   non-forced), drain timeout, no-effect grace, and
@@ -136,7 +139,11 @@ bounded and consistent over time.
   the ConfigMap every cycle — nothing is persisted (the
   `update-last-check` claim, §3.4, is per-node check bookkeeping, not
   window state). A pod restart or a leader crash/handover changes
-  nothing: each recomputes the same answer from the clock.
+  nothing: each recomputes the same answer from the clock. Clock skew
+  and ConfigMap propagation delay can still make the leader and a pod
+  straddle a window edge in opposite directions; the designed outcome
+  is enqueue-then-hold (the node waits `requested`), never a missed
+  gate (§3.4).
 
 ## 3. Design
 
@@ -160,7 +167,9 @@ Consequences:
 
 - **Window = start gate.** Only the *start* of a reboot (admission
   `requested → draining`) is gated. A reboot already draining/rebooting
-  runs to completion even if the window closes mid-flight.
+  runs to completion even if the window closes mid-flight. Update work
+  follows the same principle: a check/stage starts only while
+  `updates.windows` is open and then runs to completion (§3.4).
 - **Queue waits, never fails.** A non-forced node that is `requested`
   while the window is closed stays `requested` — no timeout, no error —
   until a window opens. Eligible update nodes wait *before* the queue:
@@ -216,7 +225,7 @@ Parse rules (one rule for all keys, M2 §3.2):
 - `[]` is valid and means OFF for both features. Key absent → the
   built-in default: `reboots.windows` → `[]` (OFF); `updates.windows` →
   `'["@every 12h"]'`.
-- The `*-window-grace` keys use the existing duration parser (must be > 0).
+- The `*-window-grace` keys use the existing duration parser (must be > 0); an invalid value keeps the last valid one (or the default) + warn, like any other key.
 
 ### 3.3 Cron parser (`internal/cron`, hand-rolled, stdlib)
 
@@ -297,7 +306,7 @@ behavior at all). So the effective dial is:
 |---|---|---|
 | `off` | any | no update behavior. |
 | `stage` / `full` | explicit `[]` | **fully inert** — not even checks. |
-| `stage` / `full` | non-empty (default `["@every 12h"]`) | check + stage only while a window is open; staging itself (mount, download, verify, extract, bootloader, purge) runs as one unit inside the window. |
+| `stage` / `full` | non-empty (default `["@every 12h"]`) | check + stage only while a window is open; staging itself (mount, download, verify, extract, bootloader, purge) runs as one unit inside the window. Once started inside an open window, the run completes even if the window closes mid-flight (start-gate only, like reboots — §3.1); what is gated is the *start*, never the in-flight run. |
 
 **Scope of the gate.** `updates.windows` (and `update-mode`) gate the
 *update work* only: the periodic check and the staging of new versions
@@ -321,7 +330,9 @@ occurrence with one conditional RMW **before** fetching (write only if
 the stored value is absent or older than `O`); a new check starts only
 while the window is open and some schedule has a newer occurrence than
 the stored one — at most one check per occurrence per node regardless
-of pod lifetime (schedules with coincident occurrences share the claim).
+of pod lifetime (schedules with coincident occurrences share the claim; offset
+occurrences inside one grace each check — `["@daily","@hourly"]` ≈ 25 checks/day
+by construction).
 An unparseable stored value is treated as absent (one extra check,
 logged). Consequences: a pod restart does **not** re-check a claimed
 occurrence; a pod down for a whole occurrence simply misses it; a check
@@ -379,7 +390,10 @@ A pin *ahead of staging* (file not yet present) does **not** re-arm
 into a kernel that is not on its partition, and never wastes a reboot
 waiting for one. Re-arming is what lets successive updates reboot:
 without it, the previous update's `completed` state would block the next
-one (W5).
+one (W5). Re-arm clears `completed` only — on `absent` there is nothing
+to clear (the RMW is skipped), and `failed` is never cleared: a failed
+node exits only via operator `DELETE` (below, decision 30), which
+returns it to `absent` for re-evaluation.
 
 **`failed` and cancel (decision 30).** `failed` stays an
 operator-alarm state: no one ever auto-enqueues a `failed` node.
@@ -442,11 +456,16 @@ precondition-checked and idempotent.
 **Per-node verification (leader, replaces plan verification).** Every
 cycle, for each node with a well-formed `next-kernel`. **Always on** — purely
 observational (no network, no disk): it runs even with
-`updates.windows: []`, which is *not* part of the "fully inert" scope:
+`updates.windows: []`, which is *not* part of the "fully inert" scope,
+and with `update-mode: off` (events only — eligibility rule 1 still
+bars any reboot):
 
 - `running == next-kernel` → **quiescent**; nothing to do. The
   transition into quiescence after a reboot emits
-  `UpdateApplied` (rate-limited, keyed per node+version).
+  `UpdateApplied` (rate-limited, keyed per node+version). The leader
+  tracks the last-seen non-quiescent set in memory; after a handover
+  the first cycle may re-emit — `UpdateApplied` is idempotent per
+  node+version key, so duplicates are bounded and harmless.
 - `running != next-kernel` and the node's M1 state is `completed` (it
   came back and rested) → `UpdateMismatch` event + warn log (keyed per
   node, rate-limited). **No automatic retry** — consistent with
@@ -490,13 +509,14 @@ observational (no network, no disk): it runs even with
   request could never be honored, so it is not queued (no zombie
   queue). With windows configured, non-forced requests are admitted as
   today (`requested`, queued). **Forced** requests bypass the check and
-  always queue (and, as today, bypass PDB and execute immediately at
-  admission).
+  always queue (and, as today, bypass PDB; they still serialize through
+  the orchestrator queue — "immediate" means ungated, not unqueued).
   The `NoWindowsConfigured` check is evaluated **first**, before the
   per-node checks (node exists / `Ready` / controller pod `Running` /
   re-requestable state, M1 §3.9): it is global and cheap, so an empty
   `reboots.windows` wins over per-node outcomes (an unknown node with
-  empty windows gets the 422, not a 404).
+  empty windows gets the 422, not a 404 — a deliberate M1 admission-order
+change, §5).
 - **Orchestrator admission** (`orchestrator.runOrchestrator`
   phase 2): the existing gates keep their order and semantics
   (pause-on-failure → queued-NotReady hold → slots → per-node PDB).
@@ -505,6 +525,7 @@ observational (no network, no disk): it runs even with
   open; otherwise it stays `requested` and the loop emits the
   rate-limited `QueueHeldWindow` event (the `QueueHeldNotReady`
   analogue) and does not admit further non-forced candidates this cycle.
+`now` is sampled once per cycle so every candidate sees the same openness.
   A **forced** candidate is admitted regardless of window state. In-flight
   nodes (`draining`/`rebooting`) are managed in phase 1 exactly as today
   — the window never touches them.
@@ -520,7 +541,7 @@ affected by M3:
 |---|---|---|
 | Local pod | Bootstrap `next-kernel` (unchanged, M2) | annotation absent. |
 | Local pod | Fresh-stage anchor `next-kernel := V` (unchanged, M2) | value at write time `== running` or absent. |
-| Local pod | **State re-arm: clear the M1 reboot state** (M3, §3.4) | `next-kernel` changed to a well-formed version whose file is locally present on the partition, or staging completed a version `V` with `next-kernel == V`; state `completed` at write time; re-checked on the fresh read. |
+| Local pod | **State re-arm: clear the M1 reboot state** (M3, §3.4) | `next-kernel` changed to a well-formed version whose file is locally present on the partition, or staging completed a version `V` with `next-kernel == V`; state `completed` at write time (`absent` → RMW skipped, nothing to clear; never `failed`); re-checked on the fresh read. |
 | Local pod | **Pod start: delete a leftover `reboot-eligible`** (M3, migration) | the M2 marker annotation is present (never written again). |
 | Local pod | **Goal correction → `next-kernel := <safe state>` or delete** (M3, §3.10) | value malformed (node state, ungated), or file absent and the verified index does not contain the value (window occurrence); re-checked on the fresh read. |
 | Local pod | **Check claim → `update-last-check := O`** (M3, §3.4) | window open; stored value absent or older than the claimed occurrence `O`; re-checked on the fresh read. |
@@ -567,13 +588,21 @@ the annotation is the source of truth. This is what makes manual
 rollback (TODO item 4) and operator pins actually honored without
 touching the boot partition by hand.
 
+**Crash between correction and re-point.** A malformed-value correction
+(§3.10) lands the annotation RMW first and the bootloader re-point
+follows via this path — the reverse of the §3.4 ordering invariant.
+Benign: the corrected goal is well-formed, and the enqueue path itself
+re-verifies file presence and re-points before any state RMW, so no
+reboot can consume the stale `DEFAULT` in between; the next
+change-triggered cycle (or pod start) completes the re-point.
+
 ### 3.8 Observability
 
 Events (namespace `default`, rate-limited per key as in M1/M2):
 
 | Event | Source | Meaning |
 |---|---|---|
-| `QueueHeldWindow` | leader (reboot) | non-forced queued nodes waiting for a `reboots.windows` window. |
+| `QueueHeldWindow` | leader (reboot) | non-forced queued nodes waiting for a `reboots.windows` window (keyed per node, rate-limited). |
 | `UpdateHeldWindow` | local pod (update) | its node is reboot-eligible and waiting for a `reboots.windows` window (keyed per node). |
 | `UpdateApplied` | leader (update) | node quiescent on `next-kernel` after a reboot (keyed per node+version). |
 | `UpdateMismatch` | leader (update) | node came back `running != next-kernel`; no auto-retry (keyed per node). |
@@ -615,7 +644,13 @@ bounds it:
   in the same mounted session, after the staging work. No purge
   deletion → no rewrite: rewriting `syslinux.cfg` is a vfat write and is
   not done gratuitously. The rewrite uses the writer's existing
-  discipline (temp file + synchronous `copyOver`).
+  discipline (temp file + synchronous `copyOver`). If the rewrite fails
+  after staging succeeded, staging is **not** rolled back: the error is
+  logged + evented (rate-limited) and the prune retries in the next
+  purge-triggered session. A hand-deleted file with no purge deletion
+  this session leaves its `LABEL` block dangling until a future purge
+  triggers a pass (bounded growth, never unbootable — `DEFAULT` is
+  guarded).
 - **Scope** — syslinux only. The rpi config (`config.txt`) carries a
   single `kernel=` line; there is nothing to prune.
 - **The distro's initial entry** (confirmed to reference one of our
@@ -682,7 +717,9 @@ Validation restores a stuck goal to a **safe state**:
 partition; else (b) the newest version present on the partition; else
 (c) delete the annotation. In (a)/(b) the bootloader `DEFAULT` is
 re-pointed to the corrected value; in (c) the bootloader is left alone
-(there is nothing local to point at).
+(there is nothing local to point at). On an empty partition only (c)
+applies; the annotation-absent bootstrap path must tolerate finding
+nothing and leave the annotation absent (no ping-pong).
 
 **Correction paths** (local pod; both fire the rate-limited
 `UpdateGoalCorrected` event, keyed per node):
@@ -696,8 +733,9 @@ re-pointed to the corrected value; in (c) the bootloader is left alone
    correction to the **running** version (case a) makes the node
    **quiescent** — no reboot is pending and none is enqueued; a
    correction to **newest local** (case b, necessarily `≠ running`)
-   makes the node reboot-eligible in `full` mode — the re-arm fires and
-   the node reboots into the safe state at the next open window; case
+   makes the node reboot-eligible in `full` mode — the re-arm fires
+   (no-op if the state is already `absent`) and the node reboots into
+   the safe state at the next open window; case
    (c) deletes the annotation, leaving nothing to re-arm.
 2. **Well-formed value, file absent** — evaluated in the
    window-occurrence update loop (the defensive re-stage target, §3.4),
@@ -768,7 +806,7 @@ architecture), so an `aarch64` node could not run it.
   platforms build; once an arm64 node is stood up, deploy the aarch64
   image and run one full auto-update (W4-shaped).
 
-## 4. Decision log (closed)
+## 4. Decision log (per era; §4.3 active)
 
 Numbers restart per era; unqualified references in this document are
 to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
@@ -998,47 +1036,58 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 
 ## 5. Behavior changes & migration
 
-- **Updates keep working after an M3 rollout**: absent
+- **Updates keep working after an M3 rollout** (D6): absent
   `updates.windows` → the built-in default `["@every 12h"]` (M2's 12h
-  check cadence, preserved). To stop the update feature entirely (not
+  check cadence, preserved). The shipped `deploy/configmap.yaml`
+  carries the keys present, so "absent" only occurs on operator-edited
+  ConfigMaps — the built-in is the fallback, not a second source. To stop the update feature entirely (not
   even checks), set `updates.windows: '[]'` explicitly (or `update-mode:
   off`).
-- **Non-forced reboots are OFF by default.** The built-in default for
+- **Non-forced reboots are OFF by default** (D6, D10). The built-in default for
   `reboots.windows` is empty: after an M3 rollout, `POST /reboots`
   without `force` is rejected until the operator configures
-  `reboots.windows`. Forced reboots are unaffected. This is the
+  `reboots.windows`. Forced reboots are unaffected. The 422 is
+  evaluated before per-node checks (unknown node + empty windows →
+  422, a deliberate M1 admission-order change). This is the
   intended safety default, not a regression.
-- **Full-mode auto-reboots are opt-in via `reboots.windows`.** M2's
+- **Full-mode auto-reboots are opt-in via `reboots.windows`** (D6, D29). M2's
   `full` mode rebooted after staging with no window concept. In M3 the
   auto-reboot runs only while `reboots.windows` is open (default `[]` =
   off): an install that relied on auto-reboots must configure it (e.g.
   the same value as `updates.windows`) to keep that behavior. Until
   then, check/staging keep running and the nodes stage and wait,
   non-quiescent, with no queue entry — visible, not silent.
-- **`updates.check-interval` is retired.** It is no longer parsed: a
+- **`updates.check-interval` is retired** (D20). It is no longer parsed: a
   ConfigMap that still carries it gets the existing unknown-key
   warn+ignore (the migration signal). Remove it from the ConfigMap and
   from `deploy/configmap.yaml`. The check cadence is now fully
   determined by `updates.windows` (one check per occurrence): with a
   weekly window, a new release is detected at most weekly.
-- **The `reboot-eligible` annotation is abolished.** It is never read
+- **The `reboot-eligible` annotation is abolished** (D12, D26). It is never read
   or written by M3 (any leftover is deleted by the local pod at pod
   start, best-effort). Reboot eligibility is **derived**: `full` mode +
   well-formed `next-kernel` + non-quiescent + M1 state absent + goal
   file locally present (§3.4).
-- **An operator pin no longer implies an implicit reboot.** In `stage`
+- **An operator pin no longer implies an implicit reboot** (D13). In `stage`
   mode a pin only re-points the bootloader `DEFAULT` (ungated); the
   reboot is the operator's explicit `POST /reboots`. In `full` mode the
   pinned node reboots at the next open `reboots.windows`.
-- New node annotation `simplek8s.org/update-last-check` (newest checked
-  occurrence, RFC3339 UTC), written once per occurrence by the local
-  pod and never cleared — a stale value only ever delays a check.
-- **`syslinux.cfg` can now shrink.** After a purge that deletes
+- **No plan object: pending update state is derived** (D11). There is
+  no "active plan", no plan cancel, no per-version all-or-nothing:
+  whether a reboot is pending follows from `next-kernel` vs `running` +
+  the M1 state (§3.4). The BUG 12 class (plan state vs M1 state
+  disagreement) disappears with the plan object.
+- Check-claim annotation `simplek8s.org/update-last-check` (D21;
+  shipped in M2, repurposed — §2): newest checked occurrence (RFC3339
+  UTC), written once per occurrence by the local pod and never cleared
+  — a stale value only ever delays a check (a missed occurrence is
+  skipped until the next one, §3.4).
+- **`syslinux.cfg` can now shrink** (D22, D23). After a purge that deletes
   kernels, the stale entries for those kernels are pruned in the same
   session — including the distro's initial entry once its kernel file is
   purged (accepted: the entry cannot boot once its file is gone).
   `DEFAULT` and foreign entries are never touched.
-- **The controller can now correct or delete `next-kernel`.** Before
+- **The controller can now correct or delete `next-kernel`** (D24, D25). Before
   M3 it only set the annotation when absent (bootstrap) or after a
   successful stage (anchor). A malformed value, or a value the verified
   repository index does not contain, is corrected to the safe state
@@ -1046,15 +1095,15 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
   event. Operator pins ahead of staging are unaffected: a value that is
   in the repository index is never corrected — it is staged when the
   window allows.
-- **`make image` now builds for `linux/amd64` and `linux/aarch64`**
+- **`make image` now builds for `linux/amd64` and `linux/aarch64`** (D27).
   (fails if either fails) and needs qemu/binfmt_misc registered once on
   Linux; the deploy flow is unchanged.
-- The `simplek8s-update-plans` ConfigMap is gone; the leader deletes a
+- The `simplek8s-update-plans` ConfigMap is gone (D11, D15); the leader deletes a
   leftover (best-effort, retried once per leadership acquisition until
   it succeeds — the RBAC `configmaps` role gains `delete` for it; the
   retry closes the rollout race in which the new role has not
   propagated yet and a once-per-lifetime attempt would be lost).
-- The updates campaign (§7.3) is **redrawn** by this plan: the
+- The updates campaign (§7.3) is **redrawn** by this plan (D11): the
   plan-layer U-cases (plan create/cancel/verify) are rewritten as
   windows cases in §7.4; the pending BUG 12 re-run is superseded by
   case W5.
@@ -1063,10 +1112,13 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 - The historical updates plan's shorthand for the boot-partition mount
   point is obsolete (SimpleK8s does not mount the boot partition at a
   fixed path); left as-is in git, corrected here and going forward.
-- `deploy/configmap.yaml` gains the four keys, shipped **present with
-  the built-in default values** (`reboots.windows: '[]'`,
-  `updates.windows: '["@every 12h"]'`, graces `5m`) plus a commented
-  example (`'["@daily"]'`) — the reboots opt-in point is explicit.
+- `deploy/configmap.yaml` gains the four keys (D1, D5, D6:
+  `reboots.windows`, `reboots.window-grace`, `updates.windows`,
+  `updates.window-grace`), shipped **present with the built-in default
+  values** (`reboots.windows: '[]'`, `updates.windows:
+  '["@every 12h"]'`, graces `5m`) plus a commented example
+  (`reboots.windows: '["@daily"]'`) — the reboots opt-in point is
+  explicit.
 
 ## 6. Implementation
 
@@ -1165,10 +1217,12 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 |---|---|
 | 1 | `internal/cron` + the four window config keys + unit tests (no behavior change). |
 | 2 | Reboot window gate + API rejection + unit tests. |
-| 3 | Update rework: master switch (one check per occurrence, claim persisted in `update-last-check`), **eligibility + state re-arm + pod-side `reboots.windows`-gated enqueue (no marker, decision 31)**, pin handler, per-node verification, goal validation & safe-state correction, syslinux prune, stale-ConfigMap delete (+ RBAC `delete`), leftover `reboot-eligible` cleanup, `updates.check-interval` retired; plan layer removed. |
-| 4 | Windows E2E campaign on the 3-node test VMs (W1–W14, §7.4) — results recorded in §7.4 as they pass. |
+| 3a | Update gating + claim: master switch, one check per occurrence with the persisted `update-last-check` claim; `updates.check-interval` retired (warn+ignore). Plan layer still present — no behavior removed yet. |
+| 3b | Pod-side enqueue + re-arm + pin handler + per-node verification + goal validation & safe-state correction + syslinux prune (`internal/nodestate` RMW builders, prune-hook wiring). |
+| 3c | Plan-layer deletion (`plan.go`/`planstate.go` out) + migration cleanup: stale-ConfigMap delete (+ RBAC `delete` — the role is applied before the image), leftover `reboot-eligible` cleanup. |
+| 4 | Windows E2E campaign on the 3-node test VMs (W1–W17, §7.4) — results recorded in §7.4 as they pass. Prerequisite: phases 1–3c deployed with RBAC propagated. |
 | 5 | Docs: finalize §7.4 results, redraw §7.3, `TODO.md` (items 1/6/8/9/11 out, 13 reduced), README, `deploy/configmap.yaml` example; the M3 era marked shipped. |
-| 6 | Multi-platform image build: `make image` via buildx for `linux/amd64,linux/aarch64` + host-arch load, binfmt prerequisite documented (§3.11). No Go code; independent of phases 1–5. |
+| 6 | Multi-platform image build: `make image` via buildx for `linux/amd64,linux/aarch64` + host-arch load, binfmt prerequisite documented (§3.11). No Go code; parallel with phases 1–5 (can run first). |
 
 ## 7. E2E
 
@@ -1446,7 +1500,7 @@ affects successive auto-updates (not only manual-then-auto).
 terminal `reboot-state` before its first verify (`resetStaleRebootState`,
 `update/plan.go`; `nodestate.ClearStaleRebootStateBuild`), so the same-cycle
 verify no longer false-cancels. Unit/integration tested; E2E re-run pending.
-### 7.4 Windows campaign (W1–W14)
+### 7.4 Windows campaign (W1–W17)
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
@@ -1463,6 +1517,9 @@ verify no longer false-cancels. Unit/integration tested; E2E re-run pending.
 | W11 | Syslinux prune | stage releases until the purge deletes a kernel (small `updates.preserve` / usage cap) | entries for the purged kernels (and the distro's initial entry, once purged) are gone from `syslinux.cfg`; `DEFAULT` and foreign lines intact; the node still boots. |
 | W12 | Goal validation / safe state | hand-set `next-kernel` to (a) a malformed value, (b) a well-formed ts absent from the repo | (a) corrected promptly to the safe state without waiting for a window; (b) corrected at the next window occurrence; in both: `UpdateGoalCorrected` event, `DEFAULT` re-pointed where applicable — and the two safe-state outcomes are distinct: correction to **running** leaves the node quiescent (**no** reboot at any window); correction to **newest local ≠ running** makes it reboot-eligible (it reboots into the safe state at the next open window in `full`). |
 | W13 | Broken version is never auto-retried | stage a release whose kernel fails to boot (node falls back); node returns non-quiescent with state `completed` | `UpdateMismatch`; **no re-enqueue** at any subsequent open window; the operator re-pins or reboots it explicitly. |
+| W15 | Real Vixie schedules on the cluster | `reboots.windows` with a 5-field cron + month/dow names (one minute-matched case, one non-matching), `@300` alongside `@every 5m` | names resolve (case-insensitive); the matching cron admits, the non-matching holds (`QueueHeldWindow`); `@300` opens exactly with `@every 5m` (D32, D33). |
+| W16 | Invalid window config | one bad entry in a good list; bad `*-window-grace` | whole key rejected, last valid kept + warn; behavior unchanged (no spurious opens or closes). |
+| W17 | Migration cleanup | pre-create a stale `simplek8s-update-plans` ConfigMap and a leftover `reboot-eligible` annotation | the leader deletes the ConfigMap (live RBAC `delete`); the pod deletes the leftover at start; no plan behavior remains. |
 | W14 | Pin ahead of staging never enqueues early | `full` mode, **both** windows open; set `next-kernel` to a repository version not yet on the partition | **no enqueue, no reboot, no `UpdateMismatch` while the file is absent** (rule 5); after the updates window stages it (re-point + re-arm), the node is enqueued at the next open `reboots.windows` and reboots into it (`UpdateApplied`). |
 
 ## 8. Deferred
@@ -1475,12 +1532,15 @@ verify no longer false-cancels. Unit/integration tested; E2E re-run pending.
 - TODO item 12 (BUG 12) is closed by this plan: the plan layer it lived
   in is removed; W5 is its end-to-end regression.
 - **TODO 13 remainder — public `v*` image publishing + CI**: a registry
-  (none exists yet), the tag scheme (timestamp / incremental / semver —
+  (the `ghcr.io/simplek8s/simplek8s-controller` name is reserved by M1
+  and the `Makefile`, but no repo exists yet), the tag scheme (timestamp / incremental / semver —
   undecided), the build-check workflow, and the release push. Explicitly
   out of M3 (maintainer decision, 2026-09-09); §3.11 carries the notes
   for when it is built (LFS checkout, binfmt, provenance).
 - **arm64 E2E**: no arm64 test node exists yet; when one is stood up,
   deploy the aarch64 image and run one full auto-update (W4-shaped).
+- TODO items 2 (CLI), 4 (rollback helper), 5 (keyring), 7 (reboot-log
+  observability) are untouched by this plan and stay deferred.
 
 ## 9. Risks & safety notes
 
@@ -1518,3 +1578,27 @@ Accepted, documented (KISS — no mechanism added in M3):
   unbootable state on the controller's own paths; a reboot **forced**
   by the operator in that state is out of contract (manual file
   deletion).
+- **No catch-up, one write per occurrence.** A pod down for a whole
+  occurrence misses it; a failed check consumes the occurrence (§3.4)
+  — a behavior change from M2's interval timer. Each occurrence also
+  costs one `update-last-check` RMW per node: short windows (the
+  W-campaign itself uses `@every 2m`) multiply etcd writes; size
+  windows for the fleet, not the test cluster.
+- **Safe-state auto-reboot surprise.** A correction to newest-local ≠
+  running makes the node reboot-eligible in `full` (W12): an operator
+  typo can cause an unattended reboot at the next open window. The
+  `UpdateGoalCorrected` event is the signal — watch it.
+- **DELETE-defer loop.** Repeated `DELETE`s while the window is open
+  re-enqueue indefinitely (§3.4, decision 30): an automation fighting
+  the controller burns one RMW per cycle. No suppression state by
+  design.
+- **RBAC `delete` is permanent.** The widened `configmaps` verb exists
+  only for the self-cleaning migration and is never removed afterwards.
+  Rollout order matters: the role before the image, or the cleanup
+  403-loops until propagation (decision 15).
+- **Clock basis.** Openness is UTC wall-clock; skew/NTP behavior across
+  pods is unstated — enqueue-then-hold is the designed straddle
+  outcome (§3.4), never a missed gate.
+- **`force` voids the guarantee by design.** A forced reboot bypasses
+  windows like it bypasses PDB (decision 9) — the window promise covers
+  non-forced work only.
