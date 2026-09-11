@@ -16,7 +16,12 @@ operator types a good `LABEL` at the console. The `completed`+mismatch
 verification and the no-auto-retry guarantee (D16/D30/D34) all held —
 only the return path was manual.
 
-M4 closes TODO 14 in two layers, in order:
+M4 closes TODO 14 in two layers, in order. (What M4 does NOT chase:
+content integrity — the pipeline already guarantees it end to end:
+GPG-signed index → sha256-verified `.zst` download → checksum-verified
+extract → O_SYNC write. Bytes that fail anywhere in that chain never
+reach the boot partition through the controller. The residual below
+is about bytes that are *correct* but don't boot.)
 
 1. **Detect + recover fast (runbook).** Bootloader-brick alert recipe
    (no new controller alert path) and a console recovery runbook
@@ -26,10 +31,13 @@ M4 closes TODO 14 in two layers, in order:
    boot is viable on this distro; its report gates a future M5. M4
    builds no chooser.
 
-Non-goal: making unbootable kernels bootable. A kernel that loads but
-panics mid-boot is indistinguishable from garbage at the bootloader
-level; both land in the same `completed`+mismatch state and the same
-no-retry discipline.
+Non-goal: making unbootable kernels bootable. The residual threat is
+precisely kernels that are byte-correct yet don't boot on a given
+node (missing driver, early panic, incompatibility): signature,
+checksums and any header check all pass on them by construction. A
+kernel that loads but panics mid-boot is indistinguishable from
+garbage at the bootloader level; both land in the same
+`completed`+mismatch state and the same no-retry discipline.
 
 ## 2. Constraints
 
@@ -51,13 +59,14 @@ A PE32+ header check (MZ / `PE\0\0` / machine vs node arch over the
 first 64 KiB) at stage-post-copy and pre-enqueue would have blocked
 the W13 garbage. Rejected: it defends against filesystem failures
 (torn writes, bitrot on a checksum-less vfat) and operator sabotage
-(`rm -rf /` class) — both outside the controller's contract. The
-transport is already sha256-verified; the write path is O_SYNC; what
-remains is the filesystem's job and the operator's responsibility.
-The W13 injection keeps its value as fault injection proving the
-alert/no-retry machinery, not as a class to prevent. (If torn writes
-are ever observed in the field, the principled micro-fix is atomic
-rename instead of in-place truncate — not content sniffing.)
+(`rm -rf /` class) — both outside the controller's contract. And it
+could not catch the real threat anyway: a genuinely bad release has
+perfect headers by construction (GPG → sha256 → verified extract
+already guarantee the bytes). The W13 injection keeps its value as
+fault injection proving the alert/no-retry machinery, not as a class
+to prevent. (If torn writes are ever observed in the field, the
+principled micro-fix is atomic rename instead of in-place truncate —
+not content sniffing.)
 
 ### 3.2 Brick alert recipe (docs, no code)
 
