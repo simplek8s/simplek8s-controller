@@ -220,7 +220,7 @@ the index, scoped to your flavor, does not contain it).
 | F1 | Flavor detection on rpi4-node | read-only: controller logs after deploy (or a unit-driven annotation) | PASS 2026-09-11 (PROD): `board flavor resolved: rpi4` in pod log (build `edc6174`), no writes. |
 | F2 | First rpi staging | `stage` + newer `rpi4` release in index (or pin an uncached `rpi4` ts) | PASS 2026-09-11 (PROD rpi4-node): `202609090435.rpi4` staged + `config.txt` re-pointed, running untouched, no `reboot-state`. First live exercise of the rpi writer. |
 | F3 | Full auto-update on rpi4 (W4-shaped) | `full` + windows open | PASS 2026-09-11 (PROD rpi4-node): auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent (`next`==running). `UpdateApplied` state-proven (event not retrieved from the PROD sink — minor follow-up). |
-| F4 | rpi5 on rpi5-node (pending approval) | same as F2–F3 after a rpi5-node drain | same expectations on `rpi5` files. |
+| F4 | rpi5 on rpi5-node (pending approval) | same as F2–F3 after a rpi5-node drain | PASS 2026-09-11 (PROD rpi5-node, drained): flavor `rpi5`, `202609090435.rpi5` staged + `config.txt` re-pointed (F2, no reboot), then auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent. Pod-to-node SSH host keys verified via console fingerprints both times (rpi4-node/rpi5-node rotation). |
 | F5 | Decoy-label drill (deferred lab) | on a scratch/test VM (never PROD): extra disk carrying a decoy `boot`-labeled vfat without SimpleK8s contents | controller ignores the decoy (verification fails), uses the real partition; with NO valid partition anywhere → Warn + zero writes (provable via block-layer trace or mount audit). |
 
 ## 8. Deferred
