@@ -25,6 +25,9 @@ type harnessOpts struct {
 	onFailure     string
 	drainTimeout  time.Duration
 	issueGrace    time.Duration
+	// windows is the raw reboots.windows value; "" means an always-open
+	// window so pre-window tests keep M1 admission behavior.
+	windows string
 }
 
 type harness struct {
@@ -52,6 +55,10 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	if o.issueGrace <= 0 {
 		o.issueGrace = 2 * time.Minute
 	}
+	windows := o.windows
+	if windows == "" {
+		windows = `["@every 1m"]`
+	}
 	fake := kubetest.NewFakeAPI()
 	t.Cleanup(fake.Close)
 	cl := &clock{t: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}
@@ -69,6 +76,7 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 		"reboots.on-reboot-failure":      o.onFailure,
 		"reboots.reboot-drain-timeout":   o.drainTimeout.String(),
 		"reboots.reboot-issue-grace":     o.issueGrace.String(),
+		"reboots.windows":                windows,
 	})
 	eng, err := engine.New(engine.Config{
 		CredsDir:           creds.Dir,

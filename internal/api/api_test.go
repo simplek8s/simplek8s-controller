@@ -6,9 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/simplek8s/simplek8s-controller/internal/config"
+	"github.com/simplek8s/simplek8s-controller/internal/cron"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/kubetest"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
@@ -22,6 +25,7 @@ type harness struct {
 	server *httptest.Server
 	kc     *kube.Client
 	now    time.Time
+	feat   config.Config
 }
 
 func newHarness(t *testing.T) *harness {
@@ -37,15 +41,26 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	h := &harness{t: t, fake: fake, kc: kc, now: now, feat: config.Defaults()}
+	// Pre-window tests keep M1 admission behavior: an always-open
+	// window. Window tests mutate h.feat directly.
+	open, err := cron.Parse("@every 1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.feat.RebootWindows = []cron.Schedule{open}
+	h.feat.RebootWindowGrace = 5 * time.Minute
 	srv := New(Config{
 		Kube:         kc,
 		PodNamespace: "default",
 		PodSelector:  map[string]string{"app": "simplek8s-controller"},
 		Now:          func() time.Time { return now },
+		Features:     func() config.Config { return h.feat },
 	}, testToken)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{t: t, fake: fake, server: ts, kc: kc, now: now}
+	h.server = ts
+	return h
 }
 
 // node registers a Ready node without reboot state.
@@ -487,4 +502,63 @@ func TestAPIDown(t *testing.T) {
 func marshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func TestPostEmptyWindowsRejects(t *testing.T) {
+	h := newHarness(t)
+	h.feat.RebootWindows = nil // empty = OFF
+	h.node("w1")
+	code, resp := h.postReboots([]byte(`{"nodes":["w1","w9"]}`))
+	if code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (partial-batch envelope)", code)
+	}
+	if len(resp.Accepted) != 0 {
+		t.Fatalf("accepted = %v, want none", resp.Accepted)
+	}
+	got := map[string]Rejection{}
+	for _, rj := range resp.Rejected {
+		got[rj.Node] = rj
+	}
+	// Unknown node + empty windows -> 422, not 404 (checked first).
+	for _, name := range []string{"w1", "w9"} {
+		rj, ok := got[name]
+		if !ok {
+			t.Fatalf("missing rejection for %s: %+v", name, resp.Rejected)
+		}
+		if rj.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s code = %d, want 422", name, rj.Code)
+		}
+		if !strings.Contains(rj.Reason, "NoWindowsConfigured") {
+			t.Errorf("%s reason = %q, want NoWindowsConfigured", name, rj.Reason)
+		}
+	}
+	// Nothing was queued.
+	if ann := h.fake.NodeAnnotation("w1", nodestate.AnnState); ann != "" {
+		t.Errorf("w1 state annotation = %q, want absent (not queued)", ann)
+	}
+}
+
+func TestPostEmptyWindowsForcedBypasses(t *testing.T) {
+	h := newHarness(t)
+	h.feat.RebootWindows = nil // empty = OFF
+	h.node("w1")
+	code, resp := h.postReboots([]byte(`{"nodes":["w1"],"force":true}`))
+	if code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	if len(resp.Accepted) != 1 || resp.Accepted[0] != "w1" || len(resp.Rejected) != 0 {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestPostWindowsConfiguredAdmits(t *testing.T) {
+	h := newHarness(t) // harness default: always-open window
+	h.node("w1")
+	code, resp := h.postReboots([]byte(`{"nodes":["w1"]}`))
+	if code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	if len(resp.Accepted) != 1 || resp.Accepted[0] != "w1" || len(resp.Rejected) != 0 {
+		t.Fatalf("resp = %+v", resp)
+	}
 }

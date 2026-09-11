@@ -132,6 +132,7 @@ func main() {
 		Kube:         e.Kube(),
 		PodNamespace: podNS,
 		PodSelector:  map[string]string{"app": "simplek8s-controller"},
+		Features:     e.FeatureConfig,
 		Log:          log,
 		Ready: func() bool {
 			last := e.LastSuccessfulCycle()

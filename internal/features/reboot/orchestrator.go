@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/simplek8s/simplek8s-controller/internal/config"
+	"github.com/simplek8s/simplek8s-controller/internal/cron"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
@@ -78,9 +79,22 @@ func (f *Feature) runOrchestrator(ctx context.Context) {
 	}
 	sortQueue(queue)
 
+	// Window gate (PLAN.md §3.5): a non-forced candidate is admitted
+	// only while a reboot window is open. now was sampled once for the
+	// cycle, so every candidate sees the same openness.
+	windowOpen := cron.WindowsOpen(fc.RebootWindows, fc.RebootWindowGrace, now)
 	for _, v := range queue {
 		if inFlight >= fc.MaxConcurrentReboots || cpInFlight >= 1 {
 			break
+		}
+		if !forceOf(v.st) && !windowOpen {
+			// Held nodes wait; the loop still serves forced
+			// candidates queued behind them (continue, not break:
+			// forced is the escape hatch and must not stall
+			// behind a held queue).
+			f.noteEvent("window:"+v.node.Metadata.Name, v.node.Metadata.Name, "QueueHeldWindow",
+				"reboot waiting for a reboots.windows window; configure one or re-issue with force", false, true)
+			continue
 		}
 		if !forceOf(v.st) {
 			blocked := pdbBlocked(v.node, pdbs, pods)

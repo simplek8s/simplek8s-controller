@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/simplek8s/simplek8s-controller/internal/config"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
@@ -30,6 +31,10 @@ type Config struct {
 	PodSelector map[string]string
 	Now         func() time.Time
 	Log         *slog.Logger
+	// Features returns the current feature config snapshot (the
+	// engine's, or Defaults for standalone tests); admit reads
+	// reboots.windows from it (PLAN.md §3.5).
+	Features func() config.Config
 	// Ready reports engine health for /readyz (PLAN 3.14).
 	Ready func() bool
 }
@@ -48,6 +53,9 @@ func New(cfg Config, token string) *Server {
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
+	}
+	if cfg.Features == nil {
+		cfg.Features = config.Defaults
 	}
 	if cfg.Ready == nil {
 		cfg.Ready = func() bool { return true }
@@ -193,6 +201,15 @@ func containsStar(nodes []string) bool {
 // atomic admission patch. It returns (0, "") on success, else the
 // admission-check status code and a reason.
 func (s *Server) admit(ctx context.Context, name string, force bool, by string, now time.Time) (int, string) {
+	// NoWindowsConfigured is evaluated first, before the per-node
+	// checks (PLAN.md §3.5): it is global and cheap, so an empty
+	// reboots.windows wins over per-node outcomes (an unknown node
+	// with empty windows gets the 422, not a 404). Forced requests
+	// bypass windows like they bypass PDB.
+	if !force && len(s.cfg.Features().RebootWindows) == 0 {
+		s.cfg.Log.Info("reboot admission rejected: no windows", "node", name)
+		return http.StatusUnprocessableEntity, "NoWindowsConfigured: no reboot windows configured (reboots.windows is empty)"
+	}
 	node, err := s.cfg.Kube.GetNode(ctx, name)
 	if err != nil {
 		if kube.IsNotFound(err) {
