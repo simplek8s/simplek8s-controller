@@ -10,7 +10,9 @@ limit, availability waiting, and PodDisruptionBudget awareness.
 
 - Project: https://simplek8s.org
 - Repo: https://github.com/simplek8s/simplek8s-controller
-- Go 1.27, stdlib only (no client-go, no controller-runtime).
+- Go 1.27, no client-go, no controller-runtime. Direct dependencies
+  are two (both for release verification/payloads, added with updates):
+  `ProtonMail/go-crypto` (GPG) and `klauspost/compress` (zstd).
 
 Design: [PLAN.md](PLAN.md) — the single living design doc (shipped
 behavior + current plan). Historical plans (`PLAN-M1.md`, `PLAN-M2.md`,
