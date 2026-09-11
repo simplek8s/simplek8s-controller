@@ -36,10 +36,9 @@ it changes *which files* each node considers its own.
 
 ## 2. Constraints
 
-- **Stdlib only, no new annotation (proposed).** Flavor resolution
-  reads the partition scan the pod already does; the only candidate
-  addition is an operator override annotation, and only if the empty
-  case forces it (§4, open).
+- **Stdlib only, no new annotation.** Flavor resolution reads the
+  partition scan the pod already does; no override annotation (D3
+  rejected — no flavor migration exists to drive it).
 - **Pins stay flavor-agnostic.** `next-kernel` carries a bare `ts`;
   the flavor resolves per node at use time. Pinning the same ts on
   x86-64 and rpi4 nodes does the right thing on each.
@@ -56,10 +55,12 @@ it changes *which files* each node considers its own.
 
 ```go
 // Flavor is a release artifact flavor: "x86-64", "arm64", "rpi4", "rpi5".
-// ResolveFlavor returns the node's flavor:
-//  1. operator override annotation (if present and valid);
-//  2. inferred from staged filenames on the boot partition
-//     (first arch seen in versionFromStoredKernel matches);
+// ResolveFlavor returns the node's flavor, inferred from staged
+// filenames on the boot partition (first arch seen in
+// versionFromStoredKernel matches). Unresolvable (empty/foreign-only)
+// ⇒ D2 fail-closed.
+// NOTE (D3 rejected 2026-09-11): no override annotation — there is no
+// flavor migration to drive it (see §3.7).
 //  3. CLOSED (D2, 2026-09-11, refined): identify the EXPECTED boot
 //     partition among confusing candidates (§3.7); no candidate
 //     verifying ⇒ fail closed, touch nothing.
@@ -107,9 +108,9 @@ purge a stray `x86-64` file, and vice versa):
   mount. First arch observed wins; mixed-flavor partitions resolve to
   the first and log the mix at Warn (pathological, operator-owned).
 - Empty partition (no staged files): falls to §3.1 rule 3 (open).
-- The override annotation (if approved): `simplek8s.org/board-flavor`
-  hmm — name TBD in review; values from the flavor set; invalid →
-  ignored with a Warning event (same discipline as `update-url`).
+- No override annotation (D3 rejected): every escape hatch below is
+  a one-time ssh, which beats permanent API surface on a 7-node fleet
+  with working ssh.
 
 ### 3.6 Boot device identification and verification (D2)
 
@@ -147,19 +148,12 @@ which subsumes the old empty-case rule.
 their old artifacts), with no live E2E (no such hardware here).
 Two rules for the lineage end:
 
-- **No auto-migration across flavors, ever.** Unattended moves
-  between boot flavors (e.g. `arm64` → `rpi4`) are brick-adjacent
-  cleverness. Migration is manual only: set the override (§3.5/D3)
-  to the target flavor, then pin the ts — staging, re-point and
-  reboot follow the normal paths.
-- **Out-of-flavor pins skip loudly, never correct.** A pin whose ts
-  exists in the index under *other* flavors (but not the node's) is
-  NOT a W12 case (the ts genuinely exists): skip staging and fire
-  `UpdateStagingSkipped` (`no <flavor> artifact; version exists for
-  other flavors — manual board migration needed`), keep the pin
-  untouched. Only a ts absent from the whole index corrects (§3.10
-  path 2 unchanged). Rationale: correcting would silently destroy an
-  operator's migration intent.
+Legacy nodes keep working within their old artifacts; newer ts have
+nothing for their flavor, so they (correctly) see no updates. There
+is no migration path by design (D3): a pin whose ts exists only under
+other flavors is unverifiable for your node and follows the normal
+W12 path-2 rules (correct to safe state like a never-existed ts —
+the index, scoped to your flavor, does not contain it).
 
 ## 4. Decision log (M5, open — numbers restart per era)
 
@@ -167,8 +161,8 @@ Two rules for the lineage end:
 |---|---|---|
 | 1 | Flavor set `{x86-64, arm64, rpi4, rpi5}`; `aarch64` dropped (repo has none) | Match reality, not Debian naming. `MapArch` keeps existing for node-arch mapping; flavor is separate. |
 | 2 | Identify the expected boot partition; fail closed on ambiguity (CLOSED 2026-09-11, refined) | Other `EFI`/`boot`-labeled partitions can confuse first-match discovery and would be mounted (then written). Enumerate all candidates (`PARTLABEL=boot` preferred, then fs labels), verify contents (`simplek8s/` + bootloader config), first-verifying wins, none ⇒ touch nothing. Device cached per pod lifetime, re-resolved on failure. |
-| 3 | Override annotation: `simplek8s.org/board-flavor` (proposed name) | Consistent with the `update-url` override precedent; invalid values ignored loudly. Doubles as the manual board-migration tool (§3.6). Name open in review; necessity follows from D7. |
-| 7 | Out-of-flavor pins skip + `UpdateStagingSkipped`, never W12-correct | A ts existing under other flavors is evidence the operator means migration, not a typo. Correcting it away would destroy intent; skipping loudly preserves it and points at the override. |
+| 3 | No override annotation (REJECTED 2026-09-11) | No flavor migration exists; every escape (legacy bootstrap, empty partition, mixed cleanup) is a one-time ssh. Permanent API surface for nonevents is declined. |
+| 7 | Out-of-flavor pins follow normal W12 rules (no special case) | With no migration, a ts absent from your flavor's index is simply not verifiable: path-2 corrects exactly like a never-existed ts. No extra event, no extra code path. |
 | 4 | Purge/prune/defensive scoped to own flavor | Cross-flavor deletion would be data loss by design (a stray foreign file is the operator's, like any foreign entry). |
 | 5 | Generic `arm64` supported-but-unexercised | Strings are cheap; live proof waits on hardware. |
 | 6 | rpi5 live E2E waits on rpi5-node drain approval | Same code path as rpi4 + unit matrix; the drain (postgres, gateway) is the cost, not the code. |
@@ -186,7 +180,7 @@ Two rules for the lineage end:
 
 | Module | Change |
 |---|---|
-| `internal/features/update` (`versions.go`) | flavor type + `ResolveFlavor` (+ override parse); `MapArch` kept. |
+| `internal/features/update` (`versions.go`) | flavor type + `ResolveFlavor` from staged filenames; `MapArch` removed (its `aarch64` output matched nothing — the bug). |
 | `internal/features/update` (`bootstore.go`) | `findBootDevice` rework per §3.6: PARTLABEL preference, blkid export already parsed, candidate enumeration, contents verification (`simplek8s/` + bootloader config), per-pod device cache with re-resolve on failure. |
 | `internal/features/update` (`check.go`) | filter index by flavor; `res.Arch` becomes the flavor. |
 | `internal/features/update` (`staging.go`, `purge.go`, `bootloader.go` prune) | flavor filter on `listKernels`; purge/prune/defensive own-flavor only. |
@@ -194,8 +188,8 @@ Two rules for the lineage end:
 
 ### 6.2 Unit test matrix
 
-- Resolution: override valid/invalid/absent × partition with
-  rpi4-only / mixed / empty / x86-64-only files.
+- Resolution: rpi4-only / mixed / empty / x86-64-only / foreign-only
+  partitions; unresolvable ⇒ empty flavor (callers skip).
 - Discovery: PARTLABEL preferred over fs label; first-verifying-wins
   with a decoy `boot`-labeled layout (unit fixtures, temp dirs);
   none-verifying ⇒ no mount left behind, no write attempted;
@@ -233,20 +227,21 @@ Two rules for the lineage end:
 
 - Generic-`arm64` live proof (no hardware) + what boots it.
 - UEFI/systemd-boot questions (distro).
-- Empty-partition default if D2 goes fail-closed (document the manual
-  bootstrap: stage one file of the right flavor by hand or via the
-  override, once).
+- Empty-partition manual bootstrap doc (stage one file of the right
+  flavor by hand, once; detection adopts it).
 
 ## 9. Risks & safety notes
 
 - **Wrong-flavor staging bricks with the wrong DTB** — the failure
   mode this plan exists to avoid creating. Mitigations: flavor pinned
-  at detection (never re-derived mid-cycle... see below), override
-  requires an exact valid value, foreign files never written by
-  purge/prune/defensive; F2 stages but does not reboot (human verifies
-  the file before F3).
+  at detection (never re-derived mid-cycle — cached per pod lifetime
+  like `goalKnown`), foreign files never written by purge/prune/
+  defensive; F2 stages but does not reboot (human verifies the file
+  before F3).
 - Detection runs once per pod lifetime (cached like `goalKnown`),
   not per cycle — a mid-life mix appearing later is Warn-logged, not
   adopted.
+- No override, no migration: the flavor set is closed
+  (`x86-64`/`arm64`/`rpi4`/`rpi5`); anything else never resolves.
 - rpi `config.txt` has a single `kernel=` line: re-point is
   all-or-nothing per write (same as syslinux `DEFAULT`, no worse).
