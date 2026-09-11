@@ -34,7 +34,7 @@ func TestCheckAvailable(t *testing.T) {
 	f := testFeature(t, k)
 
 	res, err := f.Check(context.Background(),
-		testNode("amd64", "6.18.48-simplek8s-202601010000 (amd64)"), srv.URL)
+		testNode("amd64", "6.18.48-simplek8s-202601010000 (amd64)"), srv.URL, "x86-64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestCheckUpToDate(t *testing.T) {
 	f := testFeature(t, k)
 
 	res, err := f.Check(context.Background(),
-		testNode("amd64", "6.18.48-simplek8s-202608291203 (amd64)"), srv.URL)
+		testNode("amd64", "6.18.48-simplek8s-202608291203 (amd64)"), srv.URL, "x86-64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestCheckRunningNewerThanRepo(t *testing.T) {
 	f := testFeature(t, k)
 
 	res, err := f.Check(context.Background(),
-		testNode("amd64", "6.18.48-simplek8s-999999999999 (amd64)"), srv.URL)
+		testNode("amd64", "6.18.48-simplek8s-999999999999 (amd64)"), srv.URL, "x86-64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestCheckNonSimplek8sKernel(t *testing.T) {
 	srv := releaseRepo(t, k, true, kernelIndex())
 	f := testFeature(t, k)
 
-	res, err := f.Check(context.Background(), testNode("amd64", "6.18.48 (amd64)"), srv.URL)
+	res, err := f.Check(context.Background(), testNode("amd64", "6.18.48 (amd64)"), srv.URL, "x86-64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,34 +90,41 @@ func TestCheckNonSimplek8sKernel(t *testing.T) {
 	}
 }
 
-func TestCheckArchFiltering(t *testing.T) {
+func TestCheckFlavorFiltering(t *testing.T) {
 	k := newTestKey(t, true)
-	srv := releaseRepo(t, k, true, kernelIndex())
+	files := map[string][]byte{
+		"simplek8s.202608291203.x86-64.efi.zst": []byte("x86"),
+		"simplek8s.202608241828.rpi4.efi.zst":   []byte("rpi4"),
+	}
+	srv := releaseRepo(t, k, true, files)
 	f := testFeature(t, k)
 
 	res, err := f.Check(context.Background(),
-		testNode("arm64", "6.18.48-simplek8s-202501010000 (aarch64)"), srv.URL)
+		testNode("arm64", "6.18.48-simplek8s-202601010000 (aarch64)"), srv.URL, "rpi4")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Latest != "202605050000" || !res.Available {
-		t.Fatalf("aarch64 res = %+v", res)
+	if res.Latest != "202608241828" || !res.Available || res.Arch != "rpi4" {
+		t.Fatalf("rpi4 res = %+v", res)
+	}
+	if res.Artifact != "simplek8s.202608241828.rpi4.efi.zst" {
+		t.Fatalf("artifact = %q", res.Artifact)
 	}
 }
 
-func TestCheckNoKernelForArch(t *testing.T) {
+func TestCheckNoKernelForFlavor(t *testing.T) {
 	k := newTestKey(t, true)
 	files := map[string][]byte{"simplek8s.202601010000.x86-64.efi.zst": []byte("k")}
 	srv := releaseRepo(t, k, true, files)
 	f := testFeature(t, k)
 
 	res, err := f.Check(context.Background(),
-		testNode("arm64", "6.18.48-simplek8s-202501010000 (aarch64)"), srv.URL)
+		testNode("arm64", "6.18.48-simplek8s-202501010000 (aarch64)"), srv.URL, "rpi4")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Latest != "" || res.Available {
-		t.Fatalf("no aarch64 kernel: %+v", res)
+		t.Fatalf("no rpi4 kernel: %+v", res)
 	}
 }
 
@@ -127,7 +134,7 @@ func TestCheckTrailingSlash(t *testing.T) {
 	f := testFeature(t, k)
 
 	res, err := f.Check(context.Background(),
-		testNode("amd64", "6.18.48-simplek8s-202601010000 (amd64)"), srv.URL+"/")
+		testNode("amd64", "6.18.48-simplek8s-202601010000 (amd64)"), srv.URL+"/", "x86-64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +151,7 @@ func TestCheckMissingIndex(t *testing.T) {
 	t.Cleanup(srv.Close)
 	f := testFeature(t, k)
 
-	if _, err := f.Check(context.Background(), testNode("amd64", "k"), srv.URL); err == nil {
+	if _, err := f.Check(context.Background(), testNode("amd64", "k"), srv.URL, "x86-64"); err == nil {
 		t.Fatal("want error for 404 index")
 	}
 }
@@ -161,24 +168,24 @@ func TestCheckBadSignature(t *testing.T) {
 	t.Cleanup(srv.Close)
 	f := testFeature(t, k)
 
-	if _, err := f.Check(context.Background(), testNode("amd64", "k"), srv.URL); err == nil {
+	if _, err := f.Check(context.Background(), testNode("amd64", "k"), srv.URL, "x86-64"); err == nil {
 		t.Fatal("want error for signature from unknown issuer")
 	}
 }
 
-func TestCheckUnsupportedArch(t *testing.T) {
+func TestCheckEmptyFlavor(t *testing.T) {
 	k := newTestKey(t, true)
 	srv := releaseRepo(t, k, true, kernelIndex())
 	f := testFeature(t, k)
 
-	if _, err := f.Check(context.Background(), testNode("s390x", "k"), srv.URL); err == nil {
-		t.Fatal("want error for unsupported architecture")
+	if _, err := f.Check(context.Background(), testNode("amd64", "k"), srv.URL, ""); err == nil {
+		t.Fatal("want error for unresolved flavor")
 	}
 }
 
 func TestCheckNoRepoURL(t *testing.T) {
 	f := &Feature{http: http.DefaultClient}
-	if _, err := f.Check(context.Background(), testNode("amd64", "k"), ""); err == nil {
+	if _, err := f.Check(context.Background(), testNode("amd64", "k"), "", "x86-64"); err == nil {
 		t.Fatal("want error for empty repo URL")
 	}
 }
@@ -195,7 +202,7 @@ func TestCheckCustomKeyringWins(t *testing.T) {
 		http: http.DefaultClient,
 	}
 	res, err := f.Check(context.Background(),
-		testNode("amd64", "6.18.48-simplek8s-202601010000 (amd64)"), srv.URL)
+		testNode("amd64", "6.18.48-simplek8s-202601010000 (amd64)"), srv.URL, "x86-64")
 	if err != nil {
 		t.Fatalf("custom keyring must be used: %v", err)
 	}

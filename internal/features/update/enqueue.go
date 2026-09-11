@@ -36,9 +36,9 @@ func (f *Feature) maybeEnqueue(ctx context.Context, node *kube.Node, fc config.C
 		f.noteHeld(name, false)
 		return
 	}
-	arch, ok := MapArch(node.Status.NodeInfo.Architecture)
+	arch, ok := f.flavorOf(ctx)
 	if !ok {
-		f.log.Debug("update: node arch unsupported; not enqueueing")
+		f.log.Debug("update: board flavor unresolved; not enqueueing")
 		f.noteHeld(name, false)
 		return
 	}

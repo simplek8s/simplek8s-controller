@@ -27,6 +27,10 @@ import (
 type BootStore interface {
 	Versions(ctx context.Context) ([]string, error)
 	Stage(ctx context.Context, req StageRequest) error
+	// Kernels lists staged kernel basenames (with flavor part), for
+	// flavor resolution (PLAN-M5 §3.1). Foreign (non-matching) files
+	// are omitted.
+	Kernels(ctx context.Context) ([]string, error)
 	// EnsureBootGoal verifies version's kernel file is present on the
 	// boot partition and ensures the bootloader DEFAULT points at it —
 	// mount, compare, re-point if needed, sync, unmount — in one
@@ -83,6 +87,13 @@ type Feature struct {
 	// was reconciled to (§3.7 change detection, in-memory).
 	lastGoal  string
 	goalKnown bool
+	// flavor/flavorKnown is the resolved board flavor (PLAN-M5 §3.1),
+	// cached per pod lifetime. A mid-life mix is Warn-logged, not
+	// adopted (mixWarned).
+	flavor       string
+	flavorKnown  bool
+	mixWarned    bool
+	flavorWarned bool
 	// nonQuiescent tracks nodes last seen non-quiescent (node -> goal)
 	// for the UpdateApplied transition edge (§3.4 verification).
 	nonQuiescent map[string]string
@@ -152,6 +163,11 @@ func (f *Feature) RunLocal(ctx context.Context) {
 	now := f.cfg.Now()
 
 	dirty := f.bootstrap(ctx, node)
+	flavor, ok := f.flavorOf(ctx)
+	if !ok {
+		f.log.Debug("update: board flavor unresolved; skipping update work")
+		return
+	}
 	if f.reconcileBootloader(ctx, node, dirty) {
 		dirty = true
 	}
@@ -179,7 +195,7 @@ func (f *Feature) RunLocal(ctx context.Context) {
 
 			// The check runs first: staging needs the verified
 			// index (checksums).
-			if res, err := f.doCheck(ctx, node, fc); err == nil {
+			if res, err := f.doCheck(ctx, node, fc, flavor); err == nil {
 				if f.maybeStage(ctx, node, fc, res) {
 					dirty = true
 				}
@@ -298,7 +314,7 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	if f.cfg.Store == nil || res.Arch == "" {
 		return false
 	}
-	local, err := f.cfg.Store.Versions(ctx)
+	local, err := f.cfg.Store.Kernels(ctx)
 	f.mu.Lock()
 	if err != nil {
 		f.noteScanErrorLocked(f.cfg.NodeName, true, err)
@@ -309,9 +325,13 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	if err != nil {
 		return false
 	}
+	// Own-flavor files only (PLAN-M5 §3.4): foreign flavors are never
+	// staged, purged around, or treated as present.
 	localSet := make(map[string]bool, len(local))
-	for _, v := range local {
-		localSet[v] = true
+	for _, name := range local {
+		if ts, fa, ok := ParseStoredKernel(name); ok && fa == res.Arch {
+			localSet[ts] = true
+		}
 	}
 	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
@@ -424,13 +444,13 @@ func (f *Feature) anchor(ctx context.Context, node *kube.Node, version, running 
 // It returns the (possibly empty) result and the error; a failure never
 // changes any state. Staging is a separate step (maybeStage) that runs
 // only after a successful check, since it needs the verified index.
-func (f *Feature) doCheck(ctx context.Context, node *kube.Node, fc config.Config) (CheckResult, error) {
+func (f *Feature) doCheck(ctx context.Context, node *kube.Node, fc config.Config, flavor string) (CheckResult, error) {
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
 	repoURL := ui.UpdateURL
 	if repoURL == "" {
 		repoURL = fc.UpdateURL
 	}
-	res, err := f.Check(ctx, node, repoURL)
+	res, err := f.Check(ctx, node, repoURL, flavor)
 	f.mu.Lock()
 	failed := err != nil
 	if !failed {

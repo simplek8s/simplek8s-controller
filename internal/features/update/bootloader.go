@@ -322,7 +322,7 @@ func copyOver(src *os.File, target string) error {
 // default's file). Foreign entries (non-matching KERNEL) are never
 // touched, file present or not; blocks without a KERNEL line are never
 // touched.
-func pruneSyslinuxEntries(cfg, defLabel string, fileGone func(kernelBase string) bool) (string, int) {
+func pruneSyslinuxEntries(cfg, defLabel, flavor string, fileGone func(kernelBase string) bool) (string, int) {
 	lines := strings.Split(cfg, "\n")
 	starts := []int{} // indexes of LABEL lines
 	for i, ln := range lines {
@@ -352,8 +352,8 @@ func pruneSyslinuxEntries(cfg, defLabel string, fileGone func(kernelBase string)
 			continue
 		}
 		base := filepath.Base(strings.Trim(kernel, `"`))
-		if _, ok := versionFromStoredKernel(base); !ok {
-			continue // foreign entry
+		if _, fa, ok := ParseStoredKernel(base); !ok || fa != flavor {
+			continue // foreign entry (or foreign flavor: never touched)
 		}
 		if !fileGone(base) {
 			continue
@@ -394,7 +394,7 @@ func sysLabelName(line string) string {
 // silently. A prune failure never fails staging: the error is Warned
 // and the next purge-triggered session retries (staging already
 // succeeded — rolling it back would strand the node).
-func pruneSyslinuxFile(partRoot, dir string, log Logger) {
+func pruneSyslinuxFile(partRoot, dir, flavor string, log Logger) {
 	if bt, err := DetectBootloader(partRoot); err != nil || bt != BootloaderSyslinux {
 		return
 	}
@@ -412,7 +412,7 @@ func pruneSyslinuxFile(partRoot, dir string, log Logger) {
 	gone := func(base string) bool {
 		return !fileExists(filepath.Join(partRoot, dir, base))
 	}
-	rewritten, n := pruneSyslinuxEntries(string(raw), defLabel, gone)
+	rewritten, n := pruneSyslinuxEntries(string(raw), defLabel, flavor, gone)
 	if n == 0 {
 		return
 	}

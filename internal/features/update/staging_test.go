@@ -161,3 +161,80 @@ func TestStagePartitionChecksumMismatchFails(t *testing.T) {
 		t.Fatal("kernel was written despite checksum mismatch")
 	}
 }
+
+func TestStagePartitionPurgeKeepsForeignFlavor(t *testing.T) {
+	const (
+		running = "202603030000"
+		newV    = "202604040404"
+		arch    = "x86-64"
+	)
+	payload := []byte("kernel-image-bytes")
+	artifact := kernelArtifactName(newV, arch)
+	zst := zstdCompress(t, payload)
+	sum := sha256.Sum256(zst)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/"+artifact {
+			w.Write(zst)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	partRoot := t.TempDir()
+	dir := "simplek8s"
+	// Mixed partition: own-flavor old kernels, a newer FOREIGN-flavor
+	// file, and the running kernel.
+	for _, f := range []string{
+		"simplek8s.202601010000.x86-64.efi",
+		"simplek8s.202602020000.x86-64.efi",
+		"simplek8s.202605050505.rpi4.efi", // foreign AND newest
+		"simplek8s." + running + ".x86-64.efi",
+	} {
+		writeRel(t, partRoot, filepath.Join(dir, f), "old-kernel")
+	}
+	writeRel(t, partRoot, syslinuxConfigRel,
+		"DEFAULT simplek8s."+running+".x86-64\n\nLABEL simplek8s.202601010000.x86-64\n KERNEL /simplek8s/simplek8s.202601010000.x86-64.efi\n")
+	workDir := t.TempDir()
+
+	// Force the retention purge regardless of host disk usage: target
+	// just above current free.
+	total, free, _, err := PathInfo(partRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxUsage := int(100 - (100*(free+1))/total)
+	if maxUsage <= 2 || maxUsage >= 100 {
+		t.Skipf("cannot force purge on this filesystem (total=%d free=%d)", total, free)
+	}
+	maxUsage -= 2 // integer-division margin: target must exceed free
+
+	req := StageRequest{
+		Version:         newV,
+		Arch:            arch,
+		Checksum:        hex.EncodeToString(sum[:]),
+		ArtifactFile:    artifact,
+		RepoBase:        srv.URL,
+		Preserve:        0,
+		MaxPercentUsage: maxUsage,
+		Running:         running,
+		Bootloader:      BootloaderSyslinux,
+	}
+	if err := stagePartition(context.Background(), srv.Client(), discardLogger{}, req, partRoot, dir, workDir); err != nil {
+		t.Fatal(err)
+	}
+	// Foreign file survives despite being newest; unprotected own files
+	// are purged (preserve=0 keeps nothing extra); running/staged stay.
+	for _, f := range []string{
+		"simplek8s.202605050505.rpi4.efi", // foreign: untouched
+		"simplek8s." + running + ".x86-64.efi",
+		"simplek8s." + newV + ".x86-64.efi",
+	} {
+		if !fileExists(filepath.Join(partRoot, dir, f)) {
+			t.Errorf("file %s missing, want present", f)
+		}
+	}
+	if fileExists(filepath.Join(partRoot, dir, "simplek8s.202601010000.x86-64.efi")) {
+		t.Error("unprotected old x86-64 file must be purged")
+	}
+}

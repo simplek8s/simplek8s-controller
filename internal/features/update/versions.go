@@ -26,13 +26,46 @@ func ParseKernelRelease(filename string) (ts, arch string, ok bool) {
 	return m[1], m[2], true
 }
 
-// MapArch maps a K8s nodeInfo architecture to the release naming.
-func MapArch(nodeArch string) (string, bool) {
-	switch nodeArch {
-	case "amd64":
-		return "x86-64", true
-	case "arm64":
-		return "aarch64", true
+// MapArch is retired (PLAN-M5): it translated node `arm64` to
+// `aarch64`, a flavor the repo never shipped, so every arm64 node
+// silently saw no updates. Flavor now resolves from staged files
+// (ResolveFlavor), not from node architecture.
+
+// FlavorSet is the closed set of release artifact flavors
+// (PLAN-M5 §3.1, D-table). Anything else never resolves.
+var flavorSet = map[string]bool{
+	"x86-64": true,
+	"arm64":  true, // legacy pre-rpi5 naming (ended lineage)
+	"rpi4":   true,
+	"rpi5":   true,
+}
+
+// storedKernelFlavorRe parses a staged kernel basename into ts +
+// flavor: simplek8s.<ts>.<flavor>.efi (same shape as storedKernelRe,
+// also yielding the arch group).
+var storedKernelFlavorRe = regexp.MustCompile(`^simplek8s\.([0-9]+)\.([A-Za-z0-9_-]+)\.efi$`)
+
+// ParseStoredKernel parses a staged kernel basename into its release
+// ts and artifact flavor. Non-matching names (foreign files,
+// `latest`-style aliases) report ok=false.
+func ParseStoredKernel(filename string) (ts, flavor string, ok bool) {
+	m := storedKernelFlavorRe.FindStringSubmatch(filename)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+// ResolveFlavor infers the node's flavor from staged kernel
+// basenames: the flavor of the first versioned file wins (directory
+// order is sorted, so this is deterministic). Unknown flavors are
+// skipped; ok==false when no file carries a known flavor (empty or
+// foreign-only partition → D2 fail-closed upstream).
+func ResolveFlavor(files []string) (string, bool) {
+	for _, f := range files {
+		if _, flavor, ok := ParseStoredKernel(f); ok && flavorSet[flavor] {
+			return flavor, true
+		}
 	}
 	return "", false
 }

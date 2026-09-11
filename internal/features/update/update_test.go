@@ -24,10 +24,11 @@ func (c *clock) Now() time.Time          { return c.t }
 func (c *clock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 type fakeStore struct {
-	mu     sync.Mutex
-	vers   []string
-	staged []StageRequest
-	err    error
+	mu      sync.Mutex
+	vers    []string
+	staged  []StageRequest
+	err     error
+	flavors map[string]string
 	// defGoal records the last EnsureBootGoal target (the fake's
 	// DEFAULT); ensures logs every EnsureBootGoal call in order.
 	defGoal string
@@ -55,10 +56,19 @@ func (s *fakeStore) Stage(ctx context.Context, req StageRequest) error {
 	return s.err
 }
 
+func (s *fakeStore) setFlavor(ts, flavor string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flavors[ts] = flavor
+}
+
 func (s *fakeStore) set(vers ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.vers = vers
+	if s.flavors == nil {
+		s.flavors = map[string]string{}
+	}
 }
 
 func (s *fakeStore) setStageErr(err error) {
@@ -562,6 +572,25 @@ func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) (b
 		}
 	}
 	return false, ErrGoalAbsent
+}
+
+// Kernels lists staged basenames with flavor parts (default x86-64
+// unless setFlavor says otherwise).
+func (s *fakeStore) Kernels(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.flavors == nil {
+		s.flavors = map[string]string{}
+	}
+	out := make([]string, 0, len(s.vers))
+	for _, v := range s.vers {
+		flavor, ok := s.flavors[v]
+		if !ok {
+			flavor = "x86-64"
+		}
+		out = append(out, kernelStoredName(v, flavor))
+	}
+	return out, nil
 }
 
 func (s *fakeStore) ensureCalls() []string {

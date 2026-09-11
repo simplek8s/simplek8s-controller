@@ -128,6 +128,29 @@ func (s *PhysicalStore) Versions(ctx context.Context) ([]string, error) {
 	return listPartitionVersions(mnt, s.kernelDir)
 }
 
+// Kernels lists staged kernel basenames (with flavor part) for flavor
+// resolution (PLAN-M5 §3.1). Non-matching files are omitted.
+func (s *PhysicalStore) Kernels(ctx context.Context) ([]string, error) {
+	dev, err := s.findBootDevice(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mnt, cleanup, err := s.mountDevice(dev)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	entries, err := listKernels(mnt, s.kernelDir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.name)
+	}
+	return out, nil
+}
+
 // Stage stages one release onto this node's boot partition.
 func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
 	dev, err := s.findBootDevice(ctx)

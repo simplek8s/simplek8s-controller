@@ -58,6 +58,18 @@ func kernelArtifactName(ts, arch string) string {
 	return "simplek8s." + ts + "." + arch + ".efi.zst"
 }
 
+// ownFlavorEntries drops kernels whose arch differs from the staging
+// flavor (PLAN-M5 §3.4: purge never touches foreign-flavor files).
+func ownFlavorEntries(entries []kernelEntry, flavor string) []kernelEntry {
+	out := make([]kernelEntry, 0, len(entries))
+	for _, e := range entries {
+		if _, fa, ok := ParseStoredKernel(e.name); ok && fa == flavor {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // listPartitionVersions returns the release ts present under
 // <partRoot>/<dir>, sorted ascending.
 func listPartitionVersions(partRoot, dir string) ([]string, error) {
@@ -166,7 +178,7 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 		if lerr != nil {
 			return lerr
 		}
-		toDelete := planPurge(entries, protected, 0, free, uint64(extSize))
+		toDelete := planPurge(ownFlavorEntries(entries, req.Arch), protected, 0, free, uint64(extSize))
 		if err := purge(toDelete); err != nil {
 			return err
 		}
@@ -205,7 +217,7 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 		return lerr
 	}
 	target := targetFreeFromPercent(total, req.MaxPercentUsage)
-	if err := purge(planPurge(entries, protected, req.Preserve, free, target)); err != nil {
+	if err := purge(planPurge(ownFlavorEntries(entries, req.Arch), protected, req.Preserve, free, target)); err != nil {
 		return err
 	}
 
@@ -214,7 +226,7 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 	// the staging work. A prune failure never fails staging (Warn +
 	// retry on the next purge-triggered session).
 	if len(purged) > 0 {
-		pruneSyslinuxFile(partRoot, dir, log)
+		pruneSyslinuxFile(partRoot, dir, req.Arch, log)
 	}
 	return nil
 }

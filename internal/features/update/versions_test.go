@@ -27,18 +27,51 @@ func TestParseKernelRelease(t *testing.T) {
 	}
 }
 
-func TestMapArch(t *testing.T) {
-	if a, ok := MapArch("amd64"); !ok || a != "x86-64" {
-		t.Errorf("MapArch(amd64) = (%q,%v)", a, ok)
+func TestParseStoredKernel(t *testing.T) {
+	cases := []struct {
+		file       string
+		ts, flavor string
+		ok         bool
+	}{
+		{"simplek8s.202608291203.x86-64.efi", "202608291203", "x86-64", true},
+		{"simplek8s.202608241828.rpi4.efi", "202608241828", "rpi4", true},
+		{"simplek8s.202608032153.rpi5.efi", "202608032153", "rpi5", true},
+		{"simplek8s.202605050000.arm64.efi", "202605050000", "arm64", true},
+		{"simplek8s.latest.rpi5.efi", "", "", false},
+		{"simplek8s.yaml", "", "", false},
+		{"vmlinuz", "", "", false},
+		{"", "", "", false},
 	}
-	if a, ok := MapArch("arm64"); !ok || a != "aarch64" {
-		t.Errorf("MapArch(arm64) = (%q,%v)", a, ok)
+	for _, tc := range cases {
+		ts, flavor, ok := ParseStoredKernel(tc.file)
+		if ts != tc.ts || flavor != tc.flavor || ok != tc.ok {
+			t.Errorf("ParseStoredKernel(%q) = (%q,%q,%v)", tc.file, ts, flavor, ok)
+		}
 	}
-	if _, ok := MapArch("s390x"); ok {
-		t.Error("MapArch(s390x) should not map")
+}
+
+func TestResolveFlavor(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []string
+		want  string
+		ok    bool
+	}{
+		{"x86-64", []string{"simplek8s.202608291203.x86-64.efi"}, "x86-64", true},
+		{"rpi4", []string{"simplek8s.202608241828.rpi4.efi", "simplek8s.yaml"}, "rpi4", true},
+		{"first wins sorted", []string{"simplek8s.202608291203.x86-64.efi", "simplek8s.202608241828.rpi4.efi"}, "x86-64", true},
+		{"unknown flavor skipped", []string{"simplek8s.202608291203.future.efi", "simplek8s.202608241828.rpi4.efi"}, "rpi4", true},
+		{"empty", nil, "", false},
+		{"foreign only", []string{"simplek8s.yaml", "vmlinuz", "simplek8s.latest.rpi5.efi"}, "", false},
+		{"unknown only", []string{"simplek8s.202608291203.future.efi"}, "", false},
 	}
-	if _, ok := MapArch(""); ok {
-		t.Error("MapArch(\"\") should not map")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ResolveFlavor(tc.files)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("ResolveFlavor = (%q,%v), want (%q,%v)", got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 

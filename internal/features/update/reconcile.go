@@ -46,7 +46,7 @@ func (f *Feature) reconcileBootloader(ctx context.Context, node *kube.Node, boot
 		freshVal = freshUI.NextKernel
 	}
 	running := RunningVersion(fresh.Status.NodeInfo.KernelVersion)
-	arch, archOK := MapArch(fresh.Status.NodeInfo.Architecture)
+	arch, archOK := f.flavorOf(ctx)
 	if freshVal == "" {
 		// Absent: bootstrap owns anchoring; just record.
 		f.setGoalKnown("")
@@ -116,21 +116,26 @@ func (f *Feature) rearmIfCompleted(ctx context.Context, nodeName string) bool {
 // safeState computes the safe state for an unreachable goal (PLAN.md
 // §3.10): running if its file is present, else the newest local
 // version, else delete-the-annotation.
-func (f *Feature) safeState(ctx context.Context, running string) (target string, del bool, err error) {
-	local, err := f.cfg.Store.Versions(ctx)
+func (f *Feature) safeState(ctx context.Context, running, flavor string) (target string, del bool, err error) {
+	local, err := f.cfg.Store.Kernels(ctx)
 	if err != nil {
 		return "", false, err
 	}
-	for _, v := range local {
-		if running != "" && v == running {
-			return running, false, nil
+	// Own-flavor files only (PLAN-M5 §3.4).
+	set := make(map[string]bool, len(local))
+	var newest string
+	for _, name := range local {
+		ts, fa, ok := ParseStoredKernel(name)
+		if !ok || fa != flavor {
+			continue
+		}
+		set[ts] = true
+		if newest == "" || NewerTS(ts, newest) {
+			newest = ts
 		}
 	}
-	newest := ""
-	for _, v := range local {
-		if newest == "" || NewerTS(v, newest) {
-			newest = v
-		}
+	if running != "" && set[running] {
+		return running, false, nil
 	}
 	if newest != "" {
 		return newest, false, nil
@@ -144,7 +149,7 @@ func (f *Feature) safeState(ctx context.Context, running string) (target string,
 // normal-rule re-arm for a set value. It reports whether the
 // correction landed.
 func (f *Feature) applySafeState(ctx context.Context, nodeName, badVal, running, arch string) bool {
-	target, del, err := f.safeState(ctx, running)
+	target, del, err := f.safeState(ctx, running, arch)
 	if err != nil {
 		f.log.Debug("update: safe-state scan failed; retrying next cycle", "err", err)
 		return false
