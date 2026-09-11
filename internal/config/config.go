@@ -5,11 +5,14 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/simplek8s/simplek8s-controller/internal/cron"
 )
 
 // Config is one resolved snapshot of all feature settings.
@@ -21,27 +24,39 @@ type Config struct {
 	OnRebootFailure      string // "pause" | "continue"
 	RebootDrainTimeout   time.Duration
 	RebootIssueGrace     time.Duration
+	RebootWindows        []cron.Schedule // empty = OFF (no non-forced reboots)
+	RebootWindowGrace    time.Duration
 	// updates
 	UpdateMode            string // "off" | "stage" | "full"
 	UpdateURL             string
 	UpdateCheckInterval   time.Duration
 	UpdatePreserve        int
 	UpdateMaxPercentUsage int
+	UpdateWindows         []cron.Schedule // empty = update work fully inert
+	UpdateWindowGrace     time.Duration
 }
 
-// Defaults is the built-in table (PLAN-M2 3.2).
+// Defaults is the built-in table (PLAN-M2 3.2, PLAN.md §3.2).
 func Defaults() Config {
+	updateWindows, ok := parseScheduleList(`["@every 12h"]`)
+	if !ok {
+		panic("config: bad built-in updates.windows default")
+	}
 	return Config{
 		EngineInterval:        2 * time.Second,
 		MaxConcurrentReboots:  1,
 		OnRebootFailure:       "pause",
 		RebootDrainTimeout:    10 * time.Minute,
 		RebootIssueGrace:      15 * time.Minute,
+		RebootWindows:         nil, // OFF by default (PLAN.md §3.2)
+		RebootWindowGrace:     5 * time.Minute,
 		UpdateMode:            "off",
 		UpdateURL:             "https://dl.simplek8s.org/simplek8s/stable",
 		UpdateCheckInterval:   12 * time.Hour,
 		UpdatePreserve:        3,
 		UpdateMaxPercentUsage: 75,
+		UpdateWindows:         updateWindows,
+		UpdateWindowGrace:     5 * time.Minute,
 	}
 }
 
@@ -93,6 +108,18 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 				} else {
 					ok = false
 				}
+			case "reboots.windows":
+				if v, valid := parseScheduleList(raw); valid {
+					out.RebootWindows = v
+				} else {
+					ok = false
+				}
+			case "reboots.window-grace":
+				if v, valid := parseDuration(raw); valid {
+					out.RebootWindowGrace = v
+				} else {
+					ok = false
+				}
 			case "updates.update-mode":
 				if v, valid := parseEnum(raw, "off", "stage", "full"); valid {
 					out.UpdateMode = v
@@ -123,6 +150,18 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 				} else {
 					ok = false
 				}
+			case "updates.windows":
+				if v, valid := parseScheduleList(raw); valid {
+					out.UpdateWindows = v
+				} else {
+					ok = false
+				}
+			case "updates.window-grace":
+				if v, valid := parseDuration(raw); valid {
+					out.UpdateWindowGrace = v
+				} else {
+					ok = false
+				}
 			default:
 				warns = append(warns, fmt.Sprintf("unknown config key %q ignored", k))
 				continue
@@ -141,6 +180,25 @@ func parseDuration(raw string) (time.Duration, bool) {
 		return 0, false
 	}
 	return d, true
+}
+
+// parseScheduleList parses a window key: a JSON array of schedule
+// strings (PLAN.md §3.2). Any failure — bad JSON, or one bad entry —
+// rejects the whole key; `[]` is valid and means OFF.
+func parseScheduleList(raw string) ([]cron.Schedule, bool) {
+	var strs []string
+	if err := json.Unmarshal([]byte(raw), &strs); err != nil {
+		return nil, false
+	}
+	out := make([]cron.Schedule, 0, len(strs))
+	for _, s := range strs {
+		p, err := cron.Parse(s)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, p)
+	}
+	return out, true
 }
 
 func parseMinInt(raw string, min int) (int, bool) {

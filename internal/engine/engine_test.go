@@ -220,7 +220,7 @@ func TestFeatureConfigLoad(t *testing.T) {
 
 	// No ConfigMap yet: built-in defaults.
 	a.Cycle(ctx)
-	if got := a.FeatureConfig(); got != config.Defaults() {
+	if got := a.FeatureConfig(); !reflect.DeepEqual(got, config.Defaults()) {
 		t.Fatalf("absent ConfigMap: got %+v, want defaults", got)
 	}
 
@@ -250,7 +250,7 @@ func TestFeatureConfigLoad(t *testing.T) {
 	// ConfigMap removed: back to built-in defaults.
 	fake.RemoveConfigMap(cmNS, cmName)
 	a.Cycle(ctx)
-	if got := a.FeatureConfig(); got != config.Defaults() {
+	if got := a.FeatureConfig(); !reflect.DeepEqual(got, config.Defaults()) {
 		t.Fatalf("removed ConfigMap: got %+v, want defaults", got)
 	}
 }

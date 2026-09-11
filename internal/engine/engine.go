@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,7 +179,7 @@ func (e *Engine) loadConfig(ctx context.Context) {
 		return
 	}
 	e.featMu.Lock()
-	changed := next != e.feat
+	changed := !reflect.DeepEqual(next, e.feat)
 	e.feat = next
 	if changed {
 		e.cfg.Log.Info("feature config reloaded",

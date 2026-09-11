@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -37,6 +38,60 @@ func TestDefaults(t *testing.T) {
 	if d.UpdateMaxPercentUsage != 75 {
 		t.Errorf("UpdateMaxPercentUsage = %v, want 75", d.UpdateMaxPercentUsage)
 	}
+	if len(d.RebootWindows) != 0 {
+		t.Errorf("RebootWindows = %v, want empty (OFF)", d.RebootWindows)
+	}
+	if d.RebootWindowGrace != 5*time.Minute {
+		t.Errorf("RebootWindowGrace = %v, want 5m", d.RebootWindowGrace)
+	}
+	if len(d.UpdateWindows) != 1 || d.UpdateWindows[0].String() != "@every 12h" {
+		t.Errorf("UpdateWindows = %v, want [@every 12h]", d.UpdateWindows)
+	}
+	if d.UpdateWindowGrace != 5*time.Minute {
+		t.Errorf("UpdateWindowGrace = %v, want 5m", d.UpdateWindowGrace)
+	}
+}
+
+func TestParseWindowKeys(t *testing.T) {
+	got, warns := Parse(Defaults(), map[string]string{
+		"reboots.windows":      `["@daily", "0 7 * * 3"]`,
+		"reboots.window-grace": "10m",
+		"updates.windows":      `[]`,
+		"updates.window-grace": "1h",
+	})
+	if warns != nil {
+		t.Fatalf("warns = %v, want none", warns)
+	}
+	if len(got.RebootWindows) != 2 || got.RebootWindows[0].String() != "@daily" {
+		t.Errorf("RebootWindows = %v", got.RebootWindows)
+	}
+	if got.RebootWindowGrace != 10*time.Minute {
+		t.Errorf("RebootWindowGrace = %v", got.RebootWindowGrace)
+	}
+	if len(got.UpdateWindows) != 0 {
+		t.Errorf("UpdateWindows = %v, want [] (OFF)", got.UpdateWindows)
+	}
+	if got.UpdateWindowGrace != time.Hour {
+		t.Errorf("UpdateWindowGrace = %v", got.UpdateWindowGrace)
+	}
+}
+
+func TestParseWindowKeysInvalidKeepsLastValid(t *testing.T) {
+	base := Defaults()
+	base.RebootWindows, _ = parseScheduleList(`["@daily"]`)
+	data := map[string]string{
+		"reboots.windows":      `["@daily", "not a schedule"]`,
+		"reboots.window-grace": "0s",
+		"updates.windows":      `{"not": "an array"}`,
+		"updates.window-grace": "-5m",
+	}
+	got, warns := Parse(base, data)
+	if len(warns) != 4 {
+		t.Fatalf("warns = %v, want 4", warns)
+	}
+	if !reflect.DeepEqual(got, base) {
+		t.Errorf("got %+v, want base %+v", got, base)
+	}
 }
 
 func TestParseAbsentConfigMapIsDefaults(t *testing.T) {
@@ -44,11 +99,11 @@ func TestParseAbsentConfigMapIsDefaults(t *testing.T) {
 	if warns != nil {
 		t.Fatalf("warns = %v, want none", warns)
 	}
-	if got != Defaults() {
+	if !reflect.DeepEqual(got, Defaults()) {
 		t.Errorf("absent ConfigMap: got %+v, want defaults", got)
 	}
 	got, warns = Parse(Defaults(), map[string]string{})
-	if warns != nil || got != (Defaults()) {
+	if warns != nil || !reflect.DeepEqual(got, Defaults()) {
 		t.Errorf("empty data: got %+v warns %v", got, warns)
 	}
 }
@@ -70,19 +125,18 @@ func TestParseAllValidKeys(t *testing.T) {
 	if warns != nil {
 		t.Fatalf("warns = %v, want none", warns)
 	}
-	want := Config{
-		EngineInterval:        30 * time.Second,
-		MaxConcurrentReboots:  4,
-		OnRebootFailure:       "continue",
-		RebootDrainTimeout:    90 * time.Minute,
-		RebootIssueGrace:      90 * time.Second,
-		UpdateMode:            "full",
-		UpdateURL:             "https://dl.example.org/simplek8s/dev",
-		UpdateCheckInterval:   6 * time.Hour,
-		UpdatePreserve:        5,
-		UpdateMaxPercentUsage: 90,
-	}
-	if got != want {
+	want := Defaults()
+	want.EngineInterval = 30 * time.Second
+	want.MaxConcurrentReboots = 4
+	want.OnRebootFailure = "continue"
+	want.RebootDrainTimeout = 90 * time.Minute
+	want.RebootIssueGrace = 90 * time.Second
+	want.UpdateMode = "full"
+	want.UpdateURL = "https://dl.example.org/simplek8s/dev"
+	want.UpdateCheckInterval = 6 * time.Hour
+	want.UpdatePreserve = 5
+	want.UpdateMaxPercentUsage = 90
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
@@ -97,7 +151,7 @@ func TestParseAbsentKeysKeepDefaults(t *testing.T) {
 	}
 	want := Defaults()
 	want.MaxConcurrentReboots = 2
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
@@ -123,7 +177,7 @@ func TestParseInvalidKeepsLastValidAndWarns(t *testing.T) {
 	if len(warns) != 10 {
 		t.Fatalf("warns = %v, want 10", warns)
 	}
-	if got != base {
+	if !reflect.DeepEqual(got, base) {
 		t.Errorf("got %+v, want base %+v", got, base)
 	}
 }
