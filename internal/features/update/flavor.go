@@ -58,6 +58,8 @@ func (f *Feature) flavorOf(ctx context.Context) (string, bool) {
 	f.mu.Unlock()
 	if len(seen) > 1 && !warned {
 		f.log.Warn("update: mixed board flavors on the partition; sticking to first", "flavor", flavor)
+	} else {
+		f.log.Info("update: board flavor resolved", "flavor", flavor)
 	}
 	return flavor, true
 }
