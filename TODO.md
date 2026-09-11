@@ -116,22 +116,18 @@ publish the image as a public multi-arch `v*` release:
 - an arm64 test node for E2E (planned; one full auto-update on the
   aarch64 image when it is up).
 
-## 14. Boot failure fallback (syslinux) — in planning (PLAN-M4.md v1, native `TIMEOUT`+`ONTIMEOUT` fallback for load failures; panic class deferred)
+## 14. Boot failure fallback (syslinux) — accepted risk, no plan
 
 W13 (PLAN.md §7.4) showed the shape: a correctly signed and staged
 kernel that does not boot on a node leaves it at the syslinux `boot:`
-prompt (`rebooting` + `NotReady`). Correction 2026-09-11 (syslinux
-wiki): load failures CAN fall back natively — `TIMEOUT` resets on an
-unsuccessful boot attempt, so `ONTIMEOUT` boots a fallback label
-automatically. M4 builds exactly that (writer-managed lines +
-purge/prune guards for the fallback target); panics after a
-successful load never return to the prompt and stay manual
-(watchdog+chooser territory, deferred with distro involvement).
-Rationale: bootability of a signed release is still the distro QA's
-job — the mechanism only shortens the fall, it does not grade
-kernels. Until it ships, contain by process: roll out in `stage`
-mode with manual canary reboots before `full`, keep N kernels
-preserved, and guarantee machine-console access per node. The verified
-console recovery (type a good `LABEL`, repair, re-pin) is documented
-in the README runbook; the `completed`+mismatch verification and
-no-auto-retry already hold for whatever comes back.
+prompt (`rebooting` + `NotReady`), with no automatic fallback — and
+none is planned. (A `TIMEOUT`+`ONTIMEOUT` native fallback was
+verified to exist in the syslinux docs and sketched, but not
+approved.) Rationale: bootability of a signed release is the distro
+QA's job; the correlated bad-release case is contained by process,
+not mechanism — roll out in `stage` mode with manual canary reboots
+before `full`, keep N kernels preserved, and guarantee
+machine-console access per node. The verified console recovery (type
+a good `LABEL`, repair, re-pin) is documented in the README runbook;
+the `completed`+mismatch verification and no-auto-retry already hold
+for whatever comes back.
