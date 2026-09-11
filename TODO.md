@@ -116,7 +116,7 @@ publish the image as a public multi-arch `v*` release:
 - an arm64 test node for E2E (planned; one full auto-update on the
   aarch64 image when it is up).
 
-## 14. Boot failure fallback (syslinux)
+## 14. Boot failure fallback (syslinux) — in planning (PLAN-M4.md v1)
 
 W13 (PLAN.md §7.4) proved the negative: a staged kernel that fails to
 boot has **no automatic fallback**. Syslinux drops to a `boot:` prompt

@@ -31,7 +31,7 @@ git history (`git show <commit>:PLAN-M2.md`).
 
       mkdir -p /mnt/boot && mount /dev/vda1 /mnt/boot
       # kernels:  /mnt/boot/simplek8s/
-      # bootloader: /mnt/boot/syslinux.conf
+      # bootloader: /mnt/boot/syslinux/syslinux.cfg
       umount /mnt/boot
 
 - **`scp` fails on SimpleK8s** — its SSH SFTP needs the legacy protocol:
