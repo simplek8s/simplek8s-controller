@@ -33,14 +33,15 @@ no-retry discipline.
 
 ## 2. Constraints
 
-- **Stdlib only** (PLAN.md §2 unchanged): PE parsing is `encoding/binary`
-  over a 64 KiB prefix — no new dependency.
+- **Stdlib only** (PLAN.md §2 unchanged): nothing new to depend on —
+  M4 ships no code.
 - **No new annotation, no new state, no new mechanism.** M4 is docs
-  plus a spike; the only code-adjacent change is none — the claim,
-  eligibility and bootloader machinery are untouched.
+  plus a spike — the claim, eligibility and bootloader machinery are
+  untouched.
 - **UTC/clock discipline unchanged.** No timing involved.
-- **KISS.** One pure function + two call sites + one event. The full
-  re-hash-vs-stage-time design is explicitly deferred (below).
+- **KISS.** Runbook + recipe + spike report. The rejected validation
+  design is recorded in §3.1 so it is not re-proposed without new
+  evidence.
 
 ## 3. Design
 
