@@ -60,8 +60,8 @@ it changes *which files* each node considers its own.
 //  1. operator override annotation (if present and valid);
 //  2. inferred from staged filenames on the boot partition
 //     (first arch seen in versionFromStoredKernel matches);
-//  3. OPEN: fail closed (clear event, no updates) or default to the
-//     arch-derived generic ("arm64"/"x86-64")? — decision needed (§4).
+//  3. CLOSED (D2, 2026-09-11): fail closed — empty or unreadable
+//     partition means no updates + visible Warn (existing paths).
 ```
 
 - x86-64 nodes: `MapArch` as today (`x86-64`) — no behavior change;
@@ -135,7 +135,7 @@ Two rules for the lineage end:
 | # | Decision | Rationale / status |
 |---|---|---|
 | 1 | Flavor set `{x86-64, arm64, rpi4, rpi5}`; `aarch64` dropped (repo has none) | Match reality, not Debian naming. `MapArch` keeps existing for node-arch mapping; flavor is separate. |
-| 2 | Resolution: override → local files → **OPEN** (fail-closed vs generic-default) | Fail-closed is safer (never stage a foreign DTB); generic-default is more available. Needs maintainer call — the plan's only blocking open question. |
+| 2 | Empty/unreadable partition ⇒ fail closed (CLOSED 2026-09-11) | No safe arm64 default exists; the case never occurs in practice; current skip+Warn paths already implement it — no new code. |
 | 3 | Override annotation: `simplek8s.org/board-flavor` (proposed name) | Consistent with the `update-url` override precedent; invalid values ignored loudly. Doubles as the manual board-migration tool (§3.6). Name open in review; necessity follows from D7. |
 | 7 | Out-of-flavor pins skip + `UpdateStagingSkipped`, never W12-correct | A ts existing under other flavors is evidence the operator means migration, not a typo. Correcting it away would destroy intent; skipping loudly preserves it and points at the override. |
 | 4 | Purge/prune/defensive scoped to own flavor | Cross-flavor deletion would be data loss by design (a stray foreign file is the operator's, like any foreign entry). |
