@@ -358,13 +358,13 @@ func TestPlanInFlightMemberDeferred(t *testing.T) {
 	}
 }
 
-// TestNonPlanVerifyResetsSingleFailedBoot: a node outside any plan that
-// completed a reboot but did not come up on its next-kernel is reset to its
-// running kernel (single-node failure recovery, PLAN-M2 3.10).
-func TestNonPlanVerifyResetsSingleFailedBoot(t *testing.T) {
+// TestVerifyMismatchEventsWithoutReset: a node outside any plan that
+// completed a reboot but did not come up on its next-kernel keeps its
+// goal (no automatic reset, no auto-retry — PLAN.md §3.4) and fires a
+// single rate-limited UpdateMismatch.
+func TestVerifyMismatchEventsWithoutReset(t *testing.T) {
 	const v = "202608291203"
 	const old = "6.18.48-simplek8s-202601010000 (amd64)"
-	const oldV = "202601010000"
 	h := newPlanHarness(t)
 	// No reboot-eligible trigger: this node is not part of any plan.
 	h.node("w9", old, map[string]string{
@@ -374,20 +374,54 @@ func TestNonPlanVerifyResetsSingleFailedBoot(t *testing.T) {
 	h.leader()
 	h.orch()
 
-	if got := h.ann("w9", nodestate.AnnNextKernel); got != oldV {
-		t.Fatalf("next-kernel = %q, want reset to running %q", got, oldV)
+	if got := h.ann("w9", nodestate.AnnNextKernel); got != v {
+		t.Fatalf("next-kernel = %q, want kept %q (mismatch never resets)", got, v)
 	}
-	if h.eventCount("UpdateNodeFailed") != 1 {
-		t.Fatalf("UpdateNodeFailed = %d, want 1", h.eventCount("UpdateNodeFailed"))
+	if h.eventCount("UpdateMismatch") != 1 {
+		t.Fatalf("UpdateMismatch = %d, want 1", h.eventCount("UpdateMismatch"))
+	}
+	h.orch() // still diverged: rate-limited, no second event
+	if h.eventCount("UpdateMismatch") != 1 {
+		t.Fatalf("UpdateMismatch = %d, want 1 (no repeat)", h.eventCount("UpdateMismatch"))
 	}
 	if len(h.plans()) != 0 {
 		t.Fatalf("no plan should start: %+v", h.plans())
 	}
 }
 
-// TestNonPlanVerifyIgnoresFailedState: a failed (non-completed) reboot is
-// left alone — the node never left its old kernel, so the operator retries.
-func TestNonPlanVerifyIgnoresFailedState(t *testing.T) {
+// TestVerifyAppliedOnQuiescenceTransition: a node recorded non-quiescent
+// that later rests on its goal fires exactly one UpdateApplied.
+func TestVerifyAppliedOnQuiescenceTransition(t *testing.T) {
+	const v = "202608291203"
+	const old = "6.18.48-simplek8s-202601010000 (amd64)"
+	const newKernel = "6.18.48-simplek8s-202608291203 (amd64)"
+	h := newPlanHarness(t)
+	h.node("w9", old, map[string]string{
+		nodestate.AnnNextKernel: v,
+	})
+	h.leader()
+	h.orch() // non-quiescent: recorded, no event
+	if h.eventCount("UpdateApplied") != 0 {
+		t.Fatalf("UpdateApplied = %d, want 0 (not quiescent yet)", h.eventCount("UpdateApplied"))
+	}
+	// The node reboots into v and rests (completed state optional).
+	h.node("w9", newKernel, map[string]string{
+		nodestate.AnnState:      nodestate.StateValue(nodestate.Completed, h.cl.Now()),
+		nodestate.AnnNextKernel: v,
+	})
+	h.orch()
+	if h.eventCount("UpdateApplied") != 1 {
+		t.Fatalf("UpdateApplied = %d, want 1 (transition into quiescence)", h.eventCount("UpdateApplied"))
+	}
+	h.orch()
+	if h.eventCount("UpdateApplied") != 1 {
+		t.Fatalf("UpdateApplied = %d, want 1 (idempotent per node+version)", h.eventCount("UpdateApplied"))
+	}
+}
+
+// TestVerifyIgnoresFailedState: a failed (non-completed) reboot fires no
+// mismatch — the node never left its old kernel, so the operator retries.
+func TestVerifyIgnoresFailedState(t *testing.T) {
 	const v = "202608291203"
 	const old = "6.18.48-simplek8s-202601010000 (amd64)"
 	h := newPlanHarness(t)
@@ -401,8 +435,8 @@ func TestNonPlanVerifyIgnoresFailedState(t *testing.T) {
 	if got := h.ann("w9", nodestate.AnnNextKernel); got != v {
 		t.Fatalf("next-kernel = %q, want unchanged %q (failed is not reset)", got, v)
 	}
-	if h.eventCount("UpdateNodeFailed") != 0 {
-		t.Fatalf("UpdateNodeFailed = %d, want 0 for a failed reboot", h.eventCount("UpdateNodeFailed"))
+	if h.eventCount("UpdateMismatch") != 0 {
+		t.Fatalf("UpdateMismatch = %d, want 0 for a failed reboot", h.eventCount("UpdateMismatch"))
 	}
 }
 
@@ -488,4 +522,40 @@ func TestPlanStaleFailedAtStartDoesNotCancel(t *testing.T) {
 	if len(h.plans()) != 1 {
 		t.Fatalf("plan = %+v, want exactly one active plan", h.plans())
 	}
+}
+
+// TestVerifyAlwaysOnWindowsEmptyAndModeOff: verification is purely
+// observational — it fires even with updates.windows [] and with
+// update-mode off (PLAN.md §3.4).
+func TestVerifyAlwaysOnWindowsEmptyAndModeOff(t *testing.T) {
+	const v = "202608291203"
+	const old = "6.18.48-simplek8s-202601010000 (amd64)"
+	mk := func(t *testing.T) *planHarness {
+		h := newPlanHarness(t)
+		h.node("w9", old, map[string]string{
+			nodestate.AnnState:      nodestate.StateValue(nodestate.Completed, h.cl.Now()),
+			nodestate.AnnNextKernel: v,
+		})
+		return h
+	}
+	t.Run("empty-windows", func(t *testing.T) {
+		h := mk(t)
+		h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
+			"updates.update-mode": "full",
+			"updates.windows":     `[]`,
+		})
+		h.leader()
+		h.orch()
+		if h.eventCount("UpdateMismatch") != 1 {
+			t.Fatalf("UpdateMismatch = %d, want 1 (always on)", h.eventCount("UpdateMismatch"))
+		}
+	})
+	t.Run("mode-off", func(t *testing.T) {
+		h := mk(t) // no ConfigMap: built-in defaults (mode off)
+		h.leader()
+		h.orch()
+		if h.eventCount("UpdateMismatch") != 1 {
+			t.Fatalf("UpdateMismatch = %d, want 1 (events only)", h.eventCount("UpdateMismatch"))
+		}
+	})
 }

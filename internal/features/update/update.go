@@ -7,6 +7,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,7 +27,16 @@ import (
 type BootStore interface {
 	Versions(ctx context.Context) ([]string, error)
 	Stage(ctx context.Context, req StageRequest) error
+	// EnsureBootGoal verifies version's kernel file is present on the
+	// boot partition and ensures the bootloader DEFAULT points at it —
+	// mount, compare, re-point if needed, sync, unmount — in one
+	// session (PLAN.md §3.4 ordering invariant, §3.7). ErrGoalAbsent
+	// (nothing written) when the file is missing.
+	EnsureBootGoal(ctx context.Context, version, arch string) error
 }
+
+// ErrGoalAbsent: the goal kernel file is not on the boot partition.
+var ErrGoalAbsent = errors.New("goal kernel file absent from boot partition")
 
 // Config carries the update feature's settings. Feature tuning
 // (updates.* keys) comes from the per-cycle feature Config snapshot
@@ -67,6 +77,13 @@ type Feature struct {
 	notified   map[string]bool // rate-limited event flags
 	availSeen  map[string]bool // versions for which UpdateAvailable fired
 	skipLogged bool            // master-switch skip already logged at Info (edge-triggered rate limit)
+	// lastGoal/goalKnown is the last next-kernel value the bootloader
+	// was reconciled to (§3.7 change detection, in-memory).
+	lastGoal  string
+	goalKnown bool
+	// nonQuiescent tracks nodes last seen non-quiescent (node -> goal)
+	// for the UpdateApplied transition edge (§3.4 verification).
+	nonQuiescent map[string]string
 }
 
 // New builds the feature and registers its local task with the engine.
@@ -93,14 +110,15 @@ func New(e *engine.Engine, cfg Config) *Feature {
 		cfg.PlanConfigMapName = "simplek8s-update-plans"
 	}
 	f := &Feature{
-		kube:      e.Kube(),
-		leas:      e.Leaser(),
-		plans:     newPlansStore(e.Kube(), cfg.PlanConfigMapNamespace, cfg.PlanConfigMapName),
-		cfg:       cfg,
-		log:       cfg.Log,
-		http:      cfg.HTTPClient,
-		notified:  map[string]bool{},
-		availSeen: map[string]bool{},
+		kube:         e.Kube(),
+		leas:         e.Leaser(),
+		plans:        newPlansStore(e.Kube(), cfg.PlanConfigMapNamespace, cfg.PlanConfigMapName),
+		cfg:          cfg,
+		log:          cfg.Log,
+		http:         cfg.HTTPClient,
+		notified:     map[string]bool{},
+		availSeen:    map[string]bool{},
+		nonQuiescent: map[string]string{},
 	}
 	e.Register(f)               // leader-only: the reboot plan (M4)
 	e.RegisterLocal(f.RunLocal) // every pod: check + stage (M2/M3)
@@ -115,44 +133,57 @@ func (f *Feature) RunLocal(ctx context.Context) {
 		return
 	}
 	fc := f.cfg.Features()
+	now := f.cfg.Now()
 
-	f.bootstrap(ctx, node)
+	dirty := f.bootstrap(ctx, node)
+	if f.reconcileBootloader(ctx, node, dirty) {
+		dirty = true
+	}
 
 	if fc.UpdateMode == "off" {
 		return
 	}
 
 	// Master switch (PLAN.md §3.4): update work runs only while a
-	// window is open. Closed (or empty) windows skip the cycle with no
-	// HTTP fetch and no partition mount.
-	now := f.cfg.Now()
-	if !cron.WindowsOpen(fc.UpdateWindows, fc.UpdateWindowGrace, now) {
+	// window is open. Closed (or empty) windows skip the check/stage
+	// below with no HTTP fetch and no partition mount — but never the
+	// enqueue at the end (it has its own reboots-window gate).
+	if cron.WindowsOpen(fc.UpdateWindows, fc.UpdateWindowGrace, now) {
+		// One check per occurrence (PLAN.md §3.4, decision 21): the
+		// newest occurrence at or before now, claimed with a
+		// conditional RMW BEFORE fetching so pod restarts never
+		// re-fetch a claimed occurrence. The claim persists in the
+		// update-last-check annotation; an unparseable stored value
+		// reads as absent. A covered occurrence skips the
+		// check/stage only — eligibility may still need enqueueing.
+		if occ, ok := cron.NewestOccurrence(fc.UpdateWindows, now); ok && f.claimCheck(ctx, node, occ) {
+			f.mu.Lock()
+			f.skipLogged = false
+			f.mu.Unlock()
+
+			// The check runs first: staging needs the verified
+			// index (checksums).
+			if res, err := f.doCheck(ctx, node, fc); err == nil {
+				if f.maybeStage(ctx, node, fc, res) {
+					dirty = true
+				}
+			} // check failure: no state change (event already fired)
+		}
+	} else {
 		f.logWindowSkip()
-		return
 	}
-
-	// One check per occurrence (PLAN.md §3.4, decision 21): the newest
-	// occurrence at or before now, claimed with a conditional RMW
-	// BEFORE fetching so pod restarts never re-fetch a claimed
-	// occurrence. The claim persists in the update-last-check
-	// annotation; an unparseable stored value reads as absent.
-	occ, ok := cron.NewestOccurrence(fc.UpdateWindows, now)
-	if !ok {
-		return
+	if dirty {
+		// Earlier steps patched the node: re-read before
+		// evaluating enqueue eligibility on a fresh view.
+		if fresh, err := f.kube.GetNode(ctx, f.cfg.NodeName); err == nil {
+			node = fresh
+		} else {
+			f.log.Debug("update: own node re-read failed", "err", err)
+			return
+		}
 	}
-	if !f.claimCheck(ctx, node, occ) {
-		return
-	}
-	f.mu.Lock()
-	f.skipLogged = false
-	f.mu.Unlock()
-
-	// The check runs first: staging needs the verified index (checksums).
-	res, err := f.doCheck(ctx, node, fc)
-	if err != nil {
-		return // check failure: no state change (event already fired)
-	}
-	f.maybeStage(ctx, node, fc, res)
+	// Pod-side reboot enqueue (PLAN.md §3.4, decision 31).
+	f.maybeEnqueue(ctx, node, fc, now)
 }
 
 // logWindowSkip logs a skipped cycle at Info on the closed edge and at
@@ -194,21 +225,21 @@ func (f *Feature) claimCheck(ctx context.Context, node *kube.Node, occ time.Time
 // present locally -> running; (2) running not present -> newest local;
 // (3) nothing local -> no annotation, retry next cycle. It runs in
 // every update mode (node state, not "updates").
-func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) {
+func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) bool {
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
 	if ui.NextKernelPresent {
-		return
+		return false
 	}
 	if f.cfg.Store == nil {
-		return
+		return false
 	}
 	local, err := f.cfg.Store.Versions(ctx)
 	if err != nil {
 		f.log.Debug("update: local version scan failed", "err", err)
-		return
+		return false
 	}
 	if len(local) == 0 {
-		return // case 3: retry next cycle
+		return false // case 3: retry next cycle
 	}
 	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
 	target := ""
@@ -230,9 +261,10 @@ func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) {
 		if err != nodestate.ErrAbort {
 			f.log.Warn("update: bootstrap anchor failed", "version", target, "err", err)
 		}
-		return
+		return false
 	}
 	f.log.Info("update: bootstrapped next-kernel", "version", target)
+	return true
 }
 
 // --- Staging (PLAN-M2 3.7) --------------------------------------------
@@ -240,11 +272,15 @@ func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) {
 // maybeStage ensures the versions this node needs are on its boot
 // partition, using the verified index from a successful check. It (1)
 // defensively re-stages the anchored version if its files are missing
-// (no annotation change: the anchor already holds it), and (2) stages the
-// newest available release and, on success, anchors next-kernel := V.
-func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Config, res CheckResult) {
+// (no annotation change: the anchor already holds it) — unless the
+// verified index no longer contains it, in which case the goal is
+// corrected to the safe state instead (§3.10 path 2); and (2) stages
+// the newest available release and, on success, anchors next-kernel :=
+// V. It reports whether it wrote anything (anchor, re-arm, or
+// correction: callers treat the cycle view as stale).
+func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Config, res CheckResult) bool {
 	if f.cfg.Store == nil || res.Arch == "" {
-		return
+		return false
 	}
 	local, err := f.cfg.Store.Versions(ctx)
 	f.mu.Lock()
@@ -255,7 +291,7 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	}
 	f.mu.Unlock()
 	if err != nil {
-		return
+		return false
 	}
 	localSet := make(map[string]bool, len(local))
 	for _, v := range local {
@@ -263,31 +299,56 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	}
 	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
+	arch := res.Arch
+	dirty := false
 
-	// freshStage is the genuine new-version stage (target 2 below): a
-	// release not already local and not already the anchor. Only this —
-	// never the defensive re-stage of an already-anchored version — sets
-	// the reboot-eligible plan trigger (PLAN-M2 3.8: a plan is the
-	// consequence of staging a version not in /boot before).
-	freshStage := res.Available && res.Latest != "" && res.Latest != running &&
-		!localSet[res.Latest] && ui.NextKernel != res.Latest
-
-	var targets []string
-	// (1) anchored version missing locally (defensive; never the anchor value).
+	// (1) anchored version missing locally.
 	if ui.NextKernelPresent && ui.NextKernelParseErr == "" &&
 		ui.NextKernel != running && !localSet[ui.NextKernel] {
-		targets = append(targets, ui.NextKernel)
+		if !indexHas(res, ui.NextKernel, arch) {
+			// Positive knowledge of absence (removed from the
+			// repo, or a ts that never existed): correct to the
+			// safe state instead of staging (§3.10 path 2). The
+			// goal changed: the fresh anchor below is evaluated
+			// on the next cycle.
+			return f.applySafeState(ctx, node.Metadata.Name, ui.NextKernel, running, arch)
+		}
+		// Defensive re-stage (never the anchor value).
+		if f.stageOne(ctx, node, fc, res, ui.NextKernel) && f.rearmIfCompleted(ctx, node.Metadata.Name) {
+			// Staging completed a pre-pinned version (§3.4
+			// decision 14, case 2).
+			dirty = true
+		}
 	}
 	// (2) newest available release not yet local.
 	if res.Available && res.Latest != "" && res.Latest != running &&
 		!localSet[res.Latest] && ui.NextKernel != res.Latest {
-		targets = append(targets, res.Latest)
-	}
-	for _, v := range targets {
-		if f.stageOne(ctx, node, fc, res, v) && v == res.Latest {
-			f.anchor(ctx, node, res.Latest, running, fc.UpdateMode == "full" && freshStage)
+		if f.stageOne(ctx, node, fc, res, res.Latest) {
+			if f.anchor(ctx, node, res.Latest, running) {
+				// A fresh-stage anchor changes the goal to a
+				// well-formed present version: re-arm per the
+				// normal rule (§3.4 decision 14, case 1).
+				dirty = true
+				f.rearmIfCompleted(ctx, node.Metadata.Name)
+			} else if ui.NextKernel == res.Latest && f.rearmIfCompleted(ctx, node.Metadata.Name) {
+				// Staging completed a pre-pinned version.
+				dirty = true
+			}
 		}
 	}
+	return dirty
+}
+
+// indexHas reports whether the verified index contains a kernel
+// artifact for ts on arch (PLAN.md §3.10 path 2: positive knowledge
+// of absence vs transient staging failure).
+func indexHas(res CheckResult, ts, arch string) bool {
+	for file := range res.Sums {
+		if v, fa, ok := ParseKernelRelease(file); ok && v == ts && fa == arch {
+			return true
+		}
+	}
+	return false
 }
 
 // stageOne stages one release ts onto the local boot partition. It
@@ -325,23 +386,19 @@ func (f *Feature) stageOne(ctx context.Context, node *kube.Node, fc config.Confi
 
 // anchor sets next-kernel := version when the node is quiescent (writer
 // discipline, PLAN-M2 3.5): a held/re-pinned value is never clobbered.
-// When eligible is true (a fresh full-mode stage) it also sets the
-// reboot-eligible plan trigger in the same conditional patch, so the
-// trigger and the anchor can never diverge (PLAN-M2 3.8).
-func (f *Feature) anchor(ctx context.Context, node *kube.Node, version, running string, eligible bool) {
-	var build nodestate.BuildFunc
-	if eligible {
-		build = nodestate.NextKernelEligibleBuild(version, nodestate.PrecondQuiescent(running))
-	} else {
-		build = nodestate.NextKernelBuild(version, nodestate.PrecondQuiescent(running))
-	}
+// The M2 reboot-eligible plan trigger is abolished (PLAN.md §3.4
+// decision 12): the anchor carries no trigger — pod-side enqueue
+// replaces it. It reports whether the patch landed.
+func (f *Feature) anchor(ctx context.Context, node *kube.Node, version, running string) bool {
+	build := nodestate.NextKernelBuild(version, nodestate.PrecondQuiescent(running))
 	if err := nodestate.PatchTransition(ctx, f.kube, node.Metadata.Name, 3, build); err != nil {
 		if err != nodestate.ErrAbort {
 			f.log.Warn("update: anchor failed", "version", version, "err", err)
 		}
-		return
+		return false
 	}
-	f.log.Info("update: anchored next-kernel", "version", version, "eligible", eligible)
+	f.log.Info("update: anchored next-kernel", "version", version)
+	return true
 }
 
 // --- Check (PLAN-M2 3.6) ------------------------------------------------

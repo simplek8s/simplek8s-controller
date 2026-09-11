@@ -28,6 +28,10 @@ type fakeStore struct {
 	vers   []string
 	staged []StageRequest
 	err    error
+	// defGoal records the last EnsureBootGoal target (the fake's
+	// DEFAULT); ensures logs every EnsureBootGoal call in order.
+	defGoal string
+	ensures []string
 }
 
 func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
@@ -493,10 +497,11 @@ func TestStagingFailureFiresEventNoAnnotationChange(t *testing.T) {
 
 // --- Reboot-eligible plan trigger (PLAN-M2 3.8) --------------------------
 
-// TestFreshFullStageSetsRebootEligible: a genuine fresh full-mode stage
-// (a release not yet local and not the current anchor) sets next-kernel AND
-// the reboot-eligible plan trigger in one conditional patch.
-func TestFreshFullStageSetsRebootEligible(t *testing.T) {
+// TestFreshFullStageSetsNoTrigger: a genuine fresh full-mode stage
+// anchors next-kernel but never sets the abolished reboot-eligible
+// plan trigger (PLAN.md §3.4 decision 12 — pod-side enqueue replaces
+// it).
+func TestFreshFullStageSetsNoTrigger(t *testing.T) {
 	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
@@ -504,8 +509,8 @@ func TestFreshFullStageSetsRebootEligible(t *testing.T) {
 	if got := h.nextKernel(); got != "202608291203" {
 		t.Fatalf("next-kernel = %q, want anchored 202608291203", got)
 	}
-	if got := h.rebootEligible(); got != "202608291203" {
-		t.Fatalf("reboot-eligible = %q, want 202608291203 (fresh full-mode stage)", got)
+	if got := h.rebootEligible(); got != "" {
+		t.Fatalf("reboot-eligible = %q, want absent (trigger abolished)", got)
 	}
 }
 
@@ -539,4 +544,25 @@ func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
 	if got := h.rebootEligible(); got != "" {
 		t.Fatalf("reboot-eligible = %q, want absent (defensive re-stage)", got)
 	}
+}
+
+// EnsureBootGoal records the goal as the fake DEFAULT when the version
+// is present, or ErrGoalAbsent (nothing written) when it is not.
+func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensures = append(s.ensures, version)
+	for _, v := range s.vers {
+		if v == version {
+			s.defGoal = version
+			return nil
+		}
+	}
+	return ErrGoalAbsent
+}
+
+func (s *fakeStore) ensureCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ensures...)
 }

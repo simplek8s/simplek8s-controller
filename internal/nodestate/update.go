@@ -176,3 +176,21 @@ func PrecondQuiescent(running string) func(*UpdateInfo) bool {
 func PrecondValue(v string) func(*UpdateInfo) bool {
 	return func(ui *UpdateInfo) bool { return ui.NextKernelPresent && ui.NextKernel == v }
 }
+
+// CorrectGoalBuild returns a BuildFunc that corrects next-kernel to
+// the safe state (PLAN.md §3.10): set to target, or delete the
+// annotation when target is "". It lands only when the fresh value is
+// still exactly badVal — a concurrent operator edit is re-evaluated,
+// never clobbered.
+func CorrectGoalBuild(badVal, target string) BuildFunc {
+	return func(node *kube.Node) (map[string]any, bool) {
+		ui := ParseUpdate(node.Metadata.Annotations)
+		if !ui.NextKernelPresent || ui.NextKernel != badVal {
+			return nil, false
+		}
+		if target == "" {
+			return annotationsPatch(node.Metadata.ResourceVersion, map[string]any{AnnNextKernel: nil}), true
+		}
+		return NextKernelPatch(node.Metadata.ResourceVersion, target), true
+	}
+}

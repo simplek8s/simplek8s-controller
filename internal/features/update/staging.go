@@ -145,6 +145,16 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 
 	protected := protectedSet(req, partRoot)
 
+	// Track purge deletions for the syslinux prune below (§3.9).
+	var purged []string
+	purge := func(names []string) error {
+		if err := applyPurge(partRoot, dir, names); err != nil {
+			return err
+		}
+		purged = append(purged, names...)
+		return nil
+	}
+
 	// 4. capacity pre-check: make room for the new kernel by purging the
 	// oldest unprotected versions.
 	total, free, _, err := PathInfo(partRoot)
@@ -157,7 +167,7 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 			return lerr
 		}
 		toDelete := planPurge(entries, protected, 0, free, uint64(extSize))
-		if err := applyPurge(partRoot, dir, toDelete); err != nil {
+		if err := purge(toDelete); err != nil {
 			return err
 		}
 		if _, free, _, err = PathInfo(partRoot); err != nil {
@@ -195,5 +205,16 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 		return lerr
 	}
 	target := targetFreeFromPercent(total, req.MaxPercentUsage)
-	return applyPurge(partRoot, dir, planPurge(entries, protected, req.Preserve, free, target))
+	if err := purge(planPurge(entries, protected, req.Preserve, free, target)); err != nil {
+		return err
+	}
+
+	// 8. syslinux stale-entry prune (PLAN.md §3.9): only when a purge
+	// deleted at least one kernel, in this same mounted session, after
+	// the staging work. A prune failure never fails staging (Warn +
+	// retry on the next purge-triggered session).
+	if len(purged) > 0 {
+		pruneSyslinuxFile(partRoot, dir, log)
+	}
+	return nil
 }

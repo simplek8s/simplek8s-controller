@@ -644,8 +644,9 @@ bounds it:
   not done gratuitously. The rewrite uses the writer's existing
   discipline (temp file + synchronous `copyOver`). If the rewrite fails
   after staging succeeded, staging is **not** rolled back: the error is
-  logged + evented (rate-limited) and the prune retries in the next
-  purge-triggered session. A hand-deleted file with no purge deletion
+  Warn-logged (purge-triggered sessions are rare, so no dedicated
+  rate limit) and the prune retries in the next purge-triggered
+  session. A hand-deleted file with no purge deletion
   this session leaves its `LABEL` block dangling until a future purge
   triggers a pass (bounded growth, never unbootable — `DEFAULT` is
   guarded).

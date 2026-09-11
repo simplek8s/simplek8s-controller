@@ -330,3 +330,101 @@ func TestClearStaleRebootStateBuild(t *testing.T) {
 		})
 	}
 }
+
+func TestRearmBuild(t *testing.T) {
+	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	mk := func(anns map[string]string) *kubeNode {
+		n := &kubeNode{}
+		n.Metadata.Name = "n1"
+		n.Metadata.ResourceVersion = "7"
+		n.Metadata.Annotations = anns
+		return n
+	}
+	cases := []struct {
+		name   string
+		anns   map[string]string
+		wantOK bool
+	}{
+		{"absent", map[string]string{}, false},
+		{"completed", map[string]string{AnnState: StateValue(Completed, now)}, true},
+		{"failed", map[string]string{AnnState: StateValue(Failed, now)}, false},
+		{"requested", map[string]string{AnnState: StateValue(Requested, now)}, false},
+		{"draining", map[string]string{AnnState: StateValue(Draining, now)}, false},
+		{"corrupt", map[string]string{AnnState: "{not json"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patch, ok := RearmBuild()(mk(tc.anns))
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			ann := patch["metadata"].(map[string]any)["annotations"].(map[string]any)
+			for _, k := range []string{AnnState, AnnRequest, AnnExec, AnnStatus} {
+				if v, present := ann[k]; !present || v != nil {
+					t.Fatalf("%s not cleared to null: %v", k, v)
+				}
+			}
+		})
+	}
+}
+
+func TestEnqueueControllerBuild(t *testing.T) {
+	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	mk := func(anns map[string]string) *kubeNode {
+		n := &kubeNode{}
+		n.Metadata.Name = "n1"
+		n.Metadata.ResourceVersion = "7"
+		n.Metadata.Annotations = anns
+		return n
+	}
+	goal := map[string]string{AnnNextKernel: "202608291203"}
+	cases := []struct {
+		name   string
+		anns   map[string]string
+		wantOK bool
+	}{
+		{"absent", goal, true},
+		{"requested", merge(goal, map[string]string{AnnState: StateValue(Requested, now)}), false},
+		{"completed", merge(goal, map[string]string{AnnState: StateValue(Completed, now)}), false},
+		{"failed", merge(goal, map[string]string{AnnState: StateValue(Failed, now)}), false},
+		{"corrupt", merge(goal, map[string]string{AnnState: "{not json"}), false},
+		{"goal-moved", map[string]string{AnnNextKernel: "202609090909"}, false},
+		{"goal-absent", map[string]string{}, false},
+		{"goal-malformed", map[string]string{AnnNextKernel: "banana"}, false},
+		{"quiescent", map[string]string{AnnNextKernel: "202601010000"}, false}, // running below
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patch, ok := EnqueueControllerBuild(now, "req-1", "202608291203", "202601010000")(mk(tc.anns))
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			ann := patch["metadata"].(map[string]any)["annotations"].(map[string]any)
+			st, _ := ann[AnnState].(string)
+			if st == "" {
+				t.Fatal("state not set to requested")
+			}
+			req, _ := ann[AnnRequest].(string)
+			if req == "" {
+				t.Fatal("controller request not recorded")
+			}
+		})
+	}
+}
+
+func merge(a, b map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}

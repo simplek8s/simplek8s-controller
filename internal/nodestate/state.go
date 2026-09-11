@@ -330,6 +330,48 @@ func EnqueueBuild(since time.Time) BuildFunc {
 	}
 }
 
+// EnqueueControllerBuild (update pod, PLAN.md §3.4 decision 31):
+// reboot-state := requested with a controller-issued request
+// (requestedBy "controller", fresh id, force false — the same
+// four-annotation state the M1 API writes), only when the fresh state
+// is absent AND the fresh boot goal still matches (goal unchanged,
+// still non-quiescent). Goal-file presence was verified by the caller
+// just before, in the same code path (the ordering invariant); a
+// concurrent operator edit is re-evaluated, never clobbered.
+func EnqueueControllerBuild(since time.Time, reqID, goal, running string) BuildFunc {
+	return func(node *kube.Node) (map[string]any, bool) {
+		st := Parse(node.Metadata.Annotations)
+		if st.State != nil && st.State.Present {
+			return nil, false // anything present (incl. corrupt): never clobber
+		}
+		ui := ParseUpdate(node.Metadata.Annotations)
+		if !ui.NextKernelPresent || ui.NextKernelParseErr != "" || ui.NextKernel != goal {
+			return nil, false // goal moved under us
+		}
+		if ui.NextKernel == running {
+			return nil, false // quiescent now (e.g. rebooted out of band)
+		}
+		return AdmissionPatch(node.Metadata.ResourceVersion, since, reqID, "controller", false), true
+	}
+}
+
+// RearmBuild (update pod, PLAN.md §3.4 decision 14): clear a completed
+// M1 state so the next version can be attempted. Absent is a no-op
+// skip (nothing to clear); failed is never cleared (operator alarm —
+// it exits only via DELETE, decision 30); anything else is left alone.
+func RearmBuild() BuildFunc {
+	return func(node *kube.Node) (map[string]any, bool) {
+		st := Parse(node.Metadata.Annotations)
+		if st.State == nil || !st.State.Present || st.State.ParseError != "" {
+			return nil, false
+		}
+		if st.State.State != Completed {
+			return nil, false
+		}
+		return ClearPatch(node.Metadata.ResourceVersion, false), true
+	}
+}
+
 // ClearStaleRebootStateBuild (update plan, BUG 12): reset a node's stale
 // terminal M1 reboot state (completed or failed) back to the resting state —
 // all four reboot annotations cleared — at plan start. A stale completed or

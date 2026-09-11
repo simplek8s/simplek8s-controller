@@ -128,3 +128,85 @@ func TestKernelBasename(t *testing.T) {
 		t.Fatalf("kernelBasename = %q", got)
 	}
 }
+
+// PLAN.md §3.9 reference fixture: the distro's initial entry plus one
+// staged by the controller.
+const pruneSample = `DEFAULT simplek8s.202609061935.x86-64
+
+LABEL simplek8s.202608291203.x86-64
+ KERNEL /simplek8s/simplek8s.202608291203.x86-64.efi
+ #APPEND log_buf_len=5M printk.devkmsg=on systemd.debug-shell=1 debug
+
+LABEL simplek8s.202609061935.x86-64
+ KERNEL /simplek8s/simplek8s.202609061935.x86-64.efi
+
+`
+
+func TestPruneSyslinuxEntries(t *testing.T) {
+	gone := func(base string) bool {
+		return base == "simplek8s.202608291203.x86-64.efi"
+	}
+	got, n := pruneSyslinuxEntries(pruneSample, "simplek8s.202609061935.x86-64", gone)
+	if n != 1 {
+		t.Fatalf("pruned = %d, want 1", n)
+	}
+	want := `DEFAULT simplek8s.202609061935.x86-64
+
+LABEL simplek8s.202609061935.x86-64
+ KERNEL /simplek8s/simplek8s.202609061935.x86-64.efi
+
+`
+	if got != want {
+		t.Fatalf("rewritten config:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPruneSyslinuxEntriesGuards(t *testing.T) {
+	never := func(string) bool { return false }
+	// Nothing gone: byte-identical, including the DOC header.
+	doc := "# distro documentation header\n# kept verbatim\n" + pruneSample
+	if got, n := pruneSyslinuxEntries(doc, "simplek8s.202609061935.x86-64", never); n != 0 || got != doc {
+		t.Fatalf("no-op rewrite: n=%d identical=%v", n, got == doc)
+	}
+	// DEFAULT block is never pruned even when its file is gone.
+	always := func(string) bool { return true }
+	got, n := pruneSyslinuxEntries(pruneSample, "simplek8s.202609061935.x86-64", always)
+	if n != 1 {
+		t.Fatalf("pruned = %d, want 1 (DEFAULT spared)", n)
+	}
+	if !strings.Contains(got, "LABEL simplek8s.202609061935.x86-64") {
+		t.Fatal("DEFAULT block must survive")
+	}
+	// Foreign entries are never touched, file present or not.
+	foreign := "DEFAULT recovery\n\nLABEL recovery\n KERNEL /recovery/vmlinuz\n\nLABEL ours\n KERNEL /simplek8s/simplek8s.1.x86-64.efi\n"
+	got, n = pruneSyslinuxEntries(foreign, "recovery", always)
+	if n != 1 {
+		t.Fatalf("pruned = %d, want 1 (foreign spared)", n)
+	}
+	if !strings.Contains(got, "LABEL recovery") {
+		t.Fatal("foreign block must survive")
+	}
+	// Blocks without a KERNEL line are never touched.
+	nokern := "DEFAULT ours\n\nLABEL odd\n APPEND console=ttyS0\n\nLABEL ours\n KERNEL /simplek8s/simplek8s.1.x86-64.efi\n"
+	if _, n := pruneSyslinuxEntries(nokern, "other", always); n != 1 {
+		t.Fatalf("pruned = %d, want 1 (KERNEL-less spared, ours pruned)", n)
+	}
+}
+
+func TestPruneSyslinuxFileEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	dir := "simplek8s"
+	writeRel(t, root, "syslinux/syslinux.cfg", pruneSample)
+	// Only the old kernel file is gone; the default's file exists.
+	writeRel(t, root, "simplek8s/simplek8s.202609061935.x86-64.efi", "kernel")
+	pruneSyslinuxFile(root, dir, discardLogger{})
+	cfg := readRel(t, root, "syslinux/syslinux.cfg")
+	if strings.Contains(cfg, "LABEL simplek8s.202608291203.x86-64") {
+		t.Fatal("stale entry must be pruned")
+	}
+	if !strings.Contains(cfg, "LABEL simplek8s.202609061935.x86-64") {
+		t.Fatal("DEFAULT entry must survive")
+	}
+	// Non-syslinux partition (no config): silent no-op.
+	pruneSyslinuxFile(t.TempDir(), dir, discardLogger{})
+}

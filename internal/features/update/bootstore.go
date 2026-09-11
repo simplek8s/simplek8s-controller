@@ -147,6 +147,37 @@ func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
 	return stagePartition(ctx, s.http, s.log, req, mnt, s.kernelDir, work)
 }
 
+// EnsureBootGoal verifies version's kernel file is present and ensures
+// the bootloader DEFAULT points at it, in one mounted session
+// (PLAN.md §3.4 ordering invariant, §3.7). A matching DEFAULT is a
+// no-op (compare only, still a mount). O_SYNC writers make the
+// re-point durable before return.
+func (s *PhysicalStore) EnsureBootGoal(ctx context.Context, version, arch string) error {
+	dev, err := s.findBootDevice(ctx)
+	if err != nil {
+		return err
+	}
+	mnt, cleanup, err := s.mountDevice(dev)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	stored := kernelStoredName(version, arch)
+	if !fileExists(filepath.Join(mnt, s.kernelDir, stored)) {
+		return ErrGoalAbsent
+	}
+	want := "/" + filepath.Join(s.kernelDir, stored)
+	if cur := GetBootloaderDefault(BootloaderAuto, mnt); cur == want {
+		s.log.Debug("update: bootloader default already at goal", "version", version)
+		return nil
+	}
+	if err := SetBootloaderDefault(BootloaderAuto, mnt, want, "/"); err != nil {
+		return fmt.Errorf("re-point default at %s: %w", version, err)
+	}
+	s.log.Info("update: bootloader default re-pointed", "version", version)
+	return nil
+}
+
 // findBootDevice locates the boot device over the host /dev: first the
 // by-label udev symlinks (EFI, then boot), then a blkid label scan. No
 // labeled device => error (the caller skips the node + events).

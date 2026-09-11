@@ -62,7 +62,10 @@ func (f *Feature) Run(ctx context.Context) {
 	for v, entry := range plans {
 		f.managePlan(ctx, v, entry, plans, views, now)
 	}
-	f.nonPlanVerify(ctx, views, plans)
+	// M3 per-node verification (PLAN.md §3.4): always on, plan or not.
+	// (The M2 non-plan reset is abolished with it: mismatch is an
+	// alarm + operator action, never an automatic reset.)
+	f.verifyNodes(views)
 	f.clearSettled(ctx, views)
 }
 
