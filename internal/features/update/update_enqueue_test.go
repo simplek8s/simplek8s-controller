@@ -158,15 +158,28 @@ func TestEnqueuePinAheadThenStage(t *testing.T) {
 }
 
 func TestSuccessiveUpdateRearmsAndEnqueues(t *testing.T) {
-	// W5 core: completed(A) + pin to staged B -> re-arm clears completed,
-	// then the node enqueues for B.
+	// W5 core: completed(A) with DEFAULT already at A, then an operator
+	// pin to staged B is the change that re-arms -> the node enqueues
+	// for B.
 	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{
-			"simplek8s.org/next-kernel": "202608291203",
+			"simplek8s.org/next-kernel": "202601010000",
 			nodestate.AnnState:          nodestate.StateValue(nodestate.Completed, time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)),
 		},
 		[]string{"202601010000", "202608291203"})
+	h.store.defGoal = "202601010000" // hardware truth: DEFAULT==A already
 	setFullWindows(h, `["@every 2m"]`, `["@every 2m"]`)
+	h.tick() // pod start rediscovers A: no-op observation, no re-arm
+	if got := stateOf(h); got != "completed" {
+		t.Fatalf("state = %q, want completed (no re-arm without a transition)", got)
+	}
+	// Operator pins staged B: change + re-point transition -> re-arm.
+	// (SetNode replaces the node object: re-apply the node info it drops.)
+	h.fake.SetNode("w1", map[string]string{
+		"simplek8s.org/next-kernel": "202608291203",
+		nodestate.AnnState:          nodestate.StateValue(nodestate.Completed, time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)),
+	}, false, nil, "uid-w1")
+	h.fake.SetNodeInfo("w1", "6.18.48-simplek8s-202601010000 (amd64)", "amd64")
 	h.tick()
 	if got := stateOf(h); got != "requested" {
 		t.Fatalf("state = %q, want requested (re-armed, then enqueued)", got)
@@ -174,6 +187,34 @@ func TestSuccessiveUpdateRearmsAndEnqueues(t *testing.T) {
 	by, _ := requestBy(h)
 	if by != "controller" {
 		t.Fatalf("request by = %q, want controller", by)
+	}
+}
+
+// TestRestartNeverRearmsMismatch: a pod restart (fresh memory) that
+// rediscovers the applied goal must NOT re-arm a completed mismatch
+// resting state — otherwise every restart auto-retries broken versions
+// (decision 34 regression test).
+func TestRestartNeverRearmsMismatch(t *testing.T) {
+	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{
+			"simplek8s.org/next-kernel": "202608291203",
+			nodestate.AnnState:          nodestate.StateValue(nodestate.Completed, time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)),
+		},
+		[]string{"202601010000", "202608291203"})
+	h.store.defGoal = "202608291203" // DEFAULT already at the goal
+	setFullWindows(h, `["@every 2m"]`, `["@every 2m"]`)
+	h.tick()
+	if got := stateOf(h); got != "completed" {
+		t.Fatalf("state = %q, want completed", got)
+	}
+	// Simulate a pod restart: fresh change memory, same annotations+disk.
+	h.f.mu.Lock()
+	h.f.goalKnown = false
+	h.f.lastGoal = ""
+	h.f.mu.Unlock()
+	h.tick()
+	if got := stateOf(h); got != "completed" {
+		t.Fatalf("state = %q after restart, want completed (no re-arm, no enqueue)", got)
 	}
 }
 

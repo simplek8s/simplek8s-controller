@@ -31,8 +31,9 @@ type BootStore interface {
 	// boot partition and ensures the bootloader DEFAULT points at it —
 	// mount, compare, re-point if needed, sync, unmount — in one
 	// session (PLAN.md §3.4 ordering invariant, §3.7). ErrGoalAbsent
-	// (nothing written) when the file is missing.
-	EnsureBootGoal(ctx context.Context, version, arch string) error
+	// (nothing written) when the file is missing. It reports whether
+	// it re-pointed: re-arm rides transitions only (decision 34).
+	EnsureBootGoal(ctx context.Context, version, arch string) (repointed bool, err error)
 }
 
 // ErrGoalAbsent: the goal kernel file is not on the boot partition.

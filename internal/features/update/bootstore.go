@@ -151,31 +151,31 @@ func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
 // the bootloader DEFAULT points at it, in one mounted session
 // (PLAN.md §3.4 ordering invariant, §3.7). A matching DEFAULT is a
 // no-op (compare only, still a mount). O_SYNC writers make the
-// re-point durable before return.
-func (s *PhysicalStore) EnsureBootGoal(ctx context.Context, version, arch string) error {
+// re-point durable before return. It reports whether it re-pointed.
+func (s *PhysicalStore) EnsureBootGoal(ctx context.Context, version, arch string) (bool, error) {
 	dev, err := s.findBootDevice(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	mnt, cleanup, err := s.mountDevice(dev)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer cleanup()
 	stored := kernelStoredName(version, arch)
 	if !fileExists(filepath.Join(mnt, s.kernelDir, stored)) {
-		return ErrGoalAbsent
+		return false, ErrGoalAbsent
 	}
 	want := "/" + filepath.Join(s.kernelDir, stored)
 	if cur := GetBootloaderDefault(BootloaderAuto, mnt); cur == want {
 		s.log.Debug("update: bootloader default already at goal", "version", version)
-		return nil
+		return false, nil
 	}
 	if err := SetBootloaderDefault(BootloaderAuto, mnt, want, "/"); err != nil {
-		return fmt.Errorf("re-point default at %s: %w", version, err)
+		return false, fmt.Errorf("re-point default at %s: %w", version, err)
 	}
 	s.log.Info("update: bootloader default re-pointed", "version", version)
-	return nil
+	return true, nil
 }
 
 // findBootDevice locates the boot device over the host /dev: first the

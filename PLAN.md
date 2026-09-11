@@ -40,7 +40,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 |---|---|---|
 | M1 | Node reboots (state machine, drain, orchestrator, API) | Shipped; E2E 28/28 PASS (§7.2) |
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
-| M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Approved/frozen (v4 + review fixes + Vixie, 33 decisions) — pending implementation, phases §6.3 |
+| M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Approved/frozen (v4 + review fixes + Vixie + D34, 34 decisions) — pending implementation, phases §6.3 |
 
 ### 1.2 Shipped baseline
 
@@ -448,8 +448,9 @@ durable write (sync) + unmount, (5) **only then** the M1-state RMW
 it enables. Staging: the re-arm happens after the session's bootloader
 write, inside the same mounted session's success path. A crash between
 (4) and (5) is closed at pod start: the pod-start reconciliation (§3.7)
-re-points if needed and the re-arm re-runs — both are
-precondition-checked and idempotent.
+re-points if needed (compare); the re-arm re-runs only if the re-point
+changed `DEFAULT` or the goal value changed — a no-op observation never
+re-arms (decision 34) — both are precondition-checked and idempotent.
 
 **Per-node verification (leader, replaces plan verification).** Every
 cycle, for each node with a well-formed `next-kernel`. **Always on** — purely
@@ -1032,6 +1033,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 31 | **Enqueue is pod-side** — the local pod writes `reboot-state := requested` for its own node when it is reboot-eligible (all five rules, including goal-file locally present) and `reboots.windows` is open; the leader runs no eligibility scan (supersedes the v3 leader-scan design) | File presence on the boot partition is observable only by the local pod; a leader-side scan could enqueue a node whose goal file is absent (an operator pin ahead of staging, or a `DELETE`-deferral on a not-yet-staged pin) — one wasted drain + reboot into the old `DEFAULT`, a spurious `UpdateMismatch`, then convergence. Pod-side, verify-file → re-point → enqueue is one ordered code path (the ordering invariant, §3.4): the cross-actor race cannot exist. One conditional RMW per node needs no centralization; M1's serialization stays in the leader's orchestrator at admission. The presence check at enqueue time also covers manual deletion of the goal file: the node waits until the defensive re-staging or a goal correction makes it present again (§3.10). |
 | 32 | Vixie cron (FreeBSD `crontab(5)`) is the normative syntax reference, superseding the K8s CronJob docs (decision 2) | The K8s docs describe a subset without pinning names, steps, or dom/dow OR semantics; the FreeBSD man page is the complete Vixie text (names, lists+ranges mixing, steps, dom/dow OR, 0/7 Sunday) — one stable external reference instead of folklore; `?`-rejection is principled (not Vixie), not a divergence. |
 | 33 | `@<seconds>` accepted as an alias for `@every <N>s`; `@reboot` stays rejected | The numeric form is the last Vixie schedule form without a mapping; the clock-anchored alias is exact for window openness (only occurrence timestamps matter). `@reboot` has no occurrence set at all and cannot be mapped onto stateless evaluation. |
+| 34 | Re-arm rides transitions only: a goal-value change observed in-lifetime, a staging-completes event, or a goal correction install a new goal and may re-arm; a no-op observation (pod start rediscovering the applied goal with `DEFAULT` already correct) never re-arms | A completed mismatch resting state must survive pod restarts — otherwise every restart auto-retries broken versions, voiding the no-retry guarantee (found live in the W13 campaign: a pod restart cleared `completed` → re-enqueue → reboot into the broken kernel again). Residual: a crash between the bootloader write and the state RMW, followed by a restart before any new trigger, leaves `completed` stuck; the operator `DELETE` (→ absent → eligible) is the escape. |
 
 ## 5. Behavior changes & migration
 

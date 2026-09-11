@@ -55,7 +55,7 @@ func (f *Feature) maybeEnqueue(ctx context.Context, node *kube.Node, fc config.C
 	f.noteHeld(name, false)
 
 	goal := ui.NextKernel
-	if err := f.cfg.Store.EnsureBootGoal(ctx, goal, arch); err != nil {
+	if _, err := f.cfg.Store.EnsureBootGoal(ctx, goal, arch); err != nil {
 		if !errors.Is(err, ErrGoalAbsent) {
 			f.log.Warn("update: boot goal ensure failed; not enqueueing", "version", goal, "err", err)
 		}

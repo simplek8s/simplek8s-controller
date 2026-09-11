@@ -67,7 +67,11 @@ func (f *Feature) reconcileBootloader(ctx context.Context, node *kube.Node, boot
 		f.setGoalKnown(freshVal)
 		return false
 	}
-	if err := f.cfg.Store.EnsureBootGoal(ctx, freshVal, arch); err != nil {
+	// A genuine change (not a pod-start rediscovery): the goal moved
+	// since this pod last applied one.
+	changed := known && freshVal != last
+	repointed, err := f.cfg.Store.EnsureBootGoal(ctx, freshVal, arch)
+	if err != nil {
 		if errors.Is(err, ErrGoalAbsent) {
 			// Pin ahead of staging: the annotation leads, the
 			// file arrives later; staging completes it (§3.4).
@@ -78,9 +82,14 @@ func (f *Feature) reconcileBootloader(ctx context.Context, node *kube.Node, boot
 		return false
 	}
 	f.setGoalKnown(freshVal)
-	// Re-arm case 1: the goal changed to a well-formed present
-	// version — clear a previous attempt's completed state.
-	return f.rearmIfCompleted(ctx, name)
+	// Re-arm case 1 rides transitions only (decision 34): a goal
+	// change, or a re-point that changed DEFAULT. A no-op observation
+	// — pod start rediscovering the applied goal — never re-arms, so
+	// a completed mismatch resting state survives pod restarts.
+	if changed || repointed {
+		return f.rearmIfCompleted(ctx, name)
+	}
+	return false
 }
 
 func (f *Feature) setGoalKnown(v string) {
@@ -158,8 +167,9 @@ func (f *Feature) applySafeState(ctx context.Context, nodeName, badVal, running,
 		"next-kernel "+badVal+" unreachable; corrected to "+target, true)
 	f.log.Info("update: goal corrected to safe state", "node", nodeName, "was", badVal, "now", target)
 	// The corrected value is present by construction; re-point (own
-	// mount, same cycle) and re-arm per the normal rule.
-	if err := f.cfg.Store.EnsureBootGoal(ctx, target, arch); err != nil {
+	// mount, same cycle) and re-arm per the normal rule (the correction
+	// installs a new goal: a transition, so re-arm applies).
+	if _, err := f.cfg.Store.EnsureBootGoal(ctx, target, arch); err != nil {
 		f.log.Warn("update: re-point after correction failed; retrying next cycle", "node", nodeName, "err", err)
 		return true // annotation already corrected; reconcile retries the re-point
 	}

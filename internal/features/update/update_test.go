@@ -547,18 +547,21 @@ func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
 }
 
 // EnsureBootGoal records the goal as the fake DEFAULT when the version
-// is present, or ErrGoalAbsent (nothing written) when it is not.
-func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) error {
+// is present, or ErrGoalAbsent (nothing written) when it is not. It
+// reports whether DEFAULT changed (the transition signal of decision
+// 34).
+func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensures = append(s.ensures, version)
 	for _, v := range s.vers {
 		if v == version {
+			changed := s.defGoal != version
 			s.defGoal = version
-			return nil
+			return changed, nil
 		}
 	}
-	return ErrGoalAbsent
+	return false, ErrGoalAbsent
 }
 
 func (s *fakeStore) ensureCalls() []string {
