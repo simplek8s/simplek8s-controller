@@ -60,8 +60,9 @@ it changes *which files* each node considers its own.
 //  1. operator override annotation (if present and valid);
 //  2. inferred from staged filenames on the boot partition
 //     (first arch seen in versionFromStoredKernel matches);
-//  3. CLOSED (D2, 2026-09-11): fail closed — empty or unreadable
-//     partition means no updates + visible Warn (existing paths).
+//  3. CLOSED (D2, 2026-09-11, refined): identify the EXPECTED boot
+//     partition among confusing candidates (§3.7); no candidate
+//     verifying ⇒ fail closed, touch nothing.
 ```
 
 - x86-64 nodes: `MapArch` as today (`x86-64`) — no behavior change;
@@ -110,7 +111,37 @@ purge a stray `x86-64` file, and vice versa):
   hmm — name TBD in review; values from the flavor set; invalid →
   ignored with a Warning event (same discipline as `update-url`).
 
-### 3.6 Legacy `arm64` lineage + out-of-flavor pins
+### 3.6 Boot device identification and verification (D2)
+
+`findBootDevice` today stops at the first `EFI`/`boot` filesystem
+label — a stray USB stick, a second disk's ESP, or a reused `boot`
+label elsewhere would be mounted, and on a write path,
+written. Other partitions CAN be confused with ours, so discovery
+becomes enumerate-then-verify:
+
+1. **Enumerate all candidates**: `PARTLABEL=boot` first (the distro
+   convention per AGENTS.md; GPT only — absent on MBR layouts like
+   the rpi nodes), then filesystem labels `EFI`/`boot` via by-label
+   symlinks and the `blkid` export scan (current sources, kept).
+2. **Verify each candidate** (mount, read-only check): it must
+   contain the `simplek8s/` directory AND a bootloader config
+   (`syslinux/syslinux.cfg` or `config.txt`). First verifying
+   candidate wins; a second one Warns loudly (pathological —
+   operator-owned ambiguity, first wins deterministically).
+3. **No verifying candidate ⇒ fail closed**: Warn + no updates, no
+   mounts left behind, nothing written anywhere. A genuinely fresh
+   (formatted-but-empty) partition heals with one manual `mkdir
+   simplek8s` — then it verifies.
+4. **Cache the verified device per pod lifetime** (topology does not
+   change under a running pod): re-resolve from scratch on any
+   mount/verify failure. Bounds the multi-candidate cost (scans run
+   per occurrence, not per mount storm) and survives device renames.
+
+Note the layering: this answers "is this OUR partition" before any
+flavor logic runs. An empty partition fails verification (no dir),
+which subsumes the old empty-case rule.
+
+### 3.7 Legacy `arm64` lineage + out-of-flavor pins
 
 `arm64` is a first-class flavor (legacy nodes keep working within
 their old artifacts), with no live E2E (no such hardware here).
@@ -135,7 +166,7 @@ Two rules for the lineage end:
 | # | Decision | Rationale / status |
 |---|---|---|
 | 1 | Flavor set `{x86-64, arm64, rpi4, rpi5}`; `aarch64` dropped (repo has none) | Match reality, not Debian naming. `MapArch` keeps existing for node-arch mapping; flavor is separate. |
-| 2 | Empty/unreadable partition ⇒ fail closed (CLOSED 2026-09-11) | No safe arm64 default exists; the case never occurs in practice; current skip+Warn paths already implement it — no new code. |
+| 2 | Identify the expected boot partition; fail closed on ambiguity (CLOSED 2026-09-11, refined) | Other `EFI`/`boot`-labeled partitions can confuse first-match discovery and would be mounted (then written). Enumerate all candidates (`PARTLABEL=boot` preferred, then fs labels), verify contents (`simplek8s/` + bootloader config), first-verifying wins, none ⇒ touch nothing. Device cached per pod lifetime, re-resolved on failure. |
 | 3 | Override annotation: `simplek8s.org/board-flavor` (proposed name) | Consistent with the `update-url` override precedent; invalid values ignored loudly. Doubles as the manual board-migration tool (§3.6). Name open in review; necessity follows from D7. |
 | 7 | Out-of-flavor pins skip + `UpdateStagingSkipped`, never W12-correct | A ts existing under other flavors is evidence the operator means migration, not a typo. Correcting it away would destroy intent; skipping loudly preserves it and points at the override. |
 | 4 | Purge/prune/defensive scoped to own flavor | Cross-flavor deletion would be data loss by design (a stray foreign file is the operator's, like any foreign entry). |
@@ -156,6 +187,7 @@ Two rules for the lineage end:
 | Module | Change |
 |---|---|
 | `internal/features/update` (`versions.go`) | flavor type + `ResolveFlavor` (+ override parse); `MapArch` kept. |
+| `internal/features/update` (`bootstore.go`) | `findBootDevice` rework per §3.6: PARTLABEL preference, blkid export already parsed, candidate enumeration, contents verification (`simplek8s/` + bootloader config), per-pod device cache with re-resolve on failure. |
 | `internal/features/update` (`check.go`) | filter index by flavor; `res.Arch` becomes the flavor. |
 | `internal/features/update` (`staging.go`, `purge.go`, `bootloader.go` prune) | flavor filter on `listKernels`; purge/prune/defensive own-flavor only. |
 | `internal/features/update` (`update.go`, `enqueue.go`, `reconcile.go`) | `MapArch` call sites take the resolved flavor (plumbing). |
@@ -164,6 +196,10 @@ Two rules for the lineage end:
 
 - Resolution: override valid/invalid/absent × partition with
   rpi4-only / mixed / empty / x86-64-only files.
+- Discovery: PARTLABEL preferred over fs label; first-verifying-wins
+  with a decoy `boot`-labeled layout (unit fixtures, temp dirs);
+  none-verifying ⇒ no mount left behind, no write attempted;
+  cached device reused, re-resolved after an injected mount failure.
 - Name construction per flavor (`stored`/`artifact`).
 - Check filtering: mixed-flavor index → only own flavor visible.
 - Out-of-flavor pin: ts present under other flavors → skip staging +
@@ -179,7 +215,7 @@ Two rules for the lineage end:
 
 | Phase | Content |
 |---|---|
-| 1 | Flavor plumbing + unit tests (no behavior change on x86-64; arm64 goes no-op → flavor-scoped). |
+| 1 | Flavor plumbing + device identification/verification + unit tests (no behavior change on x86-64 single-candidate layouts; arm64 goes no-op → flavor-scoped). |
 | 2 | Live on rpi4-node (rpi4): F1–F3 (§7); bootloader rpi proven. |
 | 3 | Live on rpi5-node (rpi5): F4 (§7) — needs drain approval. |
 
@@ -191,6 +227,7 @@ Two rules for the lineage end:
 | F2 | First rpi staging | `stage` + newer `rpi4` release in index (or pin an uncached `rpi4` ts) | staged `*.rpi4.efi` + `config.txt` `kernel=` re-pointed; **no reboot**; node untouched otherwise. First live exercise of the rpi writer. |
 | F3 | Full auto-update on rpi4 (W4-shaped) | `full` + windows open | enqueue → reboot → running the new `rpi4` kernel → `UpdateApplied`. |
 | F4 | rpi5 on rpi5-node (pending approval) | same as F2–F3 after a rpi5-node drain | same expectations on `rpi5` files. |
+| F5 | Decoy-label drill (deferred lab) | on a scratch/test VM (never PROD): extra disk carrying a decoy `boot`-labeled vfat without SimpleK8s contents | controller ignores the decoy (verification fails), uses the real partition; with NO valid partition anywhere → Warn + zero writes (provable via block-layer trace or mount audit). |
 
 ## 8. Deferred
 
