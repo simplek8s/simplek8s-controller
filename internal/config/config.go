@@ -29,7 +29,6 @@ type Config struct {
 	// updates
 	UpdateMode            string // "off" | "stage" | "full"
 	UpdateURL             string
-	UpdateCheckInterval   time.Duration
 	UpdatePreserve        int
 	UpdateMaxPercentUsage int
 	UpdateWindows         []cron.Schedule // empty = update work fully inert
@@ -52,7 +51,6 @@ func Defaults() Config {
 		RebootWindowGrace:     5 * time.Minute,
 		UpdateMode:            "off",
 		UpdateURL:             "https://dl.simplek8s.org/simplek8s/stable",
-		UpdateCheckInterval:   12 * time.Hour,
 		UpdatePreserve:        3,
 		UpdateMaxPercentUsage: 75,
 		UpdateWindows:         updateWindows,
@@ -129,12 +127,6 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 			case "updates.url":
 				if v, valid := parseURL(raw); valid {
 					out.UpdateURL = v
-				} else {
-					ok = false
-				}
-			case "updates.check-interval":
-				if v, valid := parseDuration(raw); valid {
-					out.UpdateCheckInterval = v
 				} else {
 					ok = false
 				}

@@ -3,6 +3,7 @@ package nodestate
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/kubetest"
@@ -137,5 +138,49 @@ func TestNextKernelPatchTransition(t *testing.T) {
 	}
 	if got := f.NodeAnnotation("n1", AnnNextKernel); got != "202601010000" {
 		t.Fatalf("next-kernel = %q", got)
+	}
+}
+
+func TestUpdateLastCheckBuild(t *testing.T) {
+	occ := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	node := func(anns map[string]string) *kube.Node {
+		n := &kube.Node{}
+		n.Metadata.Name = "w1"
+		n.Metadata.ResourceVersion = "1"
+		n.Metadata.Annotations = anns
+		return n
+	}
+	cases := []struct {
+		name  string
+		anns  map[string]string
+		claim bool
+	}{
+		{"absent", map[string]string{}, true},
+		{"older", map[string]string{AnnUpdateLastCheck: "2026-09-05T10:00:00Z"}, true},
+		{"unparseable", map[string]string{AnnUpdateLastCheck: "garbage"}, true},
+		{"equal", map[string]string{AnnUpdateLastCheck: "2026-09-05T12:00:00Z"}, false},
+		{"newer", map[string]string{AnnUpdateLastCheck: "2026-09-05T12:02:00Z"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patch, ok := UpdateLastCheckBuild(occ)(node(tc.anns))
+			if ok != tc.claim {
+				t.Fatalf("claim = %v, want %v", ok, tc.claim)
+			}
+			if ok {
+				anns, _ := patch["metadata"].(map[string]any)["annotations"].(map[string]any)
+				if anns[AnnUpdateLastCheck] != "2026-09-05T12:00:00Z" {
+					t.Fatalf("patch claims %v", anns[AnnUpdateLastCheck])
+				}
+			}
+		})
+	}
+	// ParseUpdate surfaces presence + raw value; parsing is the writer's job.
+	ui := ParseUpdate(map[string]string{AnnUpdateLastCheck: "2026-09-05T12:00:00Z"})
+	if !ui.LastCheckPresent || ui.LastCheck != "2026-09-05T12:00:00Z" {
+		t.Fatalf("LastCheck = %+v", ui)
+	}
+	if ui := ParseUpdate(map[string]string{}); ui.LastCheckPresent {
+		t.Fatal("absent claim must read as absent")
 	}
 }

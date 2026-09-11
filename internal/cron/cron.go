@@ -346,3 +346,21 @@ func WindowsOpen(specs []Schedule, grace time.Duration, now time.Time) bool {
 	}
 	return false
 }
+
+// NewestOccurrence returns the newest occurrence at or before now
+// across the schedules (schedules with coincident occurrences share
+// it; offset occurrences each count — PLAN.md §3.4). ok == false when
+// no schedule has any occurrence (e.g. only never-occurring ones).
+func NewestOccurrence(specs []Schedule, now time.Time) (occ time.Time, ok bool) {
+	now = now.UTC()
+	for _, s := range specs {
+		o, found := s.lastOccurrenceAtOrBefore(now)
+		if !found {
+			continue
+		}
+		if !ok || o.After(occ) {
+			occ, ok = o, true
+		}
+	}
+	return occ, ok
+}

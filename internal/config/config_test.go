@@ -29,9 +29,6 @@ func TestDefaults(t *testing.T) {
 	if d.UpdateURL != "https://dl.simplek8s.org/simplek8s/stable" {
 		t.Errorf("UpdateURL = %q", d.UpdateURL)
 	}
-	if d.UpdateCheckInterval != 12*time.Hour {
-		t.Errorf("UpdateCheckInterval = %v, want 12h", d.UpdateCheckInterval)
-	}
 	if d.UpdatePreserve != 3 {
 		t.Errorf("UpdatePreserve = %v, want 3", d.UpdatePreserve)
 	}
@@ -117,7 +114,6 @@ func TestParseAllValidKeys(t *testing.T) {
 		"reboots.reboot-issue-grace":     "90s",
 		"updates.update-mode":            "full",
 		"updates.url":                    "https://dl.example.org/simplek8s/dev",
-		"updates.check-interval":         "6h",
 		"updates.preserve":               "5",
 		"updates.max-percent-usage":      "90",
 	}
@@ -133,7 +129,6 @@ func TestParseAllValidKeys(t *testing.T) {
 	want.RebootIssueGrace = 90 * time.Second
 	want.UpdateMode = "full"
 	want.UpdateURL = "https://dl.example.org/simplek8s/dev"
-	want.UpdateCheckInterval = 6 * time.Hour
 	want.UpdatePreserve = 5
 	want.UpdateMaxPercentUsage = 90
 	if !reflect.DeepEqual(got, want) {
@@ -168,7 +163,7 @@ func TestParseInvalidKeepsLastValidAndWarns(t *testing.T) {
 		"reboots.reboot-issue-grace":     "0s",
 		"updates.update-mode":            "half",
 		"updates.url":                    "ftp://nope.example",
-		"updates.check-interval":         "never",
+		"updates.check-interval":         "never", // retired: unknown key, still warns
 		"updates.preserve":               "0",
 		"updates.max-percent-usage":      "101",
 		"engine.engine-interval":         "",

@@ -272,3 +272,20 @@ func TestStringRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestNewestOccurrence(t *testing.T) {
+	a := mustParse(t, "@daily")     // 00:00
+	b := mustParse(t, "0 12 * * *") // 12:00
+	c := mustParse(t, "0 0 30 2 *") // never
+	at := utc(2026, 9, 11, 13, 0, 0)
+	got, ok := NewestOccurrence([]Schedule{a, b, c}, at)
+	if !ok || !got.Equal(utc(2026, 9, 11, 12, 0, 0)) {
+		t.Errorf("NewestOccurrence = %v, %v; want 12:00", got, ok)
+	}
+	if _, ok := NewestOccurrence(nil, at); ok {
+		t.Error("no schedules: want ok == false")
+	}
+	if _, ok := NewestOccurrence([]Schedule{c}, at); ok {
+		t.Error("never-occurring only: want ok == false")
+	}
+}

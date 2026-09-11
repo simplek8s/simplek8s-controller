@@ -58,9 +58,9 @@ design in git (`PLAN-M1.md`).
 **Updates (M2).** The same pod can check a signed release repo
 (GPG + sha256 verification), stage a new kernel on the boot
 partition, and — in `full` mode — reboot the node into it.
-`updates.update-mode` = `off|stage|full`; the annotations are
-`next-kernel` (target) and `update-last-check` (per-node check
-bookkeeping). The leader-side plan layer (per-version all-or-nothing
+`updates.update-mode` = `off|stage|full`; the annotation is
+`next-kernel` (target) — per-node check throttling was in-memory
+(`update-last-check` is new in M3, §3.4). The leader-side plan layer (per-version all-or-nothing
 plans, plan ConfigMap) is **abolished** by the active plan (§3.4).
 Full design in git (`PLAN-M2.md`).
 
@@ -124,10 +124,8 @@ bounded and consistent over time.
   values; unknown keys warned.
 - **UTC always.** No timezone key (same rule as M2 §2).
 - **KISS.** No window ranges/`end` fields, no weekday aliases, no
-  maximum-duration guards, no new API endpoints. One repurposed node
-  annotation (`update-last-check` — shipped in M2, now the occurrence
-  claim, §3.4; a pre-M3 timestamp value is unparseable as an occurrence
-  and therefore treated as absent until overwritten) — and the M2
+  maximum-duration guards, no new API endpoints. One new node
+  annotation (`update-last-check`, the occurrence claim, §3.4) — and the M2
   `reboot-eligible` annotation is **abolished** (eligibility is
   derived, §3.4).
 - **M1 invariants untouched.** The window is one more gate on *start*.
@@ -1078,7 +1076,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
   the M1 state (§3.4). The BUG 12 class (plan state vs M1 state
   disagreement) disappears with the plan object.
 - Check-claim annotation `simplek8s.org/update-last-check` (D21;
-  shipped in M2, repurposed — §2): newest checked occurrence (RFC3339
+  new in M3): newest checked occurrence (RFC3339
   UTC), written once per occurrence by the local pod and never cleared
   — a stale value only ever delays a check (a missed occurrence is
   skipped until the next one, §3.4).

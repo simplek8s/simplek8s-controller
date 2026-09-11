@@ -9,14 +9,16 @@ package nodestate
 
 import (
 	"regexp"
+	"time"
 
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 )
 
 const (
-	AnnNextKernel     = "simplek8s.org/next-kernel"
-	AnnUpdateURL      = "simplek8s.org/update-url"
-	AnnRebootEligible = "simplek8s.org/reboot-eligible"
+	AnnNextKernel      = "simplek8s.org/next-kernel"
+	AnnUpdateURL       = "simplek8s.org/update-url"
+	AnnRebootEligible  = "simplek8s.org/reboot-eligible"
+	AnnUpdateLastCheck = "simplek8s.org/update-last-check"
 )
 
 // versionRe validates a next-kernel value: a release timestamp (digits).
@@ -31,6 +33,12 @@ type UpdateInfo struct {
 	RebootEligiblePresent  bool
 	RebootEligible         string // "" when absent
 	RebootEligibleParseErr string // non-empty when present but not a valid version
+	// LastCheck is the raw newest-checked-occurrence value
+	// (RFC3339 UTC occurrence start, PLAN.md §3.4); LastCheckPresent
+	// reports mere presence — parsing is the writer's job, and an
+	// unparseable value reads as absent.
+	LastCheckPresent bool
+	LastCheck        string // "" when absent
 }
 
 // ParseUpdate decodes the update annotations tolerantly (a corrupt value
@@ -45,6 +53,10 @@ func ParseUpdate(annotations map[string]string) *UpdateInfo {
 		}
 	}
 	ui.UpdateURL = annotations[AnnUpdateURL]
+	if raw, ok := annotations[AnnUpdateLastCheck]; ok {
+		ui.LastCheckPresent = true
+		ui.LastCheck = raw
+	}
 	if raw, ok := annotations[AnnRebootEligible]; ok {
 		ui.RebootEligiblePresent = true
 		ui.RebootEligible = raw
@@ -124,6 +136,28 @@ func ClearRebootEligibleBuild(running string) BuildFunc {
 			return nil, false
 		}
 		return ClearRebootEligiblePatch(node.Metadata.ResourceVersion), true
+	}
+}
+
+// UpdateLastCheckPatch is the merge-patch section claiming occurrence
+// occ (RFC3339 UTC) as checked.
+func UpdateLastCheckPatch(rv, occ string) map[string]any {
+	return annotationsPatch(rv, map[string]any{AnnUpdateLastCheck: occ})
+}
+
+// UpdateLastCheckBuild returns a BuildFunc that claims occ only when
+// the FRESH stored value is absent, unparseable, or older than occ
+// (the per-occurrence claim, PLAN.md §3.4 decision 21: a concurrent
+// claim for occ or newer wins, never clobbered).
+func UpdateLastCheckBuild(occ time.Time) BuildFunc {
+	occStr := occ.UTC().Format(time.RFC3339)
+	return func(node *kube.Node) (map[string]any, bool) {
+		if raw, ok := node.Metadata.Annotations[AnnUpdateLastCheck]; ok {
+			if t, err := time.Parse(time.RFC3339, raw); err == nil && !t.Before(occ) {
+				return nil, false
+			}
+		}
+		return UpdateLastCheckPatch(node.Metadata.ResourceVersion, occStr), true
 	}
 }
 

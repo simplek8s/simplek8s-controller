@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/simplek8s/simplek8s-controller/internal/config"
+	"github.com/simplek8s/simplek8s-controller/internal/cron"
 	"github.com/simplek8s/simplek8s-controller/internal/engine"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
@@ -62,10 +63,10 @@ type Feature struct {
 	log   *slog.Logger
 	http  *http.Client
 
-	mu        sync.Mutex
-	lastCheck map[string]time.Time // node -> last check attempt
-	notified  map[string]bool      // rate-limited event flags
-	availSeen map[string]bool      // versions for which UpdateAvailable fired
+	mu         sync.Mutex
+	notified   map[string]bool // rate-limited event flags
+	availSeen  map[string]bool // versions for which UpdateAvailable fired
+	skipLogged bool            // master-switch skip already logged at Info (edge-triggered rate limit)
 }
 
 // New builds the feature and registers its local task with the engine.
@@ -98,7 +99,6 @@ func New(e *engine.Engine, cfg Config) *Feature {
 		cfg:       cfg,
 		log:       cfg.Log,
 		http:      cfg.HTTPClient,
-		lastCheck: map[string]time.Time{},
 		notified:  map[string]bool{},
 		availSeen: map[string]bool{},
 	}
@@ -122,15 +122,30 @@ func (f *Feature) RunLocal(ctx context.Context) {
 		return
 	}
 
-	// Heavy local work (boot-partition mount) is throttled to the check
-	// interval; a failed/skipped run retries on the next interval.
-	f.mu.Lock()
-	last, checked := f.lastCheck[f.cfg.NodeName]
-	due := !checked || f.cfg.Now().Sub(last) >= fc.UpdateCheckInterval
-	f.mu.Unlock()
-	if !due {
+	// Master switch (PLAN.md §3.4): update work runs only while a
+	// window is open. Closed (or empty) windows skip the cycle with no
+	// HTTP fetch and no partition mount.
+	now := f.cfg.Now()
+	if !cron.WindowsOpen(fc.UpdateWindows, fc.UpdateWindowGrace, now) {
+		f.logWindowSkip()
 		return
 	}
+
+	// One check per occurrence (PLAN.md §3.4, decision 21): the newest
+	// occurrence at or before now, claimed with a conditional RMW
+	// BEFORE fetching so pod restarts never re-fetch a claimed
+	// occurrence. The claim persists in the update-last-check
+	// annotation; an unparseable stored value reads as absent.
+	occ, ok := cron.NewestOccurrence(fc.UpdateWindows, now)
+	if !ok {
+		return
+	}
+	if !f.claimCheck(ctx, node, occ) {
+		return
+	}
+	f.mu.Lock()
+	f.skipLogged = false
+	f.mu.Unlock()
 
 	// The check runs first: staging needs the verified index (checksums).
 	res, err := f.doCheck(ctx, node, fc)
@@ -138,6 +153,39 @@ func (f *Feature) RunLocal(ctx context.Context) {
 		return // check failure: no state change (event already fired)
 	}
 	f.maybeStage(ctx, node, fc, res)
+}
+
+// logWindowSkip logs a skipped cycle at Info on the closed edge and at
+// Debug afterwards (the PLAN.md §3.4 rate-limited log: no per-cycle
+// Info spam while a window stays closed for hours).
+func (f *Feature) logWindowSkip() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.skipLogged {
+		f.skipLogged = true
+		f.log.Info("update: window closed or empty; skipping check")
+		return
+	}
+	f.log.Debug("update: window closed or empty; skipping check")
+}
+
+// claimCheck claims occurrence occ for this node: it returns false
+// when the stored claim already covers occ (same occurrence, or a
+// concurrent claim won the race), true when this pod owns the check.
+func (f *Feature) claimCheck(ctx context.Context, node *kube.Node, occ time.Time) bool {
+	if raw, ok := node.Metadata.Annotations[nodestate.AnnUpdateLastCheck]; ok {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil && !t.Before(occ) {
+			return false
+		}
+	}
+	err := nodestate.PatchTransition(ctx, f.kube, node.Metadata.Name, 3, nodestate.UpdateLastCheckBuild(occ))
+	if err != nil {
+		if err != nodestate.ErrAbort {
+			f.log.Warn("update: check claim failed", "occurrence", occ.UTC().Format(time.RFC3339), "err", err)
+		}
+		return false
+	}
+	return true
 }
 
 // --- Bootstrap (PLAN-M2 3.5): annotation absent, local pod -----------
@@ -311,7 +359,6 @@ func (f *Feature) doCheck(ctx context.Context, node *kube.Node, fc config.Config
 	}
 	res, err := f.Check(ctx, node, repoURL)
 	f.mu.Lock()
-	f.lastCheck[f.cfg.NodeName] = f.cfg.Now()
 	failed := err != nil
 	if !failed {
 		if res.Available && !f.availSeen[res.Latest] {

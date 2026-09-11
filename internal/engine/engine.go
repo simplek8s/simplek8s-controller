@@ -185,7 +185,6 @@ func (e *Engine) loadConfig(ctx context.Context) {
 		e.cfg.Log.Info("feature config reloaded",
 			"update-mode", next.UpdateMode,
 			"update-url", next.UpdateURL,
-			"update-check-interval", next.UpdateCheckInterval.String(),
 			"engine-interval", next.EngineInterval.String())
 	}
 	key := strings.Join(warns, "|")
