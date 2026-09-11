@@ -86,57 +86,10 @@ func NextKernelBuild(version string, precond func(ui *UpdateInfo) bool) BuildFun
 	}
 }
 
-// NextKernelEligiblePatch is the merge-patch section setting next-kernel
-// AND reboot-eligible to version in one atomic patch (fresh full-mode
-// stage: the anchor and the plan trigger travel together, PLAN-M2 3.8).
-func NextKernelEligiblePatch(rv, version string) map[string]any {
-	return annotationsPatch(rv, map[string]any{
-		AnnNextKernel:     version,
-		AnnRebootEligible: version,
-	})
-}
-
-// NextKernelEligibleBuild returns a BuildFunc that anchors next-kernel to
-// version and sets reboot-eligible to version in the same conditional
-// patch, only when precond holds on the fresh node. Used by the local
-// pod on a fresh full-mode stage.
-func NextKernelEligibleBuild(version string, precond func(ui *UpdateInfo) bool) BuildFunc {
-	return func(node *kube.Node) (map[string]any, bool) {
-		if !precond(ParseUpdate(node.Metadata.Annotations)) {
-			return nil, false
-		}
-		return NextKernelEligiblePatch(node.Metadata.ResourceVersion, version), true
-	}
-}
-
 // ClearRebootEligiblePatch deletes the reboot-eligible annotation (the
 // leader's idempotent clear once a node is quiescent, PLAN-M2 3.8).
 func ClearRebootEligiblePatch(rv string) map[string]any {
 	return annotationsPatch(rv, map[string]any{AnnRebootEligible: nil})
-}
-
-// PrecondEligibleQuiescent: the reboot-eligible annotation is present and
-// the node is quiescent (next-kernel present and == running) — i.e. it
-// has settled onto its target and no longer needs the plan trigger.
-func PrecondEligibleQuiescent(running string) func(*UpdateInfo) bool {
-	return func(ui *UpdateInfo) bool {
-		return ui.RebootEligiblePresent &&
-			ui.NextKernelPresent && ui.NextKernelParseErr == "" &&
-			ui.NextKernel == running
-	}
-}
-
-// ClearRebootEligibleBuild returns a BuildFunc that deletes
-// reboot-eligible only when the node is quiescent on a fresh re-read
-// (the leader's idempotent clear; a node still pending its reboot —
-// next-kernel != running — is never cleared).
-func ClearRebootEligibleBuild(running string) BuildFunc {
-	return func(node *kube.Node) (map[string]any, bool) {
-		if !PrecondEligibleQuiescent(running)(ParseUpdate(node.Metadata.Annotations)) {
-			return nil, false
-		}
-		return ClearRebootEligiblePatch(node.Metadata.ResourceVersion), true
-	}
 }
 
 // UpdateLastCheckPatch is the merge-patch section claiming occurrence

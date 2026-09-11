@@ -458,6 +458,14 @@ func (c *Client) UpdateConfigMap(ctx context.Context, cm *ConfigMap) error {
 		nil, cm, nil, doOpts{})
 }
 
+// DeleteConfigMap deletes a namespaced ConfigMap. 404 (IsNotFound) means
+// it is already gone.
+func (c *Client) DeleteConfigMap(ctx context.Context, ns, name string) error {
+	return c.Do(ctx, http.MethodDelete,
+		"/api/v1/namespaces/"+ns+"/configmaps/"+name,
+		nil, nil, nil, doOpts{Retry429: true, MaxAttempts: 3})
+}
+
 // --- Events (PLAN 3.11) --------------------------------------------------
 
 // CreateEvent creates a v1 Event in the given namespace. Events for

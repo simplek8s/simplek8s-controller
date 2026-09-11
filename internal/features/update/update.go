@@ -55,8 +55,9 @@ type Config struct {
 	Store BootStore
 	// HTTPClient for release-repo fetches.
 	HTTPClient *http.Client
-	// PlanConfigMapNamespace/PlanConfigMapName is the leader-owned plan
-	// state ConfigMap (default "simplek8s-update-plans"; PLAN-M2 3.8/3.9).
+	// PlanConfigMapNamespace/PlanConfigMapName locates a leftover
+	// M2 plan ConfigMap for the self-cleaning migration delete
+	// (PLAN.md §3.4 decision 15). Empty disables the cleanup.
 	PlanConfigMapNamespace string
 	PlanConfigMapName      string
 	Now                    func() time.Time
@@ -64,14 +65,14 @@ type Config struct {
 }
 
 // Feature is the distro-update feature: the per-node release check,
-// staging, and (M4) the leader-side all-or-nothing reboot plan.
+// staging, pod-side reboot enqueue, and leader-side per-node
+// verification (PLAN.md §3.4).
 type Feature struct {
-	kube  *kube.Client
-	leas  *engine.Leaser
-	plans *plansStore
-	cfg   Config
-	log   *slog.Logger
-	http  *http.Client
+	kube *kube.Client
+	leas *engine.Leaser
+	cfg  Config
+	log  *slog.Logger
+	http *http.Client
 
 	mu         sync.Mutex
 	notified   map[string]bool // rate-limited event flags
@@ -84,6 +85,14 @@ type Feature struct {
 	// nonQuiescent tracks nodes last seen non-quiescent (node -> goal)
 	// for the UpdateApplied transition edge (§3.4 verification).
 	nonQuiescent map[string]string
+	// wasLeader tracks the last locally observed leadership belief for
+	// the migration-cleanup acquisition edge (decision 15). Updated on
+	// every local cycle (leader or not); read on the leader path.
+	// plansCleaned remembers the done cleanup for the pod lifetime;
+	// startCleaned the pod-start one-shot.
+	wasLeader    bool
+	plansCleaned bool
+	startCleaned bool
 }
 
 // New builds the feature and registers its local task with the engine.
@@ -106,13 +115,9 @@ func New(e *engine.Engine, cfg Config) *Feature {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 5 * time.Minute}
 	}
-	if cfg.PlanConfigMapName == "" {
-		cfg.PlanConfigMapName = "simplek8s-update-plans"
-	}
 	f := &Feature{
 		kube:         e.Kube(),
 		leas:         e.Leaser(),
-		plans:        newPlansStore(e.Kube(), cfg.PlanConfigMapNamespace, cfg.PlanConfigMapName),
 		cfg:          cfg,
 		log:          cfg.Log,
 		http:         cfg.HTTPClient,
@@ -120,13 +125,23 @@ func New(e *engine.Engine, cfg Config) *Feature {
 		availSeen:    map[string]bool{},
 		nonQuiescent: map[string]string{},
 	}
-	e.Register(f)               // leader-only: the reboot plan (M4)
-	e.RegisterLocal(f.RunLocal) // every pod: check + stage (M2/M3)
+	e.Register(f)               // leader-only: per-node verification
+	e.RegisterLocal(f.RunLocal) // every pod: check + stage + enqueue
 	return f
 }
 
 // RunLocal implements engine.LocalFunc (every pod, own node).
 func (f *Feature) RunLocal(ctx context.Context) {
+	// Leadership belief for the migration-cleanup acquisition edge,
+	// plus the pod-start one-shot (decision 15, decision 26).
+	f.mu.Lock()
+	f.wasLeader = f.leas.Leader()
+	start := !f.startCleaned
+	f.startCleaned = true
+	f.mu.Unlock()
+	if start {
+		f.cleanLeftoverEligible(ctx)
+	}
 	node, err := f.kube.GetNode(ctx, f.cfg.NodeName)
 	if err != nil {
 		f.log.Debug("update: own node not found", "err", err)

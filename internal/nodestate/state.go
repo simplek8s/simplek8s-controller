@@ -302,34 +302,6 @@ func AdmissionPatch(rv string, since time.Time, reqID, by string, force bool) ma
 	})
 }
 
-// EnqueuePatch (update plan, PLAN-M2 3.8): set reboot-state to requested
-// WITHOUT a reboot-request (so M1 treats it as force=false, PDB-gated —
-// not forced) and clear exec and status atomically. The M1 orchestrator
-// then drains/reboots/confirms it like any queued reboot.
-func EnqueuePatch(rv string, since time.Time) map[string]any {
-	return annotationsPatch(rv, map[string]any{
-		AnnState:   StateValue(Requested, since),
-		AnnRequest: nil,
-		AnnExec:    nil,
-		AnnStatus:  nil,
-	})
-}
-
-// EnqueueBuild returns a BuildFunc that enqueues a node into the M1 reboot
-// queue (reboot-state := requested) only when the node is NOT already in
-// the reboot lifecycle on the fresh node (a node mid-drain/reboot or
-// already queued is never clobbered; a concurrent operator request is
-// re-evaluated, never overwritten).
-func EnqueueBuild(since time.Time) BuildFunc {
-	return func(node *kube.Node) (map[string]any, bool) {
-		st := Parse(node.Metadata.Annotations)
-		if st.InLifecycle() {
-			return nil, false
-		}
-		return EnqueuePatch(node.Metadata.ResourceVersion, since), true
-	}
-}
-
 // EnqueueControllerBuild (update pod, PLAN.md §3.4 decision 31):
 // reboot-state := requested with a controller-issued request
 // (requestedBy "controller", fresh id, force false — the same
@@ -366,27 +338,6 @@ func RearmBuild() BuildFunc {
 			return nil, false
 		}
 		if st.State.State != Completed {
-			return nil, false
-		}
-		return ClearPatch(node.Metadata.ResourceVersion, false), true
-	}
-}
-
-// ClearStaleRebootStateBuild (update plan, BUG 12): reset a node's stale
-// terminal M1 reboot state (completed or failed) back to the resting state —
-// all four reboot annotations cleared — at plan start. A stale completed or
-// failed would otherwise be read by the plan's first verify as "came up on
-// the wrong kernel" / "failed its reboot" and cancel the plan in the very
-// cycle it is created (before the plan enqueues the member). Only a present,
-// uncorrupt terminal state is cleared; a node that is absent (nothing to do),
-// queued (requested), or in flight (draining/rebooting/corrupt) is left alone.
-func ClearStaleRebootStateBuild() BuildFunc {
-	return func(node *kube.Node) (map[string]any, bool) {
-		st := Parse(node.Metadata.Annotations)
-		if st.State == nil || !st.State.Present || st.State.ParseError != "" {
-			return nil, false
-		}
-		if st.State.State != Completed && st.State.State != Failed {
 			return nil, false
 		}
 		return ClearPatch(node.Metadata.ResourceVersion, false), true

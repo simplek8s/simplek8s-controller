@@ -344,6 +344,19 @@ func (f *FakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.createConfigMap(w, r, path)
 	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.Contains(path, "/configmaps/") && r.Method == http.MethodPut:
 		f.updateConfigMap(w, r, path)
+	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.Contains(path, "/configmaps/") && r.Method == http.MethodDelete:
+		parts := strings.Split(strings.TrimPrefix(path, "api/v1/namespaces/"), "/")
+		if len(parts) == 3 && parts[1] == "configmaps" {
+			if _, ok := f.configmaps[parts[0]+"/"+parts[2]]; ok {
+				delete(f.configmaps, parts[0]+"/"+parts[2])
+				w.WriteHeader(200)
+				writeJSON(w, map[string]any{"status": "Success"})
+			} else {
+				httpError(w, 404, "NotFound", path)
+			}
+		} else {
+			httpError(w, 404, "NotFound", path)
+		}
 	case strings.HasPrefix(path, "api/v1/namespaces/") && strings.HasSuffix(path, "/events") && r.Method == http.MethodPost:
 		f.createEvent(w, r, path)
 	default:

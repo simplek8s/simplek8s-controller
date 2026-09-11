@@ -120,9 +120,9 @@ func main() {
 		EventNamespace: "default",
 		Features:       e.FeatureConfig,
 		Store:          update.NewPhysicalStore(update.PhysicalStoreConfig{Log: log}),
-		// Leader-owned plan state lives in the controller's own namespace
-		// (the standby reads it at takeover; human-inspectable),
-		// separate from the operator ConfigMap (PLAN-M2 3.8/3.9).
+		// Leftover M2 plan-state cleanup (PLAN.md §3.4 decision 15):
+		// the leader deletes a stale simplek8s-update-plans
+		// ConfigMap once per leadership acquisition.
 		PlanConfigMapNamespace: podNS,
 		PlanConfigMapName:      "simplek8s-update-plans",
 		Log:                    log,

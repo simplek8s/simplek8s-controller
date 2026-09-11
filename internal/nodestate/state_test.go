@@ -280,57 +280,6 @@ func TestPatchTransitionRetriesOn409(t *testing.T) {
 	}
 }
 
-// TestClearStaleRebootStateBuild: only a present, uncorrupt terminal state
-// (completed/failed) is reset to the resting state; an absent, queued, or
-// in-flight node is left alone (BUG 12).
-func TestClearStaleRebootStateBuild(t *testing.T) {
-	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
-	mk := func(anns map[string]string) *kubeNode {
-		n := &kubeNode{}
-		n.Metadata.Name = "n1"
-		n.Metadata.ResourceVersion = "7"
-		n.Metadata.Annotations = anns
-		return n
-	}
-	cases := []struct {
-		name   string
-		anns   map[string]string
-		wantOK bool
-	}{
-		{"absent", map[string]string{}, false},
-		{"completed", map[string]string{AnnState: StateValue(Completed, now)}, true},
-		{"failed", map[string]string{AnnState: StateValue(Failed, now)}, true},
-		{"requested", map[string]string{AnnState: StateValue(Requested, now)}, false},
-		{"draining", map[string]string{AnnState: StateValue(Draining, now)}, false},
-		{"rebooting", map[string]string{AnnState: StateValue(Rebooting, now)}, false},
-		{"corrupt", map[string]string{AnnState: "{not json"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			patch, ok := ClearStaleRebootStateBuild()(mk(tc.anns))
-			if ok != tc.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
-			}
-			if !ok {
-				return
-			}
-			md := patch["metadata"].(map[string]any)
-			if md["resourceVersion"] != "7" {
-				t.Fatalf("resourceVersion = %v, want 7", md["resourceVersion"])
-			}
-			ann := md["annotations"].(map[string]any)
-			for _, k := range []string{AnnState, AnnRequest, AnnExec, AnnStatus} {
-				if v, present := ann[k]; !present || v != nil {
-					t.Fatalf("%s not cleared to null: %v", k, v)
-				}
-			}
-			if _, hasSpec := patch["spec"]; hasSpec {
-				t.Fatalf("no uncordon: spec must be absent, got %v", patch["spec"])
-			}
-		})
-	}
-}
-
 func TestRearmBuild(t *testing.T) {
 	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 	mk := func(anns map[string]string) *kubeNode {

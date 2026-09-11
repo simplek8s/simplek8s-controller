@@ -1,10 +1,62 @@
 package update
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
+
+// pnode is one node's parsed view for the leader verification cycle.
+type pnode struct {
+	name    string
+	st      *nodestate.NodeState
+	ui      *nodestate.UpdateInfo
+	running string
+}
+
+// rebootState returns the node's clean reboot lifecycle state, or
+// ok=false when the state is absent or corrupt (callers treat that as
+// "not in a known state").
+func rebootState(st *nodestate.NodeState) (nodestate.State, bool) {
+	if st.State == nil || !st.State.Present || st.State.ParseError != "" {
+		return "", false
+	}
+	return st.State.State, true
+}
+
+// Run implements engine.OrchestratorTask (leader only, PLAN.md §3.4):
+// the self-cleaning migration delete plus the per-node verification.
+// No plan object remains (decision 11).
+func (f *Feature) Run(ctx context.Context) {
+	// Leadership-acquisition edge for the migration cleanup: consume
+	// it here; the local path refreshes the belief every cycle, so a
+	// genuine re-acquisition re-arms it (decision 15).
+	f.mu.Lock()
+	attempt := !f.plansCleaned && !f.wasLeader
+	if attempt {
+		f.wasLeader = true
+	}
+	f.mu.Unlock()
+	if attempt {
+		f.cleanLeftoverPlans(ctx)
+	}
+	nodes, err := f.kube.ListNodes(ctx)
+	if err != nil {
+		return
+	}
+	views := make(map[string]*pnode, len(nodes))
+	for i := range nodes {
+		n := &nodes[i]
+		views[n.Metadata.Name] = &pnode{
+			name:    n.Metadata.Name,
+			st:      nodestate.Parse(n.Metadata.Annotations),
+			ui:      nodestate.ParseUpdate(n.Metadata.Annotations),
+			running: RunningVersion(n.Status.NodeInfo.KernelVersion),
+		}
+	}
+	f.verifyNodes(views)
+}
 
 // verifyNodes is the leader-side per-node verification (PLAN.md §3.4,
 // replacing the plan verification). Every cycle, for each node with a
