@@ -114,11 +114,14 @@ typo never crashes the controller.
 | `reboots.on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
 | `reboots.reboot-drain-timeout` | `10m` | wall-clock cap on the drain phase |
 | `reboots.reboot-issue-grace` | `15m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
-| `updates.update-mode` | `off` | `off`: no release checks, staging or plans (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + orchestrated update plan (M4) |
+| `updates.update-mode` | `off` | `off`: no release checks or staging (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + window-gated automatic reboots (no plans — the local pod enqueues the node into the M1 queue while a window is open) |
 | `updates.url` | `https://dl.simplek8s.org/simplek8s/stable` | release repo (root of `SHA256SUMS` + `SHA256SUMS.gpg`). Overridable per node with the `simplek8s.org/update-url` annotation |
-| `updates.check-interval` | `12h` | how often each node re-checks its release repo |
-| `updates.preserve` | `3` | how many released versions to keep on the boot partition after a successful update (the running version is never purged) |
+| `updates.preserve` | `3` | how many released versions are immune to purge on the boot partition after a successful update (the running version is never purged; purge only runs under space pressure) |
 | `updates.max-percent-usage` | `75` | after an update, purge oldest versions until the boot partition usage is at or below this percentage |
+| `reboots.windows` | `[]` | cron-style maintenance windows gating **every** non-forced reboot (M1 API + update-driven). Empty = OFF (non-forced `POST` is rejected with 422). Example: `'["@daily"]'` |
+| `reboots.window-grace` | `5m` | how long a reboot window stays open after each schedule occurrence |
+| `updates.windows` | `'["@every 12h"]'` | windows gating the update *work* (checks, downloads, staging). Explicit `[]` turns updates fully off; absent means the 12h default. One check per window occurrence |
+| `updates.window-grace` | `5m` | how long an update window stays open after each schedule occurrence |
 
 Deployment wiring is not feature configuration and stays as a flag:
 `--listen` (default `:8080`, API bind address). The old feature flags
@@ -127,21 +130,34 @@ Deployment wiring is not feature configuration and stays as a flag:
 are gone; an old DaemonSet manifest still passing them fails at startup
 with `flag provided but not defined` (the intended migration signal).
 
-## Distro updates (M4/M5)
+## Distro updates
 
 The update feature stages new SimpleK8s releases on each node's boot
-partition and (in `full` mode) orchestrates an all-or-nothing cluster-wide
-reboot to bring them up. It is gated entirely by `updates.update-mode`:
+partition and (in `full` mode) reboots the node into them through the
+M1 queue — gated by maintenance windows. It is tuned by
+`updates.update-mode` and gated by `updates.windows` /
+`reboots.windows`:
 
-- **`off`** (default): inert. No release checks, downloads, staging, or
-  plans. A per-node `next-kernel` already set is still honored at boot.
+- **`off`** (default): inert. No release checks, downloads or staging.
+  A per-node `next-kernel` already set is still honored at boot, and
+  the bootloader reconciliation still re-points it.
 - **`stage`**: check + GPG/sha256-verified staging of the newest release +
   `next-kernel := V`. No automatic reboot — the operator reboots via the
   M1 API when ready.
-- **`full`**: staging **plus** the leader's reboot plan: a fresh stage
-  triggers a plan that admits the staged nodes to the M1 reboot queue,
-  verifies the result, and on any mismatch/failure cancels the plan and
-  two-phase-resets the members (the running version is always preserved).
+- **`full`**: staging **plus** automatic reboots: while a
+  `reboots.windows` window is open, each node's local pod enqueues it
+  into the M1 reboot queue (serialization, PDB and CP rules unchanged).
+  There is no plan object: pending state is derived from `next-kernel`
+  vs `running` + the M1 state, and verification is per node
+  (`UpdateApplied` / `UpdateMismatch`, no auto-retry).
+
+Windows are cron-style schedule lists (Vixie syntax, see PLAN.md §3.3)
+plus a grace period, evaluated against the UTC clock; only the *start*
+of work is gated, in-flight work always runs to completion. Defaults:
+`reboots.windows` empty (reboots opt-in — non-forced `POST` without a
+window is rejected), `updates.windows` one check per 12h. An explicit
+`updates.windows: '[]'` turns the update work fully off; `force`
+bypasses the reboot window like it bypasses PDB.
 
 ### Release source
 
@@ -149,30 +165,30 @@ The global repo is `updates.url` (root of `SHA256SUMS` +
 `SHA256SUMS.gpg`, GPG-verified). A node can override it with the
 `simplek8s.org/update-url` annotation. Every release file is verified
 against the signed index (sha256) before it is staged — an untrusted repo
-can never write to `/boot`.
+can never write to the boot partition.
 
 ### The two operator annotations
 
 | Annotation | Meaning |
 |---|---|
-| `simplek8s.org/next-kernel` | Per-node **boot intent**: the release version the node should boot. Always a version present in `/boot/simplek8s/`. Written by the updater (staging) and the leader (plan-cancel reset); the operator may also pin it. Never deleted. |
+| `simplek8s.org/next-kernel` | Per-node **boot intent**: the release version the node should boot. Always a version present in the boot partition's `simplek8s/` dir. Written by the updater (staging, safe-state correction) and the operator (pin/rollback). Deleted only when no local kernel remains (safe-state case). |
 | `simplek8s.org/update-url` | Per-node release repo override (takes precedence over `updates.url`). |
+| `simplek8s.org/update-last-check` | Newest checked window occurrence (RFC3339 UTC), written by the local pod before each check — at most one check per occurrence, crash-safe. Read-only for operators. |
 
-(The third, `simplek8s.org/reboot-eligible`, is internal: set by a fresh
-`full`-mode stage to hand the node to the leader's plan. Do not set it by
-hand.)
+(The M2 `simplek8s.org/reboot-eligible` marker is abolished: eligibility
+is derived, and any leftover is deleted by the pod at startup. Do not
+set either annotation but `next-kernel`/`update-url` by hand.)
 
-### Re-launching after a cancelled plan
+### Deferring and abandoning auto-reboots
 
-A plan cancel is not a failure of the release — it stops the coordinated
-reboot and resets members that had not yet come up on the new version. To
-proceed, re-point the boot intent and reboot through the M1 API (the
-updater does **not** auto-plan a version that is already in `/boot`):
-
-```sh
-kubectl annotate node <node> --overwrite simplek8s.org/next-kernel=<V>
-# then POST /api/v1/reboots for the node(s)
-```
+`DELETE /api/v1/reboots/<node>` cancels the **currently queued attempt**
+but does not suppress the automatic intent while the node stays eligible
+(non-quiescent, `full` mode): the node is re-enqueued at the next open
+`reboots.windows` (defer, not abandon). To abandon the intent, make the
+node quiescent — reboot it into the pinned version manually, or re-pin
+`next-kernel` to `running`. A `failed` node is an operator alarm and is
+never auto-enqueued; a `completed` node whose kernel did not take is
+never auto-retried (`UpdateMismatch` tells you).
 
 ### Rollback
 
@@ -203,18 +219,17 @@ custom repo. Absent Secret → the embedded keyring is used.
 
 Updates emit the same kinds of Node Events as reboots, in the `default`
 namespace: `UpdateAvailable`, `UpdateStaged`, `UpdateStagingSkipped`,
-`UpdatePlanStarted`, `UpdatePlanCanceled`, `UpdateNodeFailed`. The active
-plan (leader-owned) is inspectable in the ConfigMap:
+`UpdateApplied`, `UpdateMismatch`, `UpdateGoalCorrected`,
+`UpdateHeldWindow`, `QueueHeldWindow`. Inspect per node with:
 
 ```sh
-kubectl -n simplek8s get configmap simplek8s-update-plans -o yaml
 kubectl -n default get events --field-selector "involvedObject.name=<node>"
 ```
 
 > **UTC note**: all timestamps the feature uses — release versions
-> (`<ts>`), annotation `since` values, plan `startedAt` — are **UTC**
-> (RFC3339 `Z`). The distro's release tooling stamps UTC; do not compare
-> against local time.
+> (`<ts>`), annotation `since` values, `update-last-check` claims — are
+> **UTC** (RFC3339 `Z`). The distro's release tooling stamps UTC; do not
+> compare against local time.
 
 ## Scheduling reboots (API)
 

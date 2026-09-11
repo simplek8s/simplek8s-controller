@@ -22,7 +22,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1 | Purpose & status |
 > | 1.1 | This document (status per era) |
 > | 1.2 | Shipped baseline (M1 reboots, M2 updates) |
-> | 1.3 | Active plan (M3: windows, update reboot loop, boot-partition hygiene) |
+> | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 2 | Constraints |
 > | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 syslinux prune · 3.10 `next-kernel` validation · 3.11 multi-platform build |
 > | 4 | Decision log (per era; §4.3 active) — 4.1 M1 · 4.2 M2 · 4.3 M3 (numbers restart per era) |
@@ -40,7 +40,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 |---|---|---|
 | M1 | Node reboots (state machine, drain, orchestrator, API) | Shipped; E2E 28/28 PASS (§7.2) |
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
-| M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Approved/frozen (v4 + review fixes + Vixie + D34, 34 decisions) — pending implementation, phases §6.3 |
+| M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
 
 ### 1.2 Shipped baseline
 
@@ -64,7 +64,7 @@ partition, and — in `full` mode — reboot the node into it.
 plans, plan ConfigMap) is **abolished** by the active plan (§3.4).
 Full design in git (`PLAN-M2.md`).
 
-### 1.3 Active plan (was PLAN-M3)
+### 1.3 Shipped plan (was PLAN-M3)
 
 The third feature, built on the shipped M1 reboot machinery and the M2
 update engine. It closes five TODO items plus the build half of a sixth:
@@ -1214,6 +1214,9 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 
 ### 6.3 Phases
 
+Phases 1–5 complete 2026-09-11 (W1–W17 17/17 PASS, §7.4); phase 6
+(multi-arch build) pending — see TODO 13.
+
 | Phase | Content |
 |---|---|
 | 1 | `internal/cron` + the four window config keys + unit tests (no behavior change). |
@@ -1358,8 +1361,15 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 ### 7.3 Updates campaign
 
 Live validation of the distro-update feature on the real test cluster
-(cp1/wk1/wk2, x86-64). Order: cheap → disruptive. Conventions from
-§7.1 apply (`$API`, `$AUTH`, events in namespace `default`).
+(cp1/wk1/wk2, x86-64), run against the M2 plan layer. Order: cheap →
+disruptive. Conventions from §7.1 apply (`$API`, `$AUTH`, events in
+namespace `default`).
+
+> **Redrawn by M3.** The plan-layer cases below (U5/U6/U7: plan
+> create/cancel/verify) describe the abolished mechanism — they stand
+> as the historical record of the 2026-09-07/08 runs. The same
+> behaviors under windows live in §7.4 (W4/W5/W7); check cadence is one
+> check per window occurrence (no `check-interval`).
 
 #### Prerequisites
 
@@ -1387,8 +1397,8 @@ Live validation of the distro-update feature on the real test cluster
   cases below is shorthand for that dir. See M2 §3.7 (ground-truth
   layout; historical text in git).
 - **ConfigMap**: `updates.url` pointed at the PROD repo (`dev/`);
-  `updates.update-mode` set per case; `updates.check-interval` shortened
-  (e.g. `30s`) for the campaign and restored afterwards.
+  `updates.update-mode` set per case; `updates.windows` set per case
+  (e.g. `["@every 2m"]` for a fast campaign cadence).
 - **Reboots regression subset**: after the updates-era config
   migration (flags → ConfigMap), re-run §7.2 cases A1, B1, C1 before
   starting this campaign (proves the config migration caused no
@@ -1415,19 +1425,19 @@ Live validation of the distro-update feature on the real test cluster
 | # | Case | Trigger | Expect |
 |---|---|---|---|
 | U1 | full staging happy path | `updates.update-mode: stage`; the PROD repo has a newer version | every node: `UpdateAvailable` then `UpdateStaged`; `/boot/simplek8s/` contains the new version + bootloader entry; `next-kernel := V` on all nodes; bootloader default points at V; **nodes keep running the old version** (no reboots); purge respected: running version NOT deleted, old versions pruned per `preserve` |
-| U1b | idempotent re-check | wait for the next check interval | no re-download (V already in `/boot`), no annotation change, no plan — "V in /boot → nothing" rule |
+| U1b | idempotent re-check | wait for the next window occurrence | no re-download (V already in `/boot`), no annotation change, no plan — "V in /boot → nothing" rule |
 
 #### U2 — GPG rejection
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U2 | bad signature | a `SHA256SUMS.gpg` signed with an unknown/wrong key (tampered or non-PROD key) | no staging, no annotation change, `UpdateCheckError` event (rate-limited), nodes untouched, next check retries |
+| U2 | bad signature | a `SHA256SUMS.gpg` signed with an unknown/wrong key (tampered or non-PROD key) | no staging, no annotation change, `UpdateCheckError` event (rate-limited), nodes untouched, next occurrence retries |
 
 #### U3 — sha256 rejection
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U3 | corrupted payload | valid signature, but the served `.efi.zst` does not match the index hash | download rejected, **no partial file** left in `/boot/simplek8s/`, `UpdateCheckError` event, next check retries |
+| U3 | corrupted payload | valid signature, but the served `.efi.zst` does not match the index hash | download rejected, **no partial file** left in the boot-partition `simplek8s/` dir, `UpdateCheckError` event, next occurrence retries |
 
 #### U4 — per-node URL override
 
@@ -1439,19 +1449,19 @@ Live validation of the distro-update feature on the real test cluster
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U5 | full cluster update | `updates.update-mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `max-concurrent-reboots` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan-state ConfigMap entry cleared → cluster fully on the new version; no `failed` |
+| U5 | full cluster update | `updates.update-mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `max-concurrent-reboots` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan-state ConfigMap entry cleared → cluster fully on the new version; no `failed` (M2 plan mechanism — abolished by M3; the same outcome via windows is W4) |
 
 #### U6 — plan failure → all-or-nothing cancel
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U6 | drain timeout mid-plan | `full` mode with a new release; make one node's drain fail (stuck pod / PDB `maxUnavailable:0`) | that node `failed` (M1) → `UpdatePlanCanceled`; in-flight reboots (if any) complete; **two-phase reset**: non-in-flight members reset immediately to `next-kernel := running`; in-flight members settle when their M1 state lands — the failing node comes back on the old kernel (mismatch) → reset, any completed+verified node keeps V (`next-kernel == running == V`, no-op); bootloader defaults back to the old version where reset applied; the plan-state ConfigMap entry is cleared only when **all** members have settled; next check does **not** auto-retry (V in `/boot` → nothing) |
+| U6 | drain timeout mid-plan | `full` mode with a new release; make one node's drain fail (stuck pod / PDB `maxUnavailable:0`) | that node `failed` (M1) → `UpdatePlanCanceled`; in-flight reboots (if any) complete; **two-phase reset**: non-in-flight members reset immediately to `next-kernel := running`; in-flight members settle when their M1 state lands — the failing node comes back on the old kernel (mismatch) → reset, any completed+verified node keeps V (`next-kernel == running == V`, no-op); bootloader defaults back to the old version where reset applied; the plan-state ConfigMap entry is cleared only when **all** members have settled; next check does **not** auto-retry (V in the boot-partition dir → nothing) (M2 plan mechanism — abolished by M3; cancel/defer semantics now: W7) |
 
 #### U7 — operator re-launch
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| U7 | re-anchor + M1 reboot | after U6: set `next-kernel := V` on the cancelled nodes, then reboot them via the M1 API | bootloader followed the annotation before the reboot; nodes come back on V; `running == next-kernel` → quiescent; no update events (the updater did nothing — operator-driven) |
+| U7 | re-anchor + M1 reboot | after U6: set `next-kernel := V` on the cancelled nodes, then reboot them via the M1 API | bootloader followed the annotation before the reboot; nodes come back on V; `running == next-kernel` → quiescent; no update events (the updater did nothing — operator-driven) (M2; in M3 re-anchor + M1 reboot still applies — see §7.4) |
 
 #### U8 — rollback
 

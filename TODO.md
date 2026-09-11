@@ -1,16 +1,10 @@
 # TODO — deferred backlog
 
 Cross-cutting items deliberately left out of the current plans
-(the M1 reboots era shipped, the M2 updates era implemented, the M3 windows era in planning — all in PLAN.md). Each item
-is ready to be picked up as its own plan; nothing here is blocking.
-
-**Closed by the M3 plan** (the numbering is kept stable for
-cross-references, hence the gaps): items 1 (reboot maintenance
-windows), 6 (syslinux stale-entry cleanup), 8 (`next-kernel`
-validation & safe-state recovery), 9 (operator pin → bootloader
-re-point + `reboot-eligible`) and 11 (window-scheduled update
-reboots) are designed and carried by PLAN.md (§3). Item 12 (BUG 12) is
-closed with it — see its entry.
+(M1 reboots, M2 updates and M3 windows all shipped — see PLAN.md;
+items 1, 6, 8, 9, 11 and 12 were closed by M3 and left this file).
+Each item is ready to be picked up as its own plan; nothing here is
+blocking.
 
 ## 2. `simplek8s-update` CLI
 
@@ -71,18 +65,20 @@ without inspecting each node's annotations.
 ## 10. Leader-centralized update check + distribution
 
 Today the release check, download and staging are **per-node and
-autonomous**: every pod's `RunLocal` (`update/update.go:111`; cadence:
-M2's `updates.check-interval`, M3's one-check-per-window-occurrence)
-independently fetches the index, downloads the
-artifact, extracts and stages it. The leader only runs the plan logic
-(`update/plan.go`).
+autonomous**: every pod's `RunLocal` (`update/update.go`; cadence:
+one check per window occurrence, PLAN.md §3.4) independently fetches
+the index, downloads the artifact, extracts and stages it. The leader
+runs only the per-node verification (`update/verify.go`; no plan
+object since M3).
 
 Desired: the **leader** performs the check once; when an update exists the
 leader downloads it and **distributes it to the nodes** (channel + form to
 study — node-pull via annotation/API, an in-cluster push, or object
 storage) so each deploys it onto its own boot partition. A node, once it
 has validated its local copy, sets `next-kernel`; once validated, it marks
-itself reboot-eligible (as designed in PLAN.md §3.4). Study the
+itself reboot-eligible (eligibility is derived pod-side from
+`next-kernel` vs `running` + the M1 state, as designed in PLAN.md
+§3.4). Study the
 trade-offs: a single download
 at the leader vs N; the leader as a check-time SPOF; transfer reliability
 and resumability; and how this composes with the per-node `preserve`/purge
@@ -119,3 +115,24 @@ publish the image as a public multi-arch `v*` release:
   `v*` tags) — deliberately not in the M3 plan;
 - an arm64 test node for E2E (planned; one full auto-update on the
   aarch64 image when it is up).
+
+## 14. Boot failure fallback (syslinux)
+
+W13 (PLAN.md §7.4) proved the negative: a staged kernel that fails to
+boot has **no automatic fallback**. Syslinux drops to a `boot:` prompt
+and the node sits `rebooting` until an operator intervenes (recovered
+live via `virsh console` by typing a good `LABEL` name). The
+`completed`+mismatch verification and the no-auto-retry guarantee
+(D16/D30/D34) all held — only the return path was manual.
+
+Future work: automatic return to a bootable kernel after a failed
+boot. Syslinux offers no native on-failure fallback, so study the
+options first: a boot-attempt counter in a sidecar file on the boot
+partition (the writer owns the format; the controller resets it on a
+confirmed boot), UEFI `BootNext`/boot-order fallback where the
+firmware supports it, or keeping N known-good kernels plus the
+documented console recovery (no new mechanism). Constraints: `DEFAULT`
+is only ever pointed at a verified staged file (never weakened);
+whatever counts attempts must survive the crash it counts; the
+recovery must converge with the existing verification (no new
+`completed`-adjacent states if avoidable).
