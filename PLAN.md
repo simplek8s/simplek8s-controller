@@ -1239,7 +1239,8 @@ Live validation on a real cluster. Order: cheap → disruptive. The
 happy-path case is automated: `scripts/e2e-reboot.sh <node>` (env:
 `BASE_URL`, `TOKEN_FILE`, `KUBEARGS`, `TIMEOUT_S`).
 
-Conventions: `$API` = `http://127.0.0.1:1880` (or NodePort),
+Conventions: `$API` = `http://127.0.0.1:1880` via `kubectl
+port-forward` (no Service exists by design — never NodePort),
 `-H "Authorization: Bearer $TOKEN"` abbreviated as `-H $AUTH`.
 "Worker" = any non-CP node; keep the CP node for the last phases.
 

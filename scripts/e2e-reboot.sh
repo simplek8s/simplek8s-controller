@@ -6,9 +6,13 @@
 #   scripts/e2e-reboot.sh <node>
 #
 # Env:
-#   BASE_URL    API base. Default: auto-detected NodePort of any cluster
-#               node (robust: survives the reboot of the node hosting the
-#               pod you were port-forwarded to).
+#   BASE_URL    API base. Default: kubectl port-forward to a Ready
+#               controller pod on a node OTHER than the one being
+#               rebooted (re-resolved here if no forward is up; the
+#               forward survives the target's reboot by construction).
+#               No Service exists by design — operators reach the API
+#               the same way (port-forward with their own credentials).
+#   PF_PORT     local port for the port-forward (default 18080).
 #   TOKEN_FILE  file with the bearer token (default /tmp/opencode/api.token)
 #   KUBEARGS    extra kubectl args (e.g. "--context simplek8s")
 #   TIMEOUT_S   max wall time for the reboot (default 1800)
@@ -27,20 +31,29 @@ TOKEN="$(cat "$TOKEN_FILE")"
 AUTH="Authorization: Bearer $TOKEN"
 
 if [ -z "${BASE_URL:-}" ]; then
-  # Pick a healthy NodePort on a node that is NOT the one being rebooted
-  # (its NodePort is down while it reboots). Some clusters have CNI IP
-  # collisions that make specific nodes' NodePort flaky, so verify each
-  # candidate with /livez and take the first that answers 200.
-  NP="$("${KUBE[@]}" get svc simplek8s-controller -n simplek8s -o jsonpath='{.spec.ports[0].nodePort}')"
-  TARGET_IP="$("${KUBE[@]}" get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
-  for NIP in $("${KUBE[@]}" get node -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address} {end}'); do
-    [ "$NIP" = "$TARGET_IP" ] && continue
-    if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://${NIP}:${NP}/livez")" = 200 ]; then
-      BASE_URL="http://${NIP}:${NP}"
+  # Forward to a Running controller pod whose node is NOT the one being
+  # rebooted (its pod is down while it reboots); fall back to any
+  # Running pod. Dies with the script (trap on EXIT).
+  pick_pod() {
+    local pods entry
+    pods="$("${KUBE[@]}" get pods -n simplek8s -l app=simplek8s-controller -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName} {.status.phase}{"\n"}{end}' 2>/dev/null)"
+    entry="$(printf '%s\n' "$pods" | awk -v node="$NODE" '$3=="Running" && $2!=node {print $1; exit}')"
+    [ -z "$entry" ] && entry="$(printf '%s\n' "$pods" | awk '$3=="Running" {print $1; exit}')"
+    [ -n "$entry" ] && printf '%s' "$entry"
+  }
+  PF_PORT="${PF_PORT:-18080}"
+  POD="$(pick_pod)" && [ -n "$POD" ] || { echo "FATAL: no Running controller pod for port-forward"; exit 2; }
+  "${KUBE[@]}" port-forward -n simplek8s "$POD" "$PF_PORT:8080" >/dev/null 2>&1 &
+  PF_PID=$!
+  for _ in $(seq 1 30); do
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:${PF_PORT}/livez")" = 200 ]; then
+      BASE_URL="http://127.0.0.1:${PF_PORT}"
       break
     fi
+    sleep 1
   done
-  [ -n "${BASE_URL:-}" ] || { echo "FATAL: no healthy NodePort found"; exit 2; }
+  [ -n "${BASE_URL:-}" ] || { echo "FATAL: port-forward to $POD never answered"; exit 2; }
+  trap 'kill ${PF_PID:-} 2>/dev/null' EXIT
 fi
 
 pass=0; fail=0

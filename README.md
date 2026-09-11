@@ -256,12 +256,13 @@ kubectl -n default get events --field-selector "involvedObject.name=<node>"
 
 ## Scheduling reboots (API)
 
-Plain HTTP on the pod port (Service `simplek8s-controller` in namespace
-`simplek8s`). No TLS: reach it via port-forward or a trusted network;
-every mutating/reading endpoint (except `/livez`, `/readyz`) requires
-`Authorization: Bearer <token>`.
+Plain HTTP on the pod port. No Service exists by design and there is
+no TLS: reach it with `kubectl port-forward` (your own credentials,
+RBAC and audit apply), never exposed; every mutating/reading endpoint
+(except `/livez`, `/readyz`) requires `Authorization: Bearer <token>`.
 
 ```sh
+kubectl port-forward -n simplek8s daemonset/simplek8s-controller 1880:8080 &
 # schedule reboots for specific nodes (or all nodes with "*")
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \

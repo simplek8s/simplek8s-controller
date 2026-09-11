@@ -55,6 +55,10 @@ git history (`git show <commit>:PLAN-M2.md`).
 - Update ConfigMap: `simplek8s/simplek8s-controller` — keys
   `updates.update-mode` (`off`|`stage`|`full`), `updates.check-interval`,
   `updates.url`, `updates.preserve`, `updates.max-percent-usage`.
+- Controller API: no Service exists by design — reach it with
+  `kubectl port-forward -n simplek8s daemonset/simplek8s-controller
+  1880:8080` (never NodePort); bearer token from the
+  `simplek8s-api-token` Secret.
 - Release repo (**PROD, not a mock**):
   `https://dl.simplek8s.org/simplek8s/dev/` (latest dev releases) and
   `https://dl.simplek8s.org/simplek8s/stable` (also PROD, same keyring,
