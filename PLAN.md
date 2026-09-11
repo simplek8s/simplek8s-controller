@@ -40,7 +40,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 |---|---|---|
 | M1 | Node reboots (state machine, drain, orchestrator, API) | Shipped; E2E 28/28 PASS (§7.2) |
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
-| M3 | Maintenance windows, update reboot loop, boot-partition hygiene | In planning (v4), pending implementation — phases §6.3 |
+| M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Approved/frozen (v4 + review fixes + Vixie, 33 decisions) — pending implementation, phases §6.3 |
 
 ### 1.2 Shipped baseline
 
