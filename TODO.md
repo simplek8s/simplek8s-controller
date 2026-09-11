@@ -116,23 +116,22 @@ publish the image as a public multi-arch `v*` release:
 - an arm64 test node for E2E (planned; one full auto-update on the
   aarch64 image when it is up).
 
-## 14. Boot failure fallback (syslinux) — in planning (PLAN-M4.md v1)
+## 14. Boot failure fallback (syslinux) — in planning (PLAN-M4.md v1, native `TIMEOUT`+`ONTIMEOUT` fallback for load failures; panic class deferred)
 
-W13 (PLAN.md §7.4) proved the negative: a staged kernel that fails to
-boot has **no automatic fallback**. Syslinux drops to a `boot:` prompt
-and the node sits `rebooting` until an operator intervenes (recovered
-live via `virsh console` by typing a good `LABEL` name). The
-`completed`+mismatch verification and the no-auto-retry guarantee
-(D16/D30/D34) all held — only the return path was manual.
-
-Future work: automatic return to a bootable kernel after a failed
-boot. Syslinux offers no native on-failure fallback, so study the
-options first: a boot-attempt counter in a sidecar file on the boot
-partition (the writer owns the format; the controller resets it on a
-confirmed boot), UEFI `BootNext`/boot-order fallback where the
-firmware supports it, or keeping N known-good kernels plus the
-documented console recovery (no new mechanism). Constraints: `DEFAULT`
-is only ever pointed at a verified staged file (never weakened);
-whatever counts attempts must survive the crash it counts; the
-recovery must converge with the existing verification (no new
-`completed`-adjacent states if avoidable).
+W13 (PLAN.md §7.4) showed the shape: a correctly signed and staged
+kernel that does not boot on a node leaves it at the syslinux `boot:`
+prompt (`rebooting` + `NotReady`). Correction 2026-09-11 (syslinux
+wiki): load failures CAN fall back natively — `TIMEOUT` resets on an
+unsuccessful boot attempt, so `ONTIMEOUT` boots a fallback label
+automatically. M4 builds exactly that (writer-managed lines +
+purge/prune guards for the fallback target); panics after a
+successful load never return to the prompt and stay manual
+(watchdog+chooser territory, deferred with distro involvement).
+Rationale: bootability of a signed release is still the distro QA's
+job — the mechanism only shortens the fall, it does not grade
+kernels. Until it ships, contain by process: roll out in `stage`
+mode with manual canary reboots before `full`, keep N kernels
+preserved, and guarantee machine-console access per node. The verified
+console recovery (type a good `LABEL`, repair, re-pin) is documented
+in the README runbook; the `completed`+mismatch verification and
+no-auto-retry already hold for whatever comes back.

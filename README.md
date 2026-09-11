@@ -199,6 +199,29 @@ old kernel is always kept (the purge never deletes the running version):
 kubectl annotate node <node> --overwrite simplek8s.org/next-kernel=<running-V>
 ```
 
+### Unbootable kernel recovery
+
+A kernel that is correctly signed and staged can still fail to boot on
+a given node (distro QA owns bootability; the controller cannot
+distinguish this case in advance). There is no automatic fallback:
+syslinux drops to a `boot:` prompt and the node sits `rebooting` +
+`NotReady` (past `reboots.reboot-issue-grace`, that shape is the
+signal — a healthy reboot flaps Ready for ~1–2 min). Recover via the
+machine console:
+
+1. At the `boot:` prompt, type a good entry name
+   (`simplek8s.<ts>.<arch>`, any kernel file present on the boot
+   partition) + Enter. This was proven live (W13).
+2. The node lands `completed`+`UpdateMismatch` (goal ≠ running) — no
+   auto-retry fires.
+3. Repair the bad file (delete it and let the next occurrence re-stage
+   it from the verified index, or copy a good one over it), re-pin
+   `next-kernel` to `running`, DELETE the state → quiescent.
+
+Prevention without new code: roll out in `stage` mode and reboot nodes
+one by one through the M1 API (canary), switching to `full` only after
+the release has proven bootable on your hardware.
+
 ### Keyring override
 
 The image embeds the distro public key at
