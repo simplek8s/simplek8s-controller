@@ -19,10 +19,14 @@ only the return path was manual.
 M4 closes TODO 14 in two layers, in order:
 
 1. **Stop booting garbage (mechanism, this plan's core).** Validate the
-   staged image before enqueue — a PE32+ header check that the W13
-   21-byte garbage (and any truncation killing the headers) fails.
-   Corrupt-but-present never enqueues; the operator deletes the file
-   and the existing defensive re-stage heals it from the repo.
+   staged image before enqueue — a PE32+ header check that rejects
+   truncated, zeroed, partially written or wrong files. The W13
+   hand-corruption stands in for these realistic classes (torn writes
+   on power loss, storage corruption on a checksum-less vfat, bad
+   payloads that pass transport); adversarial hand edits as such stay
+   out of contract, as do manual deletions. Corrupt-but-present never
+   enqueues; the operator deletes the file and the existing defensive
+   re-stage heals it from the repo.
 2. **Detect + recover fast when prevention fails (runbook).**
    Bootloader-brick alert recipe (no new controller alert path) and a
    console recovery runbook (typed-`LABEL` boot, proven twice live).
@@ -210,7 +214,7 @@ Ground truth 2026-09-11 (mounted cp1): kernels at
 
 | # | Case | Trigger | Expect |
 |---|---|---|---|
-| V1 | Corrupt staged file never enqueues | pin an uncached version → staged → corrupt the file by hand (content, keep the name) with windows open | **no enqueue** (state stays absent) + `UpdateBootGoalInvalid` Warning; then delete the corrupt file → defensive re-stage → enqueue → reboot → applied. Safe: garbage is never booted (contrast W13, which bricked). |
+| V1 | Corrupt staged file never enqueues | pin an uncached version → staged → corrupt the file by hand (fault injection for torn writes/storage corruption — not a threat model in itself) with windows open | **no enqueue** (state stays absent) + `UpdateBootGoalInvalid` Warning; then delete the corrupt file → defensive re-stage → enqueue → reboot → applied. Safe: garbage is never booted (contrast W13, which bricked). |
 | V2 | Alert recipe + runbook rehearsal | tabletop against the W13 evidence (timestamps from the campaign) + live query-shape check; console `LABEL` boot already proven twice (W13) — cited, not re-bricked | recipe detects the `rebooting`+NotReady shape; runbook steps execute as written. |
 
 ## 8. Deferred
