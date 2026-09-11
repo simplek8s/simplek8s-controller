@@ -41,6 +41,10 @@ git history (`git show <commit>:PLAN-M2.md`).
 ## Building the controller image
 
 - Build it with **`make image`** (or the repo `Dockerfile`).
+- `make image` validates **both** `linux/amd64` and `linux/arm64` via
+  buildx (fails if either fails) and loads the **host-arch** image into
+  the local store. The foreign-arch stage needs qemu/binfmt_misc
+  (`scripts/binfmt-check.sh` preflights it with the remedy).
 - A base image (`golang:1.27`, `alpine:3.20`) being **absent from the
   local docker cache is not a blocker** — the build pulls it.
 
