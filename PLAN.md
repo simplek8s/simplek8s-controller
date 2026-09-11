@@ -144,11 +144,11 @@ bounded and consistent over time.
 
 A **window list** is a set of schedules plus a grace period:
 
-- **Schedule** — a recurrence, from the cron syntax documented for
-  Kubernetes CronJobs plus the controller's `@every` extension (§3.3): a
-  5-field cron expression, a named schedule (`@hourly`, `@daily`, …),
-  or `@every <duration>`. Each schedule produces occurrences on the UTC
-  timeline.
+- **Schedule** — a recurrence, from Vixie cron as documented in
+  FreeBSD `crontab(5)` plus the controller's `@every` extension
+  (§3.3): a 5-field cron expression (names allowed), a named schedule
+  (`@hourly`, `@daily`, …), `@every <duration>`, or `@<seconds>`.
+  Each schedule produces occurrences on the UTC timeline.
 - **Grace** — `reboots.window-grace` / `updates.window-grace` (duration,
   default `5m`) is how long a window stays open after each occurrence.
 - **Openness** — at time `t` (UTC), a window list is **open** iff any of
@@ -227,7 +227,7 @@ evaluation — and no state:
 type Schedule struct{ /* parsed form */ }
 func Parse(spec string) (Schedule, error)
 func (s Schedule) lastOccurrenceAtOrBefore(t time.Time) (time.Time, bool)
-func WindowsOpen(specs []Schedule, grace, now time.Time) bool
+func WindowsOpen(specs []Schedule, grace time.Duration, now time.Time) bool
 ```
 
 `lastOccurrenceAtOrBefore` returns `ok == false` when the schedule has
@@ -236,14 +236,15 @@ func WindowsOpen(specs []Schedule, grace, now time.Time) bool
 schedule with no occurrence makes its window **closed**. The contract is
 explicit: a zero `time.Time` never stands in for an occurrence.
 
-Accepted set — **the cron syntax documented for Kubernetes CronJobs,
+Accepted set — **Vixie cron as documented in FreeBSD `crontab(5)`,
 plus the explicit `@every <duration>` extension, nothing else**:
 
 | Form | Examples | Meaning |
 |---|---|---|
-| 5-field cron | `0 7 * * 3`, `*/10 * * * *`, `0 0 1-15 * 1-5` | minute hour dom month dow, UTC. Standard field syntax: `*`, values, lists `a,b`, ranges `a-b`, steps `*/n` and `a-b/n`. |
-| Named | `@hourly`, `@daily`/`@midnight`, `@weekly`, `@monthly`, `@yearly`/`@annually` | The fixed CronJob expressions: `0 * * * *`, `0 0 * * *`, `0 0 * * 0`, `0 0 1 * *`, `0 0 1 1 *`. |
-| `@every <duration>` | `@every 30m`, `@every 2h` | Occurrences every duration. |
+| 5-field cron | `0 7 * * 3`, `*/10 * * * *`, `0 0 1-15 * 1-5`, `0 22 * * mon-fri`, `5 4 * * sun`, `0 0 1 jan *` | minute hour dom month dow, UTC. Standard field syntax: `*`, values, lists `a,b`, ranges `a-b` (inclusive), steps `*/n` and `a-b/n`; lists and ranges may mix (`1-3,7-9`). Month and dow names: first three letters, case-insensitive (`jan`–`dec`, `sun`–`sat`), usable inside lists and ranges (`mon-fri`, `jan,apr,jul,oct`). |
+| Named | `@hourly`, `@daily`/`@midnight`, `@weekly`, `@monthly`, `@yearly`/`@annually`, `@every_minute`, `@every_second` | The fixed Vixie expressions: `0 * * * *`, `0 0 * * *`, `0 0 * * 0`, `0 0 1 * *`, `0 0 1 1 *`; `@every_minute` = `* * * * *`; `@every_second` = `@every 1s` (open for any grace ≥ 1s — always in practice). |
+| `@every <duration>` | `@every 30m`, `@every 2h` | Occurrences every duration, midnight-UTC anchored (below). Go duration syntax (`time.ParseDuration`: `ns`/`us`/`ms`/`s`/`m`/`h`; no `d`/`w`). |
+| `@<seconds>` | `@300` | The Vixie numeric form ("that many seconds after completion of the previous run"), accepted as an alias for `@every <N>s` (`@300` = `@every 5m`). Documented semantic delta: Vixie anchors at completion and never overlaps; ours anchors at midnight UTC like `@every` and may overlap a slow run. For window openness only occurrence timestamps matter, so the two coincide. |
 
 Semantics pinned (all tested):
 
@@ -259,19 +260,21 @@ Semantics pinned (all tested):
   handovers (a "since process start" reference would differ per pod and
   is rejected).
 - **5-field last occurrence**: bounded backward search from `now` (at
-  most ~366 days for yearly schedules); the window is open iff
+  most ~366 days for yearly schedules, extended to 4 years + 1 day for
+  schedules that can only occur on Feb 29); the window is open iff
   `now − lastOccurrence < grace`; **no occurrence found ⇒ window
   closed** (the `ok == false` contract above — a syntactically valid
   schedule with impossible combinations, e.g. `0 0 30 2 *`). Cheap at
   engine cadence; memoization per minute is an implementation detail,
   not a requirement.
-- **Rejected**: 6-field (seconds) expressions, weekday aliases
-  (`@monday` … `@sunday` are **not** in the K8s set → invalid),
-  `@reboot` (not a K8s CronJob schedule; "always open" is the operator
-  expressing via grace, not a schedule), unknown `@` names, empty
-  strings, out-of-range field values, and `?` (Kubernetes happens to
-  accept it as a `*` alias; it is not in the vixie field syntax we pin
-  — rejected with a parse error).
+- **Rejected**: `@reboot` (startup-anchored: it has no stable occurrence
+  set, so stateless clock evaluation cannot express it — rejected, not
+  mapped; "always open" is the operator expressing via grace, not a
+  schedule); 6-field (seconds) expressions; weekday `@` aliases
+  (`@monday` … `@sunday` are Quartz-isms, not Vixie → invalid); unknown
+  `@` names; empty strings; out-of-range field values; and `?` (not in
+  the Vixie field syntax — rejected with a parse error; Kubernetes
+  happens to accept it as a `*` alias, which is why this is called out).
 
 The window forms proposed before this plan (time-of-day ranges
 `22:00-06:00`, bare intervals `30m`) are **not** supported: duration
@@ -960,9 +963,9 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | # | Decision | Rationale |
 |---|---|---|
 | 1 | Windows = JSON **array of schedule strings** in flat ConfigMap keys | ConfigMap values are strings (M2 §3.2); a list needs a serialization; JSON is stdlib and unambiguous. |
-| 2 | The cron syntax documented for Kubernetes CronJobs (5-field cron, named macros) **+ the explicit `@every <duration>` extension** with controller-specific semantics (midnight-UTC anchor, not process start); nothing else (`?` rejected) | What every K8s operator already knows, plus one extension for the "every N" cadence K8s CronJobs cannot express in their documented syntax; the extension is documented as controller-specific, not as a K8s feature; small enough to hand-roll. |
+| 2 | Vixie cron as documented in FreeBSD `crontab(5)` (5-field cron with names, the `@` schedules, `@<seconds>`) **+ the explicit `@every <duration>` extension** with controller-specific semantics (midnight-UTC anchor, not process start); nothing else (`?`, `@reboot` rejected) | What every cron operator already knows, pinned to the FreeBSD `crontab(5)` text instead of folklore; `@every <duration>` covers the "every N" cadence; the `@<seconds>` alias absorbs the remaining Vixie schedule form; small enough to hand-roll. |
 | 3 | No window ranges / `end` field; duration = the grace key | Replaces TODO 1's four window forms (range, interval, cron, shortcut) with one mechanism; less surface, fewer edge cases. |
-| 4 | No weekday aliases (`@monday`…`@friday` invalid) | Not in the K8s CronJob set; `0 7 * * 3` already expresses it. |
+| 4 | No weekday aliases (`@monday`…`@friday` invalid) | Not Vixie (Quartz-ism); `0 7 * * 3` or `0 7 * * mon` already expresses it. |
 | 5 | Grace default `5m`, one key per feature (`reboots`/`updates`) | Short default so a misconfigured schedule cannot hold the queue silently for hours; per-feature so the two cadences can differ. |
 | 6 | **Explicit empty windows = feature OFF**; built-in defaults: `reboots.windows` = `[]`, `updates.windows` = `'["@every 12h"]'` (supersedes M2's "absent = no restriction") | Reboots stay opt-in (safety); updates keep M2's de-facto 12h check cadence, so an M3 rollout does not silently halt check/staging — a full stop is an explicit `'[]'`. **Full-mode auto-reboots are opt-in via `reboots.windows`**: an M2-`full` install that relied on auto-reboots must configure it (§5) — the nodes stage and wait non-quiescent, so the state is visible, not silent. |
 | 7 | No maximum-duration guard | KISS; the always-open edge (grace > period) is documented as an operator error. |
@@ -975,7 +978,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 14 | **State re-arm** (local pod, ungated): clear the M1 state when `next-kernel` changes to a well-formed, locally present version, or when staging completes a pre-pinned version | Successive updates must re-arm (W5) — the previous attempt's `completed` would otherwise block the next; the re-arm rides the existing change-triggered path (§3.7) — no new loop, no new annotation. |
 | 15 | Best-effort delete of a leftover `simplek8s-update-plans` ConfigMap, **retried once per leadership acquisition** until it succeeds; **RBAC `configmaps` role gains `delete`** | Self-cleaning migration; no operator step, no code path left reading it. M2 shipped the role with `[get, list, create, update]` — without `delete` the cleanup 403s on every cluster and silently never cleans. The retry covers the rollout race in which the new role has not propagated yet: a once-per-lifetime attempt could be lost to exactly that and the ConfigMap would linger. |
 | 16 | Per-node verification with events; **no auto-retry** on mismatch | Consistent with M2's "a failed version is never auto-retried"; the M1 API is the retry path. |
-| 17 | Cron parser hand-rolled in `internal/cron` (stdlib) | Third dependency rejected; the accepted set is small and exhaustively testable. |
+| 17 | Cron parser hand-rolled in `internal/cron` (stdlib), Vixie set + `@every` | Third dependency rejected; the accepted set is small and exhaustively testable. |
 | 18 | UTC, no timezone key | M2 §2 rule. |
 | 19 | Invalid windows value → whole key invalid → last-valid-wins + warn | One validation rule for all flat keys (M2 §3.2). |
 | 20 | **`updates.check-interval` retired**; at most one check per window occurrence, no retries within an occurrence | With windows, the interval was a second dial on the same thing (it could only reduce or delay the frequency); per-occurrence checks also bound an always-open window by the occurrence period; the operator expresses the check cadence directly in `updates.windows`. |
@@ -990,6 +993,8 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 29 | **One window per concern, no exemptions**: `updates.windows` gates the update *work* (check/download/stage); `reboots.windows` gates **every** non-forced reboot — operator API and update-driven alike, including in the M1 orchestrator (no controller exemption) | Each window means exactly one thing, so the operator's reboots window always means "no reboots outside it"; the local pod enqueues only while it is open, so a node enters `requested` only when admission is possible — no zombie states by construction; with defaults, full-mode check/staging keeps running and auto-reboots simply wait for an explicit `reboots.windows` (§5). |
 | 30 | `failed` stays an operator alarm (never auto-enqueued); `DELETE /reboots/<node>` on an update-eligible node **defers** (state → absent → re-enqueued at the next open window) | Canceling a pending auto-reboot must not silently drop the update intent — the intent lives in `next-kernel`, not in the queue entry; to abandon, the operator makes the node quiescent (reboot or re-pin to `running`); `failed` visibility is unchanged from M1. |
 | 31 | **Enqueue is pod-side** — the local pod writes `reboot-state := requested` for its own node when it is reboot-eligible (all five rules, including goal-file locally present) and `reboots.windows` is open; the leader runs no eligibility scan (supersedes the v3 leader-scan design) | File presence on the boot partition is observable only by the local pod; a leader-side scan could enqueue a node whose goal file is absent (an operator pin ahead of staging, or a `DELETE`-deferral on a not-yet-staged pin) — one wasted drain + reboot into the old `DEFAULT`, a spurious `UpdateMismatch`, then convergence. Pod-side, verify-file → re-point → enqueue is one ordered code path (the ordering invariant, §3.4): the cross-actor race cannot exist. One conditional RMW per node needs no centralization; M1's serialization stays in the leader's orchestrator at admission. The presence check at enqueue time also covers manual deletion of the goal file: the node waits until the defensive re-staging or a goal correction makes it present again (§3.10). |
+| 32 | Vixie cron (FreeBSD `crontab(5)`) is the normative syntax reference, superseding the K8s CronJob docs (decision 2) | The K8s docs describe a subset without pinning names, steps, or dom/dow OR semantics; the FreeBSD man page is the complete Vixie text (names, lists+ranges mixing, steps, dom/dow OR, 0/7 Sunday) — one stable external reference instead of folklore; `?`-rejection is principled (not Vixie), not a divergence. |
+| 33 | `@<seconds>` accepted as an alias for `@every <N>s`; `@reboot` stays rejected | The numeric form is the last Vixie schedule form without a mapping; the clock-anchored alias is exact for window openness (only occurrence timestamps matter). `@reboot` has no occurrence set at all and cannot be mapped onto stateless evaluation. |
 
 ## 5. Behavior changes & migration
 
@@ -1069,7 +1074,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 
 | Module | Change |
 |---|---|
-| `internal/cron` (new) | `Parse`, last-occurrence, `WindowsOpen`; exhaustive table tests. |
+| `internal/cron` (new) | `Parse`, last-occurrence, `WindowsOpen`; Vixie conformance per FreeBSD `crontab(5)` + `@every`; exhaustive table tests. |
 | `internal/config` | Four new keys + `Config` fields (parsed `[]Schedule` + two `time.Duration`); validation per §3.2; `updates.check-interval` no longer parsed (decision 20). |
 | `internal/features/reboot` | Orchestrator: window gate in the per-candidate admission loop, forced bypass, `QueueHeldWindow` event. |
 | `internal/api` | `admit`: `NoWindowsConfigured` (422) for non-forced requests when `reboots.windows` is empty. |
@@ -1083,14 +1088,20 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 ### 6.2 Unit test matrix
 
 - **`internal/cron`**: every field syntax (`*`, values, lists, ranges,
-  steps, combined); dom/dow OR rule; `7`/`0` = Sunday; all named
-  schedules; `@every` across midnight and across days (midnight-UTC
-  anchor, handover-stable openness); window-open boundaries
+  steps, lists+ranges mixed, `a-b/n`); month/dow names
+  (case-insensitive, in lists/ranges: `mon-fri`, `JAN,apr`); dom/dow
+  OR rule; `7`/`0` = Sunday; all named schedules incl. `@midnight`,
+  `@every_minute`, `@every_second`; `@<seconds>` ≡ `@every <N>s`
+  (`@300` ≡ `@every 5m`); `@every` across midnight and across days
+  (midnight-UTC anchor, handover-stable openness; non-24h-dividing
+  durations documented: `@every 7h` has a short overnight gap);
+  Feb-29-only schedules (4-year horizon); window-open boundaries
   (`t == O`, `t == O+grace` excluded); union of schedules; the
   always-open edge (grace > period); **a syntactically valid
   never-occurring schedule (`0 0 30 2 *`) → `ok == false` → window
-  closed**; invalid inputs (6-field, `@monday`, `@reboot`, `?`, bad
-  values, empty).
+  closed**; duration grammar (`@every 1d` invalid — Go
+  `ParseDuration`, no `d`/`w`); invalid inputs (6-field, `@monday`,
+  `@reboot`, `?`, bad values, empty).
 - **`config`**: valid arrays; `[]`; invalid JSON; one bad entry in a
   good list (whole key rejected, previous kept, warn); grace
   parsing/bounds; defaults when absent (`reboots` → `[]`, `updates` →
