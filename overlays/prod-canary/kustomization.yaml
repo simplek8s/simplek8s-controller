@@ -18,7 +18,7 @@ patches:
       - op: add
         path: /spec/template/spec/nodeSelector
         value:
-          kubernetes.io/hostname: rpi4-node
+          kubernetes.io/hostname: rpi5-node
   - target:
       kind: ConfigMap
       name: simplek8s-controller
