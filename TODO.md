@@ -131,3 +131,23 @@ machine-console access per node. The verified console recovery (type
 a good `LABEL`, repair, re-pin) is documented in the README runbook;
 the `completed`+mismatch verification and no-auto-retry already hold
 for whatever comes back.
+
+## 15. API token Secret: auto-created or optional?
+
+Today the `simplek8s-api-token` Secret is mandatory: without it the
+pods fail to start (`secretKeyRef`), and the operator must create it
+by hand with `openssl rand -hex 32` before the first apply. Options:
+
+- auto-generate on first start (needs a write home the controller
+  does not have — chicken-and-egg; logging it once is a leak, not a
+  solution);
+- optional auth (no bearer when the Secret is absent — only
+  defensible behind `port-forward`/localhost, never on a Service);
+- keep mandatory but document rotation (SealedSecrets /
+  external-secrets) as the supported path;
+- drop the bearer entirely once access is port-forward-only (kube
+  RBAC + audit already govern who reaches the API; dashboard needs
+  would reopen this).
+
+No change until the dashboard scope (M5?) decides which consumers
+remain. Until then the manual Secret stands.
