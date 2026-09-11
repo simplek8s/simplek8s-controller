@@ -3,6 +3,22 @@
 Durable notes to avoid repeating mistakes when working with the SimpleK8s
 test VMs from this repo.
 
+## PLAN.md — how to read it
+
+`PLAN.md` is the single living design doc (shipped behavior + current
+plan). It is long; **do not read it whole** — it opens with an index of
+`§number → title`, and section numbers are stable while line numbers are
+not. To read one section, locate it and read from there:
+
+    grep -n '^### 3.4' PLAN.md
+
+Cross-references use section numbers (§4.2, §6.1) and per-era decision
+numbers — grep for those. Era tags: **M1** = reboots, **M2** = updates,
+**M3** = windows. Historical plans (`PLAN-M1.md`, `PLAN-M2.md`,
+`PLAN-M3.md`, the `E2E*` campaign files, `PLAN.FIXME.md`) were folded
+into `PLAN.md` and removed from the working tree; their full text is in
+git history (`git show <commit>:PLAN-M2.md`).
+
 ## SimpleK8s VM operations
 
 - **CRITICAL — reach the VMs by IP, NEVER by hostname.** Always target the
