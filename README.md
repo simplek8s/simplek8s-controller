@@ -58,6 +58,33 @@ helm -n simplek8s upgrade simplek8s-controller oci://ghcr.io/simplek8s/charts/si
 and only then consider unattended reboots (see "Distro updates"
 below — canary first, always).
 
+## Observing
+
+```sh
+# boot intent + reboot state (all nodes)
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/next-kernel}{"\n"}{end}'
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/reboot-state}{"\n"}{end}'
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/reboot-request}{"\n"}{end}'
+
+# controller events, all in the "default" namespace (Node is a
+# cluster-scoped subject): reboots (RebootDraining, RebootIssued,
+# RebootCommandIssued, RebootCompleted, RebootFailed, PDBBlocked,
+# QueuePaused, QueueHeldNotReady, CorruptRebootState, NodeDisappeared,
+# UncordonBlocked) and updates (UpdateAvailable, UpdateStaged,
+# UpdateStagingSkipped, UpdateApplied, UpdateMismatch,
+# UpdateGoalCorrected, UpdateHeldWindow, QueueHeldWindow).
+kubectl -n default get events --sort-by=.metadata.creationTimestamp
+kubectl -n default get events --field-selector "involvedObject.name=node-1"
+
+# controller logs
+kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
+```
+
+> **UTC note**: all timestamps the feature uses — release versions
+> (`<ts>`), annotation `since` values, `update-last-check` claims — are
+> **UTC** (RFC3339 `Z`). The distro's release tooling stamps UTC; do not
+> compare against local time.
+
 ## How it works
 
 One binary, two roles per pod:
@@ -299,22 +326,6 @@ kubectl -n simplek8s create secret generic simplek8s-controller-keyring \
 Then set `updates.url` (or the per-node `update-url` annotation) to the
 custom repo. Absent Secret → the embedded keyring is used.
 
-### Observing updates
-
-Updates emit the same kinds of Node Events as reboots, in the `default`
-namespace: `UpdateAvailable`, `UpdateStaged`, `UpdateStagingSkipped`,
-`UpdateApplied`, `UpdateMismatch`, `UpdateGoalCorrected`,
-`UpdateHeldWindow`, `QueueHeldWindow`. Inspect per node with:
-
-```sh
-kubectl -n default get events --field-selector "involvedObject.name=<node>"
-```
-
-> **UTC note**: all timestamps the feature uses — release versions
-> (`<ts>`), annotation `since` values, `update-last-check` claims — are
-> **UTC** (RFC3339 `Z`). The distro's release tooling stamps UTC; do not
-> compare against local time.
-
 ## Scheduling reboots (API)
 
 Plain HTTP on the pod port. No Service exists by design and there is
@@ -357,29 +368,6 @@ the operator's, left alone); `draining` → **409, not interruptible**
 controller was the one that cordoned** (`cordonedPrev` known absent);
 corrupt state → guaranteed uniform clear, no uncordon. Success is
 `204`.
-
-## Observing state
-
-```sh
-# one-liners (all nodes)
-kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/reboot-state}{"\n"}{end}'
-kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/reboot-request}{"\n"}{end}'
-
-# one node, pretty
-kubectl get node node-1 -o json | jq .metadata.annotations.'simplek8s.org/reboot-state'
-
-# controller events (lifecycle reasons: RebootDraining, RebootIssued,
-# RebootCommandIssued, RebootCompleted, RebootFailed, PDBBlocked,
-# QueuePaused, QueueHeldNotReady, CorruptRebootState, NodeDisappeared,
-# UncordonBlocked). They live in the "default" namespace: Node is a
-# cluster-scoped subject and the API server requires its events there
-# (same place as kubelet's node events).
-kubectl -n default get events --sort-by=.metadata.creationTimestamp
-kubectl -n default get events --field-selector "involvedObject.name=node-1"
-
-# controller logs
-kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
-```
 
 ## Failure handling, pause/resume, hand repair
 
