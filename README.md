@@ -89,6 +89,15 @@ make image            # docker build (VERSION/COMMIT/BUILT baked in)
 make deploy           # kubectl apply -k deploy/ (uses your kubeconfig)
 ```
 
+`deploy/` tracks `:latest`. For a pinned PROD install, override the
+image per release (no file edit needed):
+
+```sh
+cd deploy && kustomize edit set image \
+  ghcr.io/simplek8s/simplek8s-controller:v0.1.0 && cd ..
+kubectl apply -k deploy/
+```
+
 `deploy/` is a kustomize bundle: namespace, ServiceAccount, RBAC,
 ConfigMap, DaemonSet, NetworkPolicy — no Service by design (reach the
 API via `kubectl port-forward`, see below). **The API token Secret is

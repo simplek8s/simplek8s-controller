@@ -31,7 +31,9 @@ spec:
           effect: NoSchedule
       containers:
         - name: controller
-          image: ghcr.io/simplek8s/simplek8s-controller:dev
+          # Release images live on GHCR (see README "CI / releases");
+          # :dev never leaves the workstation (local `make image` tag).
+          image: ghcr.io/simplek8s/simplek8s-controller:latest
           securityContext:
             privileged: true
           env:
