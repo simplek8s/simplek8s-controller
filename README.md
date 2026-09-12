@@ -1,5 +1,8 @@
 # simplek8s-controller
 
+[![ci](https://github.com/simplek8s/simplek8s-controller/actions/workflows/ci.yml/badge.svg)](https://github.com/simplek8s/simplek8s-controller/actions/workflows/ci.yml)
+[![image](https://github.com/simplek8s/simplek8s-controller/actions/workflows/image.yml/badge.svg)](https://github.com/simplek8s/simplek8s-controller/pkgs/container/simplek8s-controller)
+
 A node-management controller for self-built Kubernetes clusters
 (SimpleK8s distro: Buildroot, systemd, containerd, kubeadm). It runs as a privileged
 DaemonSet with one instance per node and provides operational
@@ -388,6 +391,13 @@ make test       # go test ./...
 make image      # docker image with version/commit/built baked in
 make deploy-minikube   # build + apply + refresh image on minikube
 ```
+
+CI (`.github/workflows/`) runs `gofmt` check + `vet` + `test` + `build`
+on every push and PR. Pushing a branch also publishes a multi-arch
+(`amd64`/`arm64`) image to GHCR after tests pass (`main` → `edge` +
+`latest`, other branches → `<branch>` + `sha-<short>`). Pushing a
+`vX.Y.Z` tag publishes the versioned image (`X.Y.Z`, `X.Y`, `X`,
+`latest`) and creates the GitHub Release with static binaries.
 
 Layout:
 
