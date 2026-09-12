@@ -5,8 +5,9 @@
 # Uninstall never deletes the namespace (the chart does not manage it).
 image:
   repository: ghcr.io/simplek8s/simplek8s-controller
-  # Pin per release in PROD (--set image.tag=vX.Y.Z).
-  tag: latest
+  # Empty = Chart appVersion (chart and image move in lockstep);
+  # override per release in PROD (--set image.tag=vX.Y.Z).
+  tag: ""
 
 logLevel: info
 
