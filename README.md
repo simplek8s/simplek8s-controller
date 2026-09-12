@@ -159,7 +159,7 @@ Canary on one node (what the old `prod-canary` overlay did):
 ```sh
 helm install simplek8s-controller ./chart -n simplek8s --create-namespace \
   --set image.tag=vX.Y.Z \
-  --set nodeSelector."kubernetes\.io/hostname"=rpi4-node
+  --set nodeSelector."kubernetes\.io/hostname"=node-1
 ```
 
 ### Configuration (ConfigMap)
