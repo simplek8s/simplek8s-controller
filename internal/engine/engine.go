@@ -293,6 +293,12 @@ func (e *Engine) event(reason, message string, warning bool) {
 	ev.Reason = reason
 	ev.Message = message
 	ev.Type = "Normal"
+	// Timestamps are ours to set: the API server leaves a direct
+	// CREATE untouched, and empty times render as `<unknown>`.
+	now := kube.Time(time.Now().UTC())
+	ev.FirstTimestamp = now
+	ev.LastTimestamp = now
+	ev.Count = 1
 	if warning {
 		ev.Type = "Warning"
 	}
