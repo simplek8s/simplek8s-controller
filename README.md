@@ -49,7 +49,7 @@ Then give it work (Helm owns the ConfigMap — hand edits are
 overwritten on the next `upgrade`):
 
 ```sh
-helm -n simplek8s upgrade simplek8s-controller ./chart --reuse-values \
+helm -n simplek8s upgrade simplek8s-controller oci://ghcr.io/simplek8s/charts/simplek8s-controller --reuse-values \
   --set config.updates.mode=stage
 ```
 
