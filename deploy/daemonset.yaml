@@ -51,11 +51,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # Optional bearer (TODO 15): absent Secret (or absent key)
+            # -> the pod still starts and the API serves loopback
+            # clients only (kubectl port-forward). Present -> bearer
+            # required on top.
             - name: SIMPLEK8S_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: simplek8s-api-token
                   key: token
+                  optional: true
             # Chatty development logging: "debug" surfaces the staging steps
             # (mount, download, extract, write, bootloader) and config reloads.
             - name: SIMPLEK8S_LOG_LEVEL

@@ -1,6 +1,9 @@
 // Package api implements the per-instance HTTP REST API (PLAN 3.9):
 // POST/GET /api/v1/reboots, GET/DELETE /api/v1/reboots/{node},
-// /livez and /readyz, guarded by a mandatory fixed bearer token.
+// /livez and /readyz. With a token configured the endpoints require
+// "Authorization: Bearer <token>"; without one (TODO 15, optional auth)
+// only loopback clients are accepted — reachable via kubectl
+// port-forward, never across the cluster (there is no Service).
 package api
 
 import (
@@ -12,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -45,8 +49,8 @@ type Server struct {
 	token string
 }
 
-// New builds the API server. token must be non-empty (main refuses to
-// start without SIMPLEK8S_API_TOKEN, PLAN 3.9).
+// New builds the API server. An empty token enables the tokenless mode
+// (TODO 15): the auth middleware then accepts loopback clients only.
 func New(cfg Config, token string) *Server {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -76,9 +80,21 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// auth enforces "Authorization: Bearer <token>" (constant-time compare).
+// auth enforces "Authorization: Bearer <token>" (constant-time
+// compare). Without a configured token (TODO 15, optional auth) only
+// loopback clients are served: kubectl port-forward dials from inside
+// the pod network namespace (127.0.0.1), while direct cluster traffic
+// to the pod IP carries a non-loopback RemoteAddr and is rejected.
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.token == "" {
+			if !isLoopbackAddr(r.RemoteAddr) {
+				writeErr(w, http.StatusForbidden, "Forbidden", "tokenless API accepts loopback clients only")
+				return
+			}
+			next(w, r)
+			return
+		}
 		h := r.Header.Get("Authorization")
 		const prefix = "Bearer "
 		if !strings.HasPrefix(h, prefix) {
@@ -91,6 +107,17 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// isLoopbackAddr reports whether an http.Request RemoteAddr ("IP:port")
+// is a loopback address. Unparseable values are not loopback.
+func isLoopbackAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) livez(w http.ResponseWriter, _ *http.Request) {

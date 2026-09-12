@@ -58,12 +58,13 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr,
 		&slog.HandlerOptions{Level: logLevelFromEnv(os.Getenv("SIMPLEK8S_LOG_LEVEL"))}))
 
-	// Mandatory API token (PLAN 3.9): a deployment without a token is not
-	// supported, so the API is never accidentally exposed tokenless.
+	// Optional API token (TODO 15): with the Secret present every API
+	// endpoint but the probes requires its bearer; without it the API
+	// serves loopback clients only (kubectl port-forward), enforced in
+	// the auth middleware — never accidentally open to the cluster.
 	token := os.Getenv("SIMPLEK8S_API_TOKEN")
 	if token == "" {
-		log.Error("SIMPLEK8S_API_TOKEN is required; refusing to start")
-		os.Exit(1)
+		log.Warn("SIMPLEK8S_API_TOKEN is empty; API accepts loopback clients (kubectl port-forward) only")
 	}
 	nodeName := os.Getenv("NODE_NAME")
 	podName := os.Getenv("POD_NAME")

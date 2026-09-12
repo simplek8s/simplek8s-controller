@@ -142,6 +142,65 @@ func TestAuth(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackAddr(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"[::1]:8080", true},
+		{"10.244.0.5:8080", false},
+		{"192.0.2.5:8080", false},
+		{"not-an-addr", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackAddr(tc.addr); got != tc.want {
+			t.Errorf("isLoopbackAddr(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+// TestAuthTokenless (TODO 15, optional auth): without a token the API
+// serves loopback clients (the port-forward path) with no bearer, and
+// rejects direct cluster traffic with 403.
+func TestAuthTokenless(t *testing.T) {
+	fake := kubetest.NewFakeAPI()
+	t.Cleanup(fake.Close)
+	creds, err := kubetest.MakeCreds(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kc, err := fake.Client(creds.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{Kube: kc}, "")
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// httptest dials 127.0.0.1: no bearer needed.
+	resp, err := http.Get(ts.URL + "/api/v1/reboots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("loopback without token: got %d, want 200", resp.StatusCode)
+	}
+
+	// Direct cluster traffic (non-loopback RemoteAddr) is rejected.
+	for _, remote := range []string{"10.244.0.5:1234", "[fd00::5]:1234"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/reboots", nil)
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("remote %s without token: got %d, want 403", remote, rec.Code)
+		}
+	}
+}
+
 func TestReadyzUnhealthy(t *testing.T) {
 	fake := kubetest.NewFakeAPI()
 	t.Cleanup(fake.Close)

@@ -92,15 +92,17 @@ make deploy           # kubectl apply -k deploy/ (uses your kubeconfig)
 `deploy/` is a kustomize bundle: namespace, ServiceAccount, RBAC,
 ConfigMap, DaemonSet, NetworkPolicy — no Service by design (reach the
 API via `kubectl port-forward`, see below). **The API token Secret is
-deliberately not in the bundle** — create it with real material first:
+optional**: without it the pods still start and the API serves
+loopback clients only (i.e. `kubectl port-forward`); with it, every
+endpoint but the probes additionally requires its bearer. To create it:
 
 ```sh
 kubectl -n simplek8s create secret generic simplek8s-api-token \
   --from-literal=token="$(openssl rand -hex 32)"
 ```
 
-Without `SIMPLEK8S_API_TOKEN` the binary refuses to start (the API is
-never tokenless by design).
+Rotation: update the Secret and `kubectl rollout restart -n simplek8s
+daemonset/simplek8s-controller` (the token is read once at startup).
 
 ### Configuration (ConfigMap)
 
@@ -262,8 +264,11 @@ kubectl -n default get events --field-selector "involvedObject.name=<node>"
 
 Plain HTTP on the pod port. No Service exists by design and there is
 no TLS: reach it with `kubectl port-forward` (your own credentials,
-RBAC and audit apply), never exposed; every mutating/reading endpoint
-(except `/livez`, `/readyz`) requires `Authorization: Bearer <token>`.
+RBAC and audit apply), never exposed; with the token Secret present,
+every mutating/reading endpoint (except `/livez`, `/readyz`) requires
+`Authorization: Bearer <token>` — without it, only loopback clients
+(the port-forward path itself) are served and direct cluster traffic
+gets 403.
 
 ```sh
 kubectl port-forward -n simplek8s daemonset/simplek8s-controller 1880:8080 &
