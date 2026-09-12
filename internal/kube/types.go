@@ -38,9 +38,6 @@ func (t Time) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + time.Time(t).UTC().Format(time.RFC3339) + `"`), nil
 }
 
-// Time returns the underlying time.Time (zero Time -> zero time).
-func (t Time) Time() time.Time { return time.Time(t) }
-
 // MicroTime is a metav1.MicroTime: RFC3339 with six fractional digits
 // (layout 2006-01-02T15:04:05.000000Z07:00). Lease spec fields use
 // MicroTime, not metav1.Time, so plain RFC3339 seconds are rejected by
@@ -277,11 +274,10 @@ type Eviction struct {
 	Metadata   ObjectMeta `json:"metadata"`
 }
 
-// NodeList / PodList / PDBList / LeaseList are list envelopes.
+// NodeList / PodList / PDBList are list envelopes.
 type NodeList struct {
 	Metadata struct {
-		Continue           string `json:"continue"`
-		RemainingItemCount int64  `json:"remainingItemCount"`
+		Continue string `json:"continue"`
 	} `json:"metadata"`
 	Items []Node `json:"items"`
 }
@@ -298,11 +294,4 @@ type PDBList struct {
 		Continue string `json:"continue"`
 	} `json:"metadata"`
 	Items []PodDisruptionBudget `json:"items"`
-}
-
-type LeaseList struct {
-	Metadata struct {
-		Continue string `json:"continue"`
-	} `json:"metadata"`
-	Items []Lease `json:"items"`
 }

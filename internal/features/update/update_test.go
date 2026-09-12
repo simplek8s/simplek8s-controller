@@ -30,9 +30,8 @@ type fakeStore struct {
 	err     error
 	flavors map[string]string
 	// defGoal records the last EnsureBootGoal target (the fake's
-	// DEFAULT); ensures logs every EnsureBootGoal call in order.
+	// DEFAULT).
 	defGoal string
-	ensures []string
 }
 
 func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
@@ -563,7 +562,6 @@ func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
 func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ensures = append(s.ensures, version)
 	for _, v := range s.vers {
 		if v == version {
 			changed := s.defGoal != version
@@ -591,10 +589,4 @@ func (s *fakeStore) Kernels(ctx context.Context) ([]string, error) {
 		out = append(out, kernelStoredName(v, flavor))
 	}
 	return out, nil
-}
-
-func (s *fakeStore) ensureCalls() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.ensures...)
 }

@@ -407,14 +407,6 @@ func IssuedExecPatch(rv string, e ExecInfo) map[string]any {
 	})
 }
 
-// ConfirmExecPatch (local pod): fresh exec + confirmedAt.
-func ConfirmExecPatch(rv string, e ExecInfo, confirmedAt time.Time) map[string]any {
-	e.ConfirmedAt = &confirmedAt
-	return annotationsPatch(rv, map[string]any{
-		AnnExec: ExecValue(e),
-	})
-}
-
 // ClearPatch (any pod, PLAN 3.3.2): all four keys to null in one patch;
 // unschedulable=false only per the caller's rule.
 func ClearPatch(rv string, uncordon bool) map[string]any {

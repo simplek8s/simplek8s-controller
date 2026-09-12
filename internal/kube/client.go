@@ -94,8 +94,6 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Endpoint() string { return c.cfg.Endpoint }
-
 // token re-reads the serviceaccount token on every call.
 func (c *Client) token() (string, error) {
 	b, err := os.ReadFile(c.cfg.CredsDir + "/token")
@@ -437,25 +435,6 @@ func (c *Client) GetConfigMap(ctx context.Context, ns, name string) (*ConfigMap,
 		return nil, err
 	}
 	return &cm, nil
-}
-
-// CreateConfigMap creates a namespaced ConfigMap (409 when it already
-// exists). The POST goes to the collection path; the name comes from the
-// body.
-func (c *Client) CreateConfigMap(ctx context.Context, cm *ConfigMap) error {
-	return c.Do(ctx, http.MethodPost,
-		"/api/v1/namespaces/"+cm.Metadata.Namespace+"/configmaps",
-		nil, cm, nil, doOpts{})
-}
-
-// UpdateConfigMap rewrites a namespaced ConfigMap. The caller must carry
-// a fresh metadata.resourceVersion for the conditional update; on 409
-// (IsConflict) the caller re-reads and re-applies (PLAN-M2 3.8: the plan
-// ConfigMap is a leader-only read-modify-write).
-func (c *Client) UpdateConfigMap(ctx context.Context, cm *ConfigMap) error {
-	return c.Do(ctx, http.MethodPut,
-		"/api/v1/namespaces/"+cm.Metadata.Namespace+"/configmaps/"+cm.Metadata.Name,
-		nil, cm, nil, doOpts{})
 }
 
 // DeleteConfigMap deletes a namespaced ConfigMap. 404 (IsNotFound) means
