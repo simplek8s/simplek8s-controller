@@ -14,10 +14,10 @@ import (
 func setFullWindows(h *updateHarness, updates, reboots string) {
 	h.t.Helper()
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "full",
-		"updates.url":         h.repo.URL(),
-		"updates.windows":     updates,
-		"reboots.windows":     reboots,
+		"updates.mode":    "full",
+		"updates.url":     h.repo.URL(),
+		"updates.windows": updates,
+		"reboots.windows": reboots,
 	})
 }
 
@@ -102,10 +102,10 @@ func TestEnqueueStageModeNeverEnqueues(t *testing.T) {
 	setFullWindows(h, `["@every 2m"]`, `["@every 2m"]`)
 	// NOTE: helper forces full; restore stage mode below.
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "stage",
-		"updates.url":         h.repo.URL(),
-		"updates.windows":     `["@every 2m"]`,
-		"reboots.windows":     `["@every 2m"]`,
+		"updates.mode":    "stage",
+		"updates.url":     h.repo.URL(),
+		"updates.windows": `["@every 2m"]`,
+		"reboots.windows": `["@every 2m"]`,
 	})
 	h.tick() // staged + anchored, operator-driven from here
 	if got := h.nextKernel(); got != "202608291203" {

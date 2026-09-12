@@ -53,8 +53,8 @@ git history (`git show <commit>:PLAN-M2.md`).
 - Per-node boot-intent annotation: `simplek8s.org/next-kernel` (the release
   `ts`, e.g. `202609061935`).
 - Update ConfigMap: `simplek8s/simplek8s-controller` — keys
-  `updates.update-mode` (`off`|`stage`|`full`), `updates.check-interval`,
-  `updates.url`, `updates.preserve`, `updates.max-percent-usage`.
+  `updates.mode` (`off`|`stage`|`full`), `updates.url`,
+  `updates.preserve`, `updates.max-percent-usage`.
 - Controller API: no Service exists by design — reach it with
   `kubectl port-forward -n simplek8s daemonset/simplek8s-controller
   1880:8080` (never NodePort); bearer token from the

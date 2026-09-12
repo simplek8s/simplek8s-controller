@@ -72,11 +72,11 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	// feature config snapshot is resolved before the test manipulates
 	// nodes directly.
 	fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"reboots.max-concurrent-reboots": strconv.Itoa(o.maxConcurrent),
-		"reboots.on-reboot-failure":      o.onFailure,
-		"reboots.reboot-drain-timeout":   o.drainTimeout.String(),
-		"reboots.reboot-issue-grace":     o.issueGrace.String(),
-		"reboots.windows":                windows,
+		"reboots.max-concurrent": strconv.Itoa(o.maxConcurrent),
+		"reboots.on-failure":     o.onFailure,
+		"reboots.drain-timeout":  o.drainTimeout.String(),
+		"reboots.issue-grace":    o.issueGrace.String(),
+		"reboots.windows":        windows,
 	})
 	eng, err := engine.New(engine.Config{
 		CredsDir:           creds.Dir,
@@ -364,12 +364,12 @@ func TestDrainTimeoutContinueOnFailure(t *testing.T) {
 	h.leader()
 	h.orch() // w1 draining (w2 waits: slot full)
 	h.cl.Advance(5 * time.Minute)
-	h.orch() // w1 fails; with on-reboot-failure=continue, w2 is admitted the same cycle
+	h.orch() // w1 fails; with on-failure=continue, w2 is admitted the same cycle
 	if got := h.stateOf("w1"); got != nodestate.Failed {
 		t.Fatalf("w1 state = %q, want failed", got)
 	}
 	if got := h.stateOf("w2"); got != nodestate.Draining {
-		t.Fatalf("w2 state = %q, want draining (on-reboot-failure=continue)", got)
+		t.Fatalf("w2 state = %q, want draining (on-failure=continue)", got)
 	}
 	h.orch()
 	if got := h.stateOf("w2"); got != nodestate.Rebooting {

@@ -142,7 +142,7 @@ func (e *Engine) LastSuccessfulCycle() time.Time {
 }
 
 // Run starts the polling loop and blocks until ctx is done. The period
-// comes from the per-cycle feature config (engine.engine-interval).
+// comes from the per-cycle feature config (engine.interval).
 func (e *Engine) Run(ctx context.Context) {
 	e.Cycle(ctx)
 	for {
@@ -183,9 +183,9 @@ func (e *Engine) loadConfig(ctx context.Context) {
 	e.feat = next
 	if changed {
 		e.cfg.Log.Info("feature config reloaded",
-			"update-mode", next.UpdateMode,
+			"updates.mode", next.UpdateMode,
 			"update-url", next.UpdateURL,
-			"engine-interval", next.EngineInterval.String())
+			"engine.interval", next.EngineInterval.String())
 	}
 	key := strings.Join(warns, "|")
 	if key != e.featWarns {

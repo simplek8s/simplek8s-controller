@@ -62,7 +62,7 @@ func (f *Feature) Run(ctx context.Context) {
 // replacing the plan verification). Every cycle, for each node with a
 // well-formed next-kernel. Always on — purely observational (no
 // network, no disk): it runs even with updates.windows [] and with
-// update-mode off (events only — eligibility still bars any reboot).
+// updates.mode off (events only — eligibility still bars any reboot).
 //
 //   - running == next-kernel → quiescent; nothing to do. The transition
 //     into quiescence emits UpdateApplied (keyed per node+version,

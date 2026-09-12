@@ -107,15 +107,15 @@ func TestParseAbsentConfigMapIsDefaults(t *testing.T) {
 
 func TestParseAllValidKeys(t *testing.T) {
 	data := map[string]string{
-		"engine.engine-interval":         "30s",
-		"reboots.max-concurrent-reboots": "4",
-		"reboots.on-reboot-failure":      "continue",
-		"reboots.reboot-drain-timeout":   "1h30m",
-		"reboots.reboot-issue-grace":     "90s",
-		"updates.update-mode":            "full",
-		"updates.url":                    "https://dl.example.org/simplek8s/dev",
-		"updates.preserve":               "5",
-		"updates.max-percent-usage":      "90",
+		"engine.interval":           "30s",
+		"reboots.max-concurrent":    "4",
+		"reboots.on-failure":        "continue",
+		"reboots.drain-timeout":     "1h30m",
+		"reboots.issue-grace":       "90s",
+		"updates.mode":              "full",
+		"updates.url":               "https://dl.example.org/simplek8s/dev",
+		"updates.preserve":          "5",
+		"updates.max-percent-usage": "90",
 	}
 	got, warns := Parse(Defaults(), data)
 	if warns != nil {
@@ -138,7 +138,7 @@ func TestParseAllValidKeys(t *testing.T) {
 
 func TestParseAbsentKeysKeepDefaults(t *testing.T) {
 	data := map[string]string{
-		"reboots.max-concurrent-reboots": "2",
+		"reboots.max-concurrent": "2",
 	}
 	got, warns := Parse(Defaults(), data)
 	if warns != nil {
@@ -157,16 +157,16 @@ func TestParseInvalidKeepsLastValidAndWarns(t *testing.T) {
 	base.RebootDrainTimeout = time.Hour
 	base.UpdateMode = "stage"
 	data := map[string]string{
-		"reboots.max-concurrent-reboots": "not-a-number",
-		"reboots.reboot-drain-timeout":   "-5m",
-		"reboots.on-reboot-failure":      "sometimes",
-		"reboots.reboot-issue-grace":     "0s",
-		"updates.update-mode":            "half",
-		"updates.url":                    "ftp://nope.example",
-		"updates.check-interval":         "never", // retired: unknown key, still warns
-		"updates.preserve":               "0",
-		"updates.max-percent-usage":      "101",
-		"engine.engine-interval":         "",
+		"reboots.max-concurrent":    "not-a-number",
+		"reboots.drain-timeout":     "-5m",
+		"reboots.on-failure":        "sometimes",
+		"reboots.issue-grace":       "0s",
+		"updates.mode":              "half",
+		"updates.url":               "ftp://nope.example",
+		"updates.check-interval":    "never", // retired: unknown key, still warns
+		"updates.preserve":          "0",
+		"updates.max-percent-usage": "101",
+		"engine.interval":           "",
 	}
 	got, warns := Parse(base, data)
 	if len(warns) != 10 {
@@ -179,8 +179,8 @@ func TestParseInvalidKeepsLastValidAndWarns(t *testing.T) {
 
 func TestParseUnknownKeyWarnsAndIgnores(t *testing.T) {
 	got, warns := Parse(Defaults(), map[string]string{
-		"reboots.max-concurrent-reboots": "1",
-		"future.some-key":                "x",
+		"reboots.max-concurrent": "1",
+		"future.some-key":        "x",
 	})
 	if len(warns) != 1 || warns[0] != `unknown config key "future.some-key" ignored` {
 		t.Fatalf("warns = %v", warns)

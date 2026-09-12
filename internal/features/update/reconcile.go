@@ -12,7 +12,7 @@ import (
 // reconciliation (PLAN.md §3.7) plus the state re-arm riding it (§3.4
 // decision 14, case 1) and the malformed-goal correction (§3.10 path
 // 1). It is always ungated — it runs regardless of updates.windows
-// and update-mode: it never touches the release repository, only the
+// and updates.mode: it never touches the release repository, only the
 // partition, and it exists to honor the operator's own edits.
 //
 // Mount discipline: the partition is mounted only on pod start

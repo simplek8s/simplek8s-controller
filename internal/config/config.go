@@ -76,31 +76,31 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 			raw := data[k]
 			ok := true
 			switch k {
-			case "engine.engine-interval":
+			case "engine.interval":
 				if v, valid := parseDuration(raw); valid {
 					out.EngineInterval = v
 				} else {
 					ok = false
 				}
-			case "reboots.max-concurrent-reboots":
+			case "reboots.max-concurrent":
 				if v, valid := parseMinInt(raw, 0); valid {
 					out.MaxConcurrentReboots = v
 				} else {
 					ok = false
 				}
-			case "reboots.on-reboot-failure":
+			case "reboots.on-failure":
 				if v, valid := parseEnum(raw, "pause", "continue"); valid {
 					out.OnRebootFailure = v
 				} else {
 					ok = false
 				}
-			case "reboots.reboot-drain-timeout":
+			case "reboots.drain-timeout":
 				if v, valid := parseDuration(raw); valid {
 					out.RebootDrainTimeout = v
 				} else {
 					ok = false
 				}
-			case "reboots.reboot-issue-grace":
+			case "reboots.issue-grace":
 				if v, valid := parseDuration(raw); valid {
 					out.RebootIssueGrace = v
 				} else {
@@ -118,7 +118,7 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 				} else {
 					ok = false
 				}
-			case "updates.update-mode":
+			case "updates.mode":
 				if v, valid := parseEnum(raw, "off", "stage", "full"); valid {
 					out.UpdateMode = v
 				} else {

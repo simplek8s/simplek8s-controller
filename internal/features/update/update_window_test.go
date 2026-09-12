@@ -11,9 +11,9 @@ import (
 func setWindows(h *updateHarness, windows string) {
 	h.t.Helper()
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "full",
-		"updates.url":         h.repo.URL(),
-		"updates.windows":     windows,
+		"updates.mode":    "full",
+		"updates.url":     h.repo.URL(),
+		"updates.windows": windows,
 	})
 }
 
@@ -134,9 +134,9 @@ func TestFailedCheckConsumesOccurrence(t *testing.T) {
 	forge := newCountingRepo(t, forger)
 	forge.set(t, kernelIndex())
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "full",
-		"updates.url":         forge.URL(),
-		"updates.windows":     `["@every 2m"]`,
+		"updates.mode":    "full",
+		"updates.url":     forge.URL(),
+		"updates.windows": `["@every 2m"]`,
 	})
 	h.tick() // check fails (bad signature), occurrence consumed
 	if h.repo.hits() != 0 || forge.hits() != 1 {

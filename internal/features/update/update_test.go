@@ -181,9 +181,9 @@ func newUpdateHarnessKey(t *testing.T, mode string, kernelVersion string, anns m
 		t.Fatal(err)
 	}
 	cm := map[string]string{
-		"updates.update-mode": mode,
-		"updates.url":         repo.URL(),
-		"updates.windows":     `["@every 2m"]`,
+		"updates.mode":    mode,
+		"updates.url":     repo.URL(),
+		"updates.windows": `["@every 2m"]`,
 	}
 	fake.SetConfigMap("default", "simplek8s-controller", cm)
 
@@ -394,9 +394,9 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 	forge := newCountingRepo(t, forger)
 	forge.set(t, kernelIndex())
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "full",
-		"updates.url":         forge.URL(),
-		"updates.windows":     `["@every 2m"]`,
+		"updates.mode":    "full",
+		"updates.url":     forge.URL(),
+		"updates.windows": `["@every 2m"]`,
 	})
 
 	h.tick() // check fails
@@ -412,9 +412,9 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 
 	// Recovery: the good repo is restored, the failing stretch ends.
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "full",
-		"updates.url":         h.repo.URL(),
-		"updates.windows":     `["@every 2m"]`,
+		"updates.mode":    "full",
+		"updates.url":     h.repo.URL(),
+		"updates.windows": `["@every 2m"]`,
 	})
 	h.cl.Advance(time.Hour + time.Second)
 	h.tick()
@@ -424,9 +424,9 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 
 	// A new failing stretch fires the event again.
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.update-mode": "full",
-		"updates.url":         forge.URL(),
-		"updates.windows":     `["@every 2m"]`,
+		"updates.mode":    "full",
+		"updates.url":     forge.URL(),
+		"updates.windows": `["@every 2m"]`,
 	})
 	h.cl.Advance(time.Hour + time.Second)
 	h.tick()
