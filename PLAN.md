@@ -18,7 +18,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > **Index**
 >
 > | § | Title |
-> |---|---|
+> | --- | --- |
 > | 1 | Purpose & status |
 > | 1.1 | This document (status per era) |
 > | 1.2 | Shipped baseline (M1 reboots, M2 updates) |
@@ -37,7 +37,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 ### 1.1 This document (status per era)
 
 | Era | Content | Status |
-|---|---|---|
+| --- | --- | --- |
 | M1 | Node reboots (state machine, drain, orchestrator, API) | Shipped; E2E 28/28 PASS (§7.2) |
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
 | M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
@@ -208,7 +208,7 @@ data:
 ```
 
 | Key | Type | Default | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `reboots.windows` | JSON array of schedule strings | `[]` (empty) | Windows that gate **every non-forced reboot**: M1 API reboots and the update-driven (pod-side) enqueue alike. Empty ⇒ non-forced reboots never execute (nodes stage and wait, non-quiescent); forced reboots always do. |
 | `reboots.window-grace` | duration | `5m` | How long a `reboots.windows` occurrence stays open. |
 | `updates.windows` | JSON array of schedule strings | `'["@every 12h"]'` | Windows for the update *work*: the per-node check/staging loop runs only while open. An explicit `[]` ⇒ no update work at all. The default preserves M2's 12h check cadence; auto-reboots are governed by `reboots.windows` (a new M2-`full` install must set it to keep auto-rebooting — §5). |
@@ -247,7 +247,7 @@ Accepted set — **Vixie cron as documented in FreeBSD `crontab(5)`,
 plus the explicit `@every <duration>` extension, nothing else**:
 
 | Form | Examples | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | 5-field cron | `0 7 * * 3`, `*/10 * * * *`, `0 0 1-15 * 1-5`, `0 22 * * mon-fri`, `5 4 * * sun`, `0 0 1 jan *` | minute hour dom month dow, UTC. Standard field syntax: `*`, values, lists `a,b`, ranges `a-b` (inclusive), steps `*/n` and `a-b/n`; lists and ranges may mix (`1-3,7-9`). Month and dow names: first three letters, case-insensitive (`jan`–`dec`, `sun`–`sat`), usable inside lists and ranges (`mon-fri`, `jan,apr,jul,oct`). |
 | Named | `@hourly`, `@daily`/`@midnight`, `@weekly`, `@monthly`, `@yearly`/`@annually`, `@every_minute`, `@every_second` | The fixed Vixie expressions: `0 * * * *`, `0 0 * * *`, `0 0 * * 0`, `0 0 1 * *`, `0 0 1 1 *`; `@every_minute` = `* * * * *`; `@every_second` = `@every 1s` (open for any grace ≥ 1s — always in practice). |
 | `@every <duration>` | `@every 30m`, `@every 2h` | Occurrences every duration, midnight-UTC anchored (below). Go duration syntax (`time.ParseDuration`: `ns`/`us`/`ms`/`s`/`m`/`h`; no `d`/`w`). |
@@ -301,7 +301,7 @@ partition mount, rate-limited log).
 behavior at all). So the effective dial is:
 
 | `update-mode` | `updates.windows` | Behavior |
-|---|---|---|
+| --- | --- | --- |
 | `off` | any | no update behavior. |
 | `stage` / `full` | explicit `[]` | **fully inert** — not even checks. |
 | `stage` / `full` | non-empty (default `["@every 12h"]`) | check + stage only while a window is open; staging itself (mount, download, verify, extract, bootloader, purge) runs as one unit inside the window. Once started inside an open window, the run completes even if the window closes mid-flight (start-gate only, like reboots — §3.1); what is gated is the *start*, never the in-flight run. |
@@ -537,7 +537,7 @@ patch carrying the read `resourceVersion`). M2 §3.5's table, as
 affected by M3:
 
 | Writer | Action | Precondition |
-|---|---|---|
+| --- | --- | --- |
 | Local pod | Bootstrap `next-kernel` (unchanged, M2) | annotation absent. |
 | Local pod | Fresh-stage anchor `next-kernel := V` (unchanged, M2) | value at write time `== running` or absent. |
 | Local pod | **State re-arm: clear the M1 reboot state** (M3, §3.4) | `next-kernel` changed to a well-formed version whose file is locally present on the partition, or staging completed a version `V` with `next-kernel == V`; state `completed` at write time (`absent` → RMW skipped, nothing to clear; never `failed`); re-checked on the fresh read. |
@@ -600,7 +600,7 @@ change-triggered cycle (or pod start) completes the re-point.
 Events (namespace `default`, rate-limited per key as in M1/M2):
 
 | Event | Source | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `QueueHeldWindow` | leader (reboot) | non-forced queued nodes waiting for a `reboots.windows` window (keyed per node, rate-limited). |
 | `UpdateHeldWindow` | local pod (update) | its node is reboot-eligible and waiting for a `reboots.windows` window (keyed per node). |
 | `UpdateApplied` | leader (update) | node quiescent on `next-kernel` after a reboot (keyed per node+version). |
@@ -701,7 +701,7 @@ controller writer sets a value whose file is not on the boot partition.
 Audited — all four existing writers satisfy it:
 
 | Writer | Why the file is present |
-|---|---|
+| --- | --- |
 | `bootstrap` (annotation absent) | the target comes from a local partition scan (running-if-local, else newest local). |
 | Fresh-stage `anchor` | runs only after `Store.Stage` succeeded — the file was just written. |
 | Plan-layer resets (×2, M2) | write `running` — the kernel the node is executing, which the purge protects. (Abolished by this plan anyway.) |
@@ -885,9 +885,9 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
     with a reboot state (in-flight states plus `completed`/`failed`
     history until cleared); nodes without state are never listed, and
     `GET`/`DELETE` `/reboots/{node}` on a node without state is 404.
-16. **No `/metrics` in v1**: observability is Events + structured logs
-    + `GET /reboots`; a metrics endpoint can be added later without API
-    changes.
+16. **No `/metrics` in v1**: observability is Events + structured
+    logs + `GET /reboots`; a metrics endpoint can be added later without
+    API changes.
 17. **State lives in four JSON annotations** (`reboot-state`,
     `reboot-request`, `reboot-exec`, `reboot-status`), one per concern
     and writer — replacing the 12-annotation v4 design: `state`+`since`
@@ -999,7 +999,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 ### 4.3 Windows era (M3 — active)
 
 | # | Decision | Rationale |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Windows = JSON **array of schedule strings** in flat ConfigMap keys | ConfigMap values are strings (M2 §3.2); a list needs a serialization; JSON is stdlib and unambiguous. |
 | 2 | Vixie cron as documented in FreeBSD `crontab(5)` (5-field cron with names, the `@` schedules, `@<seconds>`) **+ the explicit `@every <duration>` extension** with controller-specific semantics (midnight-UTC anchor, not process start); nothing else (`?`, `@reboot` rejected) | What every cron operator already knows, pinned to the FreeBSD `crontab(5)` text instead of folklore; `@every <duration>` covers the "every N" cadence; the `@<seconds>` alias absorbs the remaining Vixie schedule form; small enough to hand-roll. |
 | 3 | No window ranges / `end` field; duration = the grace key | Replaces TODO 1's four window forms (range, interval, cron, shortcut) with one mechanism; less surface, fewer edge cases. |
@@ -1126,7 +1126,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 ### 6.1 Modules
 
 | Module | Change |
-|---|---|
+| --- | --- |
 | `internal/cron` (new) | `Parse`, last-occurrence, `WindowsOpen`; Vixie conformance per FreeBSD `crontab(5)` + `@every`; exhaustive table tests. |
 | `internal/config` | Four new keys + `Config` fields (parsed `[]Schedule` + two `time.Duration`); validation per §3.2; `updates.check-interval` no longer parsed (decision 20). |
 | `internal/features/reboot` | Orchestrator: window gate in the per-candidate admission loop, forced bypass, `QueueHeldWindow` event. |
@@ -1218,7 +1218,7 @@ Phases 1–5 complete 2026-09-11 (W1–W17 17/17 PASS, §7.4); phase 6
 (multi-arch build) pending — see TODO 13.
 
 | Phase | Content |
-|---|---|
+| --- | --- |
 | 1 | `internal/cron` + the four window config keys + unit tests (no behavior change). |
 | 2 | Reboot window gate + API rejection + unit tests. |
 | 3a | Update gating + claim: master switch, one check per occurrence with the persisted `update-last-check` claim; `updates.check-interval` retired (warn+ignore). Plan layer still present — no behavior removed yet. |
@@ -1254,7 +1254,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 ### 7.2 Reboots campaign (28/28 PASS)
 
 | Case | Result | Date | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | M1-regression | PASS | 2026-09-06 | config-driven binary `7bf8c43` deployed to all 3 nodes (ctr import, nodeSelector rollout); live ConfigMap checks: invalid value → `WARN feature config ... keeping previous` (last-valid-wins), CM deleted → pods stay Running on built-in defaults, CM restored → 3/3; re-verified A1 (401s + livez 200), B1 (`scripts/e2e-reboot.sh wk1` 20/20), C1 (PDB `maxUnavailable:0` → `requested` + `blockedBy=[default/pdb-target]` + `PDBBlocked` event, DELETE 204) |
 | B1 | PASS | 2026-09-06 | `scripts/e2e-reboot.sh wk1`, 20/20 checks, ~20 s reboot. First run had 5 spurious failures: port-forward died with the node (fixed: NodePort on a healthy node), polling through the API (fixed: node annotations), 5 s polling missed the short `draining` window (fixed: 2 s), and the 4 lifecycle events were never created (fixed: events must live in `default`, PLAN.FIXME #5). |
 | A1 | PASS | 2026-09-06 | bad token → 401 `{"code":401,"reason":"Unauthorized"}` |
@@ -1294,7 +1294,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 #### Phase A — API & admission (no reboot)
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | A1 | invalid token | `curl -H "Authorization: Bearer wrong" $API/api/v1/reboots` | 401 |
 | A2 | liveness/readiness | `curl $API/livez $API/readyz` | 200 / 200 |
 | A3 | empty list | `curl -H $AUTH $API/api/v1/reboots` | `[]` (bare JSON array of plan entries) |
@@ -1307,7 +1307,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 #### Phase B — happy path
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | B1 | full worker reboot | `scripts/e2e-reboot.sh <worker>` | requested→draining(cordon)→rebooting→completed→uncordon; events RebootDraining/RebootIssued/RebootCommandIssued/RebootCompleted; DELETE 204; annotations cleared |
 | B2 | late return | B1, but let the node return > 30 s after `issuedAt` | still `completed` (NotReady-after-issuedAt evidence), not `failed` |
 | B3 | re-request after `completed` | POST again on the same node | accepted (re-requestable) |
@@ -1315,7 +1315,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 #### Phase C — PDB, unmanaged, force
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | C1 | PDB block | Deployment + PDB (`maxUnavailable:0`) pinned to the worker; POST | stays `requested`; `reboot-status.blockedBy` set; `PDBBlocked` event; queue continues past it |
 | C2 | 2-node PDB skip | C1 on w1 + POST w2 | w1 blocked, w2 drains/completes (skip rule) |
 | C3 | PDB unblock | delete the PDB (or scale dep to 0) | drain proceeds on next cycle |
@@ -1326,7 +1326,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 #### Phase D — fault injection (disruptive)
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | D1 | leader takeover mid-drain | while w1 `draining`: `kubectl -n simplek8s delete pod <leader-pod>` | new leader takes over (~30 s); drain continues; no double transitions |
 | D2 | duplicate executor | while node `rebooting`: roll the DaemonSet (new pod on the node) | new pod does not re-issue beyond the bound; `attempt` never exceeds the single 1→2 re-issue; one reboot only |
 | D3 | DELETE on `draining` | `DELETE /reboots/<draining-node>` | 409 (not interruptible) |
@@ -1359,6 +1359,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 - Every case must end with: node Ready, annotations cleared or in a
   well-defined state, queue unblocked, and a `kubectl -n simplek8s
   get events` scan for unexpected reasons.
+
 ### 7.3 Updates campaign
 
 Live validation of the distro-update feature on the real test cluster
@@ -1410,7 +1411,7 @@ namespace `default`).
 #### Progress
 
 | Case | Result | Date | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U1 (stage mode) | PASS | 2026-09-07 | Defensive re-stage on all 3 nodes (cp1/wk1/wk2); syslinux entries written; bootloader default at the new version; nodes stayed on the old kernel (no reboots). Found + fixed here: staging was a silent no-op until the boot mount root was created (`6684e07`). |
 | U5 (full mode, real release) | PASS | 2026-09-07 | Real dev release `6.18.49-simplek8s-202609061935`; all 3 nodes staged → plan started → reboots serialized workers-first, CP-last (wk1→wk2→cp1) → each returned on the new kernel (`running == next-kernel`) → plan settled, cluster quiescent; no `failed`. |
 | U9 (full mode, 3-CP quorum) | PASS (found BUG 12) | 2026-09-08 | Re-ran U5 on the HA 3-CP cluster (cp1/2/3 + wk1/2). Phase A manual downgrade then Phase B `full` re-update: all 5 back on the latest, **API never dropped** (2/3 etcd quorum through each single-CP reboot; leader handover `xb4bh`→`p4vrz`). First Phase-B attempt hit **BUG 12** (stale `reboot-state` → `verifyPlan` false-cancel); unblocked by clearing stale M1 annotations + re-staging fresh. See §U9 + TODO item 12. |
@@ -1418,56 +1419,56 @@ namespace `default`).
 #### U0 — mode `off` is inert
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U0 | no update activity | `updates.update-mode: "off"`, PROD repo reachable with a newer version | no HTTP traffic to the repo (server access log empty), no annotations created, no update events, engine + reboot API healthy |
 
 #### U1 — staging, `stage` mode
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U1 | full staging happy path | `updates.update-mode: stage`; the PROD repo has a newer version | every node: `UpdateAvailable` then `UpdateStaged`; `/boot/simplek8s/` contains the new version + bootloader entry; `next-kernel := V` on all nodes; bootloader default points at V; **nodes keep running the old version** (no reboots); purge respected: running version NOT deleted, old versions pruned per `preserve` |
 | U1b | idempotent re-check | wait for the next window occurrence | no re-download (V already in `/boot`), no annotation change, no plan — "V in /boot → nothing" rule |
 
 #### U2 — GPG rejection
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U2 | bad signature | a `SHA256SUMS.gpg` signed with an unknown/wrong key (tampered or non-PROD key) | no staging, no annotation change, `UpdateCheckError` event (rate-limited), nodes untouched, next occurrence retries |
 
 #### U3 — sha256 rejection
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U3 | corrupted payload | valid signature, but the served `.efi.zst` does not match the index hash | download rejected, **no partial file** left in the boot-partition `simplek8s/` dir, `UpdateCheckError` event, next occurrence retries |
 
 #### U4 — per-node URL override
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U4 | `update-url` annotation | one node annotated with a second release URL (e.g. `.../stable`) serving a *different* version | only that node stages its own version (different V); the other nodes stage the cluster `updates.url` version; both `next-kernel` values correct per node |
 
 #### U5 — `full` mode, real release (the big one)
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U5 | full cluster update | `updates.update-mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `max-concurrent-reboots` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan-state ConfigMap entry cleared → cluster fully on the new version; no `failed` (M2 plan mechanism — abolished by M3; the same outcome via windows is W4) |
 
 #### U6 — plan failure → all-or-nothing cancel
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U6 | drain timeout mid-plan | `full` mode with a new release; make one node's drain fail (stuck pod / PDB `maxUnavailable:0`) | that node `failed` (M1) → `UpdatePlanCanceled`; in-flight reboots (if any) complete; **two-phase reset**: non-in-flight members reset immediately to `next-kernel := running`; in-flight members settle when their M1 state lands — the failing node comes back on the old kernel (mismatch) → reset, any completed+verified node keeps V (`next-kernel == running == V`, no-op); bootloader defaults back to the old version where reset applied; the plan-state ConfigMap entry is cleared only when **all** members have settled; next check does **not** auto-retry (V in the boot-partition dir → nothing) (M2 plan mechanism — abolished by M3; cancel/defer semantics now: W7) |
 
 #### U7 — operator re-launch
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U7 | re-anchor + M1 reboot | after U6: set `next-kernel := V` on the cancelled nodes, then reboot them via the M1 API | bootloader followed the annotation before the reboot; nodes come back on V; `running == next-kernel` → quiescent; no update events (the updater did nothing — operator-driven) (M2; in M3 re-anchor + M1 reboot still applies — see §7.4) |
 
 #### U8 — rollback
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U8 | operator rollback | on an updated node (e.g. after U5): `next-kernel :=` the older preserved version, reboot via the M1 API | node comes back on the old version; `next-kernel == running` → quiescent; the check does **not** re-stage or re-update automatically (newer V is in `/boot` → nothing); the operator decides the next move |
 
 #### U9 — `full` mode on an HA 3-CP cluster (quorum) + BUG 12
@@ -1477,6 +1478,7 @@ aspect: the update reboot plan must bring all 3 control planes back (one at
 a time, `max-concurrent-reboots: 1`) **without the API losing quorum**.
 
 ### Phase A — manual downgrade
+
 `next-kernel` + the boot-partition `DEFAULT` flipped to the previous kernel
 (`202608291203`) on all 5, then a full M1 reboot (workers→CP, serialized).
 All 5 came back quiescent on the old kernel (`running == next-kernel`); the
@@ -1484,6 +1486,7 @@ API stayed up; then the new `.efi` was removed from the boot partition so the
 auto-updater would have to re-download it.
 
 ### Phase B — auto re-update
+
 `updates.update-mode: full`. The auto-updater re-downloaded, re-staged
 (`DEFAULT`→new), anchored (eligible), and the leader drove the plan through
 all 5 reboots (workers-first, CP-last, serialized). **The API never
@@ -1494,6 +1497,7 @@ quiescent on the new kernel, plan ConfigMap empty (`plans: '{}'`), no
 `eligible` left.
 
 ### BUG 12 (found here)
+
 The **first** Phase-B attempt failed. The `reboot-state=completed` left by
 Phase A's manual reboot poisoned `verifyPlan` (`update/plan.go:154`), which
 cancels a plan in the very cycle it is created when a member reads
@@ -1512,12 +1516,13 @@ affects successive auto-updates (not only manual-then-auto).
 terminal `reboot-state` before its first verify (`resetStaleRebootState`,
 `update/plan.go`; `nodestate.ClearStaleRebootStateBuild`), so the same-cycle
 verify no longer false-cancels. Unit/integration tested; E2E re-run pending.
+
 ### 7.4 Windows campaign (W1–W17, 17/17 PASS)
 
 Live on the 5-node test cluster (cp1, wk1, wk2 driven; cp2/cp3 converged unattended) with builds `f3b329a` (W1–W13) and `b1c6da5` (W13 re-validation post-D34). Cluster left quiescent on a calm ConfigMap (`stage`, `updates=["@every 12h"]`, `reboots=[]`).
 
 | # | Result (2026-09-11 live) | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | W1 | PASS 2026-09-11 — default-empty windows: 422 `NoWindowsConfigured` per node (unknown node → 422, not 404); `force:true` admitted and executed (requested→rebooting→completed ~25 s). | Empty `reboots.windows` | non-forced `POST /reboots` | 422 `NoWindowsConfigured` per node; `{"force":true}` executes immediately. |
 | W2 | PASS 2026-09-11 — `@every 2m`/30 s: held `requested` + `QueueHeldWindow` while closed; admitted exactly at window open (12:10:01); with 10 s grace the close landed mid-reboot → still `completed` (in-flight never interrupted). | `reboots.windows: '["@every 2m"]'` | POST while closed → open | stays `requested` + `QueueHeldWindow` while closed; admitted on open; an in-flight reboot is not interrupted by close. |
 | W3 | PASS 2026-09-11 — explicit `[]`: no claims, no events (2.5 min); `@every 2m`: claims stepped exactly per occurrence (12:16→12:18→12:20→12:22); pod deleted mid-opening → claim holds, no re-fetch; `@daily` closed → nothing for 3 min. Absent→default (`@every 12h`) verified via unit + code (12 h not waited live). | `updates.windows` master switch + per-occurrence check | explicit `[]` vs default (absent) vs short campaign window; several occurrences; delete the local pod mid-opening | explicit `[]` → no check activity (no index fetches); absent → the default `@every 12h` applies (verified via config snapshot/log); short window → exactly one index fetch per occurrence (next occurrence → next fetch); pod restart mid-opening → **no** re-fetch, `update-last-check` holds; nothing while closed. |

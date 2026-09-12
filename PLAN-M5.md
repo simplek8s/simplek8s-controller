@@ -158,7 +158,7 @@ the index, scoped to your flavor, does not contain it).
 ## 4. Decision log (M5, open — numbers restart per era)
 
 | # | Decision | Rationale / status |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Flavor set `{x86-64, arm64, rpi4, rpi5}`; `aarch64` dropped (repo has none) | Match reality, not Debian naming. `MapArch` keeps existing for node-arch mapping; flavor is separate. |
 | 2 | Identify the expected boot partition; fail closed on ambiguity (CLOSED 2026-09-11, refined) | Other `EFI`/`boot`-labeled partitions can confuse first-match discovery and would be mounted (then written). Enumerate all candidates (`PARTLABEL=boot` preferred, then fs labels), verify contents (`simplek8s/` + bootloader config), first-verifying wins, none ⇒ touch nothing. Device cached per pod lifetime, re-resolved on failure. |
 | 3 | No override annotation (REJECTED 2026-09-11) | No flavor migration exists; every escape (legacy bootstrap, empty partition, mixed cleanup) is a one-time ssh. Permanent API surface for nonevents is declined. |
@@ -179,7 +179,7 @@ the index, scoped to your flavor, does not contain it).
 ### 6.1 Modules
 
 | Module | Change |
-|---|---|
+| --- | --- |
 | `internal/features/update` (`versions.go`) | flavor type + `ResolveFlavor` from staged filenames; `MapArch` removed (its `aarch64` output matched nothing — the bug). |
 | `internal/features/update` (`bootstore.go`) | `findBootDevice` rework per §3.6: PARTLABEL preference, blkid export already parsed, candidate enumeration, contents verification (`simplek8s/` + bootloader config), per-pod device cache with re-resolve on failure. |
 | `internal/features/update` (`check.go`) | filter index by flavor; `res.Arch` becomes the flavor. |
@@ -208,7 +208,7 @@ the index, scoped to your flavor, does not contain it).
 ### 6.3 Phases
 
 | Phase | Content |
-|---|---|
+| --- | --- |
 | 1 | Flavor plumbing + device identification/verification + unit tests (no behavior change on x86-64 single-candidate layouts; arm64 goes no-op → flavor-scoped). |
 | 2 | Live on rpi4-node (rpi4): F1–F3 (§7); bootloader rpi proven. |
 | 3 | Live on rpi5-node (rpi5): F4 (§7) — needs drain approval. |
@@ -216,7 +216,7 @@ the index, scoped to your flavor, does not contain it).
 ## 7. E2E (F-cases, live)
 
 | # | Case | Trigger | Expect |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | F1 | Flavor detection on rpi4-node | read-only: controller logs after deploy (or a unit-driven annotation) | PASS 2026-09-11 (PROD): `board flavor resolved: rpi4` in pod log (build `edc6174`), no writes. |
 | F2 | First rpi staging | `stage` + newer `rpi4` release in index (or pin an uncached `rpi4` ts) | PASS 2026-09-11 (PROD rpi4-node): `202609090435.rpi4` staged + `config.txt` re-pointed, running untouched, no `reboot-state`. First live exercise of the rpi writer. |
 | F3 | Full auto-update on rpi4 (W4-shaped) | `full` + windows open | PASS 2026-09-11 (PROD rpi4-node): auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent (`next`==running). `UpdateApplied` state-proven (event not retrieved from the PROD sink — minor follow-up). |

@@ -99,4 +99,3 @@ machine-console access per node. The verified console recovery (type
 a good `LABEL`, repair, re-pin) is documented in the README runbook;
 the `completed`+mismatch verification and no-auto-retry already hold
 for whatever comes back.
-

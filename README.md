@@ -11,8 +11,8 @@ capabilities over the hosts.
 First capability (v1): **node reboots** with a concurrency
 limit, availability waiting, and PodDisruptionBudget awareness.
 
-- Project: https://simplek8s.org
-- Repo: https://github.com/simplek8s/simplek8s-controller
+- Project: <https://simplek8s.org>
+- Repo: <https://github.com/simplek8s/simplek8s-controller>
 - Go 1.27, no client-go, no controller-runtime. Direct dependencies
   are two (both for release verification/payloads, added with updates):
   `ProtonMail/go-crypto` (GPG) and `klauspost/compress` (zstd).
@@ -43,7 +43,7 @@ All lifecycle state lives in **four Node annotations** (prefix
 rejoining with a fresh kubelet never loses state:
 
 | Annotation | Content |
-|---|---|
+| --- | --- |
 | `simplek8s.org/reboot-state` | `{"state":"requested\|draining\|rebooting\|completed\|failed","since":"<RFC3339>"}` |
 | `simplek8s.org/reboot-request` | `{"id":"<req-id>","by":"<requestedBy>","force":false}` |
 | `simplek8s.org/reboot-exec` | `{"issuedAt":"...","bootId":"...","attempt":1,"executorPodUID":"...","confirmedAt":null}` |
@@ -114,7 +114,7 @@ and an invalid value keeps the previous one (with a warning) — a config
 typo never crashes the controller.
 
 | Key | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `engine.engine-interval` | `2s` | engine poll period |
 | `reboots.max-concurrent-reboots` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
 | `reboots.on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
@@ -176,7 +176,7 @@ can never write to the boot partition.
 ### The two operator annotations
 
 | Annotation | Meaning |
-|---|---|
+| --- | --- |
 | `simplek8s.org/next-kernel` | Per-node **boot intent**: the release version the node should boot. Always a version present in the boot partition's `simplek8s/` dir. Written by the updater (staging, safe-state correction) and the operator (pin/rollback). Deleted only when no local kernel remains (safe-state case). |
 | `simplek8s.org/update-url` | Per-node release repo override (takes precedence over `updates.url`). |
 | `simplek8s.org/update-last-check` | Newest checked window occurrence (RFC3339 UTC), written by the local pod before each check — at most one check per occurrence, crash-safe. Read-only for operators. |
@@ -407,7 +407,7 @@ on every push and PR. Pushing a branch also publishes a multi-arch
 
 Layout:
 
-```
+```text
 cmd/simplek8s-controller/   entrypoint (flags, env, wiring)
 internal/config/            flat-key ConfigMap config (defaults, last-valid-wins)
 internal/kube/              stdlib REST client + minimal K8s types
