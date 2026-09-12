@@ -1,1 +1,2 @@
 keys/simplek8s-pubring.gpg filter=lfs diff=merge text=auto
+assets/*.png filter=lfs diff=lfs merge=mrauto text=auto

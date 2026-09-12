@@ -1,4 +1,6 @@
-# simplek8s-controller
+# SimpleK8s Controller
+
+![SimpleK8s Controller logo](assets/icon.png)
 
 [![ci](https://github.com/simplek8s/simplek8s-controller/actions/workflows/ci.yml/badge.svg)](https://github.com/simplek8s/simplek8s-controller/actions/workflows/ci.yml)
 [![image](https://github.com/simplek8s/simplek8s-controller/actions/workflows/image.yml/badge.svg)](https://github.com/simplek8s/simplek8s-controller/pkgs/container/simplek8s-controller)
@@ -10,12 +12,6 @@ It runs as a privileged DaemonSet and handles two jobs:
   node's boot partition, with optional window-gated automatic reboots.
 - **Node reboots**: concurrency-limited, availability-aware and
   PDB-aware, driven by a small HTTP API.
-
-- Project: <https://simplek8s.org>
-- Repo: <https://github.com/simplek8s/simplek8s-controller>
-- Go 1.27, no client-go, no controller-runtime. Direct dependencies
-  are two (release verification/payloads):
-  `ProtonMail/go-crypto` (GPG) and `klauspost/compress` (zstd).
 
 Design: [PLAN.md](PLAN.md).
 
