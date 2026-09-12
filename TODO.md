@@ -101,20 +101,23 @@ verification, PLAN.md §3.4), so the bug class no longer exists. The
 pending E2E re-run (successive auto-update) is superseded by the
 windows E2E campaign (PLAN.md §7.4), case W5.
 
-## 13. Multi-platform container image — public publishing (build half carried by PLAN.md §3.11)
+## 13. Multi-platform container image — public publishing (CLOSED 2026-09-12)
 
-The multi-platform **build** is closed by PLAN.md §3.11: `make image`
-builds the image for `linux/amd64` **and** `linux/aarch64` locally
-(buildx; the arch-agnostic `Dockerfile` needs no change). Remaining —
-publish the image as a public multi-arch `v*` release:
+The multi-platform **build** was closed by PLAN.md §3.11 (`make image`:
+`linux/amd64` + `linux/arm64` via buildx). The publish half closed in
+the GitHub-publication pass:
 
-- a registry (none exists yet — today only local builds; `:dev` stays a
-  local development tag);
-- the `v*` tag scheme (timestamp / incremental / semver — undecided);
-- CI (a build-check workflow for both platforms, then a release push on
-  `v*` tags) — deliberately not in the M3 plan;
-- an arm64 test node for E2E (planned; one full auto-update on the
-  aarch64 image when it is up).
+- registry: GHCR (`ghcr.io/simplek8s/simplek8s-controller`, as the
+  Makefile already defaulted);
+- `v*` scheme: semver `vX.Y.Z` tags → versioned image + GitHub
+  Release; branches → `<branch>` + `sha-<short>` (`main` also `edge` +
+  `latest`);
+- CI: `ci.yml` (fmt/vet/test/build per push+PR) gates `image.yml`
+  (multi-arch push to GHCR);
+- arm64 E2E: live on PROD rpi4-node (rpi4) + rpi5-node (rpi5), M5 F1–F4.
+
+Remaining activation (not code): `git push -u origin main`, flip the
+GHCR package to public, push the first `v*` tag.
 
 ## 14. Boot failure fallback (syslinux) — accepted risk, no plan
 
