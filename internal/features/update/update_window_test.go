@@ -11,7 +11,6 @@ import (
 func setWindows(h *updateHarness, windows string) {
 	h.t.Helper()
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.mode":    "full",
 		"updates.url":     h.repo.URL(),
 		"updates.windows": windows,
 	})
@@ -25,7 +24,7 @@ func lastCheck(h *updateHarness) string {
 // --- Master switch (PLAN.md §3.4) -------------------------------------------
 
 func TestMasterSwitchEmptyWindowsIsInert(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	setWindows(h, `[]`)
@@ -45,7 +44,7 @@ func TestMasterSwitchEmptyWindowsIsInert(t *testing.T) {
 }
 
 func TestMasterSwitchClosedWindowSkips(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	// Harness clock is Saturday 2026-09-05 12:00 UTC: @daily (midnight
@@ -78,7 +77,7 @@ func TestMasterSwitchClosedWindowSkips(t *testing.T) {
 // --- One check per occurrence (decision 21) ----------------------------------
 
 func TestOneCheckPerOccurrencePersisted(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	h.tick()
@@ -106,7 +105,7 @@ func TestOneCheckPerOccurrencePersisted(t *testing.T) {
 }
 
 func TestCoincidentSchedulesShareClaim(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	// @daily and @every 24h coincide at midnight: one shared claim.
@@ -127,14 +126,13 @@ func TestCoincidentSchedulesShareClaim(t *testing.T) {
 }
 
 func TestFailedCheckConsumesOccurrence(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	forger := newTestKey(t, true)
 	forge := newCountingRepo(t, forger)
 	forge.set(t, kernelIndex())
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.mode":    "full",
 		"updates.url":     forge.URL(),
 		"updates.windows": `["@every 2m"]`,
 	})
@@ -154,7 +152,7 @@ func TestFailedCheckConsumesOccurrence(t *testing.T) {
 }
 
 func TestCorruptClaimTreatedAsAbsent(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{
 			"simplek8s.org/next-kernel":       "202601010000",
 			"simplek8s.org/update-last-check": "garbage",
@@ -170,7 +168,7 @@ func TestCorruptClaimTreatedAsAbsent(t *testing.T) {
 }
 
 func TestStoredNewerClaimSkips(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{
 			"simplek8s.org/next-kernel":       "202601010000",
 			"simplek8s.org/update-last-check": "2026-09-05T12:02:00Z", // a later occurrence

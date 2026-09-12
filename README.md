@@ -36,7 +36,7 @@ kubectl label namespace simplek8s \
   pod-security.kubernetes.io/audit=restricted \
   pod-security.kubernetes.io/warn=restricted --overwrite
 
-# 1. Install (inert by default: updates off, no reboot windows).
+# 1. Install (stages updates by default, never auto-reboots).
 helm -n simplek8s install simplek8s-controller \
   oci://ghcr.io/simplek8s/charts/simplek8s-controller --create-namespace
 
@@ -46,16 +46,17 @@ kubectl -n simplek8s logs -l app=simplek8s-controller --tail=3
 ```
 
 Then give it work (Helm owns the ConfigMap — hand edits are
-overwritten on the next `upgrade`):
+overwritten on the next `upgrade`): staging runs by default (updates
+checked every 12h, no automatic reboots). For automatic reboots, open
+a reboots window:
 
 ```sh
 helm -n simplek8s upgrade simplek8s-controller oci://ghcr.io/simplek8s/charts/simplek8s-controller --reuse-values \
-  --set config.updates.mode=stage
+  --set 'config.reboots.windows=["@daily"]'
 ```
 
-start with `stage` to just install updates without automatic node
-reboots, and then consider `full` for automatic node reboots (see
-"Distro updates" below).
+and only then consider unattended reboots (see "Distro updates"
+below — canary first, always).
 
 ## How it works
 
@@ -175,12 +176,10 @@ typo never crashes the controller.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `engine.interval` | `2s` | engine poll period |
 | `reboots.max-concurrent` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
 | `reboots.on-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
 | `reboots.drain-timeout` | `10m` | wall-clock cap on the drain phase |
 | `reboots.issue-grace` | `15m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
-| `updates.mode` | `off` | `off`: no release checks or staging (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + window-gated automatic reboots (no plans — the local pod enqueues the node into the M1 queue while a window is open) |
 | `updates.url` | `https://dl.simplek8s.org/simplek8s/stable` | release repo (root of `SHA256SUMS` + `SHA256SUMS.gpg`). Overridable per node with the `simplek8s.org/update-url` annotation |
 | `updates.preserve` | `3` | how many released versions are immune to purge on the boot partition after a successful update (the running version is never purged; purge only runs under space pressure) |
 | `updates.max-percent-usage` | `75` | after an update, purge oldest versions until the boot partition usage is at or below this percentage |
@@ -195,23 +194,23 @@ Deployment wiring is not feature configuration and stays as a flag:
 ## Distro updates
 
 The update feature stages new SimpleK8s releases on each node's boot
-partition and (in `full` mode) reboots the node into them through the
-M1 queue — gated by maintenance windows. It is tuned by
-`updates.mode` and gated by `updates.windows` /
-`reboots.windows`:
+partition and, while a `reboots.windows` window is open, reboots the
+node into them through the M1 queue — everything gated by maintenance
+windows (`updates.windows` for the check/stage work, `reboots.windows`
+for the automatic reboots):
 
-- **`off`** (default): inert. No release checks, downloads or staging.
-  A per-node `next-kernel` already set is still honored at boot, and
-  the bootloader reconciliation still re-points it.
-- **`stage`**: check + GPG/sha256-verified staging of the newest release +
-  `next-kernel := V`. No automatic reboot — the operator reboots via the
-  M1 API when ready.
-- **`full`**: staging **plus** automatic reboots: while a
-  `reboots.windows` window is open, each node's local pod enqueues it
-  into the M1 reboot queue (serialization, PDB and CP rules unchanged).
-  There is no plan object: pending state is derived from `next-kernel`
-  vs `running` + the M1 state, and verification is per node
-  (`UpdateApplied` / `UpdateMismatch`, no auto-retry).
+- **Default**: check + GPG/sha256-verified staging of the newest
+  release + `next-kernel := V`, every 12h. No automatic reboot — the
+  operator reboots via the M1 API when ready, or opens a
+  `reboots.windows` window: while open, each node's local pod enqueues
+  it into the M1 reboot queue (serialization, PDB and CP rules
+  unchanged). There is no plan object: pending state is derived from
+  `next-kernel` vs `running` + the M1 state, and verification is per
+  node (`UpdateApplied` / `UpdateMismatch`, no auto-retry).
+- **Fully off**: `updates.windows: '[]'` — no release checks,
+  downloads or staging. A per-node `next-kernel` already set is still
+  honored at boot, and the bootloader reconciliation still re-points
+  it.
 
 Windows are cron-style schedule lists (Vixie syntax, see PLAN.md §3.3)
 plus a grace period, evaluated against the UTC clock; only the *start*
@@ -245,7 +244,7 @@ set either annotation but `next-kernel`/`update-url` by hand.)
 
 `DELETE /api/v1/reboots/<node>` cancels the **currently queued attempt**
 but does not suppress the automatic intent while the node stays eligible
-(non-quiescent, `full` mode): the node is re-enqueued at the next open
+(non-quiescent with staging done): the node is re-enqueued at the next open
 `reboots.windows` (defer, not abandon). To abandon the intent, make the
 node quiescent — reboot it into the pinned version manually, or re-pin
 `next-kernel` to `running`. A `failed` node is an operator alarm and is
@@ -280,9 +279,9 @@ machine console:
    it from the verified index, or copy a good one over it), re-pin
    `next-kernel` to `running`, DELETE the state → quiescent.
 
-Prevention without new code: roll out in `stage` mode and reboot nodes
-one by one through the M1 API (canary), switching to `full` only after
-the release has proven bootable on your hardware.
+Prevention without new code: keep `reboots.windows` closed and reboot
+nodes one by one through the M1 API (canary), opening the window only
+after the release has proven bootable on your hardware.
 
 ### Keyring override
 

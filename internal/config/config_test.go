@@ -8,9 +8,6 @@ import (
 
 func TestDefaults(t *testing.T) {
 	d := Defaults()
-	if d.EngineInterval != 2*time.Second {
-		t.Errorf("EngineInterval = %v, want 2s", d.EngineInterval)
-	}
 	if d.MaxConcurrentReboots != 1 {
 		t.Errorf("MaxConcurrentReboots = %v, want 1", d.MaxConcurrentReboots)
 	}
@@ -22,9 +19,6 @@ func TestDefaults(t *testing.T) {
 	}
 	if d.RebootIssueGrace != 15*time.Minute {
 		t.Errorf("RebootIssueGrace = %v, want 15m", d.RebootIssueGrace)
-	}
-	if d.UpdateMode != "off" {
-		t.Errorf("UpdateMode = %q, want off", d.UpdateMode)
 	}
 	if d.UpdateURL != "https://dl.simplek8s.org/simplek8s/stable" {
 		t.Errorf("UpdateURL = %q", d.UpdateURL)
@@ -107,12 +101,10 @@ func TestParseAbsentConfigMapIsDefaults(t *testing.T) {
 
 func TestParseAllValidKeys(t *testing.T) {
 	data := map[string]string{
-		"engine.interval":           "30s",
 		"reboots.max-concurrent":    "4",
 		"reboots.on-failure":        "continue",
 		"reboots.drain-timeout":     "1h30m",
 		"reboots.issue-grace":       "90s",
-		"updates.mode":              "full",
 		"updates.url":               "https://dl.example.org/simplek8s/dev",
 		"updates.preserve":          "5",
 		"updates.max-percent-usage": "90",
@@ -122,12 +114,10 @@ func TestParseAllValidKeys(t *testing.T) {
 		t.Fatalf("warns = %v, want none", warns)
 	}
 	want := Defaults()
-	want.EngineInterval = 30 * time.Second
 	want.MaxConcurrentReboots = 4
 	want.OnRebootFailure = "continue"
 	want.RebootDrainTimeout = 90 * time.Minute
 	want.RebootIssueGrace = 90 * time.Second
-	want.UpdateMode = "full"
 	want.UpdateURL = "https://dl.example.org/simplek8s/dev"
 	want.UpdatePreserve = 5
 	want.UpdateMaxPercentUsage = 90
@@ -155,22 +145,19 @@ func TestParseInvalidKeepsLastValidAndWarns(t *testing.T) {
 	base := Defaults()
 	base.MaxConcurrentReboots = 2
 	base.RebootDrainTimeout = time.Hour
-	base.UpdateMode = "stage"
 	data := map[string]string{
 		"reboots.max-concurrent":    "not-a-number",
 		"reboots.drain-timeout":     "-5m",
 		"reboots.on-failure":        "sometimes",
 		"reboots.issue-grace":       "0s",
-		"updates.mode":              "half",
 		"updates.url":               "ftp://nope.example",
 		"updates.check-interval":    "never", // retired: unknown key, still warns
 		"updates.preserve":          "0",
 		"updates.max-percent-usage": "101",
-		"engine.interval":           "",
 	}
 	got, warns := Parse(base, data)
-	if len(warns) != 10 {
-		t.Fatalf("warns = %v, want 10", warns)
+	if len(warns) != 8 {
+		t.Fatalf("warns = %v, want 8", warns)
 	}
 	if !reflect.DeepEqual(got, base) {
 		t.Errorf("got %+v, want base %+v", got, base)

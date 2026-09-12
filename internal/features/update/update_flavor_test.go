@@ -7,7 +7,7 @@ import (
 // Legacy arm64 lineage: a node carrying *.arm64.efi files resolves
 // flavor arm64 and updates within its (old) artifacts (PLAN-M5 §3.6).
 func TestLegacyArm64LineageUpdates(t *testing.T) {
-	h := newUpdateHarness(t, "stage", "6.18.48-simplek8s-202501010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202501010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202501010000"},
 		[]string{"202501010000"})
 	h.store.setFlavor("202501010000", "arm64")
@@ -26,7 +26,7 @@ func TestLegacyArm64LineageUpdates(t *testing.T) {
 // Ended lineage: newer ts exist only for other flavors → the legacy
 // node sees no update (no silent cross-flavor moves).
 func TestLegacySeesNoUpdateBeyondLineage(t *testing.T) {
-	h := newUpdateHarness(t, "stage", "6.18.48-simplek8s-202501010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202501010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202501010000"},
 		[]string{"202501010000"})
 	h.store.setFlavor("202501010000", "arm64")
@@ -44,7 +44,7 @@ func TestLegacySeesNoUpdateBeyondLineage(t *testing.T) {
 // node's flavor. With no migration by design (D3), it follows normal
 // W12 rules — correct to safe state, like a never-existed ts.
 func TestOutOfFlavorPinCorrects(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202501010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202501010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202501010000"})
 	h.store.setFlavor("202501010000", "arm64")
@@ -64,7 +64,7 @@ func TestOutOfFlavorPinCorrects(t *testing.T) {
 
 // Flavor mix: first flavor wins, the loop proceeds within it.
 func TestMixedPartitionKeepsFirstFlavor(t *testing.T) {
-	h := newUpdateHarness(t, "stage", "6.18.48-simplek8s-202501010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202501010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202501010000"},
 		[]string{"202501010000", "202601010000"})
 	h.store.setFlavor("202501010000", "rpi4")

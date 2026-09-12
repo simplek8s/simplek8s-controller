@@ -26,10 +26,12 @@ func (f *Feature) maybeEnqueue(ctx context.Context, node *kube.Node, fc config.C
 	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
 	st := nodestate.Parse(node.Metadata.Annotations)
 
-	// Rules 1–4 (rule 5, file presence, is verified just below via the
+	// Rules 1–3 (rule 4, file presence, is verified just below via the
 	// store — the only observer that can see the partition).
-	eligible := fc.UpdateMode == "full" &&
-		ui.NextKernelPresent && ui.NextKernelParseErr == "" &&
+	// Auto-reboot needs no mode flag: an open reboots window is the
+	// only gate (updates.windows drives staging, reboots.windows
+	// drives enqueueing).
+	eligible := ui.NextKernelPresent && ui.NextKernelParseErr == "" &&
 		running != "" && ui.NextKernel != running &&
 		(st.State == nil || !st.State.Present)
 	if !eligible {
@@ -47,7 +49,7 @@ func (f *Feature) maybeEnqueue(ctx context.Context, node *kube.Node, fc config.C
 	}
 	if !cron.WindowsOpen(fc.RebootWindows, fc.RebootWindowGrace, now) {
 		// Eligible but the reboots window is closed: wait before the
-		// queue (rules 1–4 hold; file presence is re-verified at
+		// queue (rules 1–3 hold; file presence is re-verified at
 		// enqueue time, so no wasted reboot is possible).
 		f.noteHeld(name, true)
 		return

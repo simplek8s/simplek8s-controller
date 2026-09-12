@@ -193,7 +193,7 @@ func TestVerifyIgnoresFailedState(t *testing.T) {
 
 // TestVerifyAlwaysOnWindowsEmptyAndModeOff: verification is purely
 // observational — it fires even with updates.windows [] and with
-// updates.mode off (PLAN.md §3.4).
+// updates.windows closed (PLAN.md §3.4).
 func TestVerifyAlwaysOnWindowsEmptyAndModeOff(t *testing.T) {
 	const v = "202608291203"
 	const old = "6.18.48-simplek8s-202601010000 (amd64)"
@@ -208,7 +208,6 @@ func TestVerifyAlwaysOnWindowsEmptyAndModeOff(t *testing.T) {
 	t.Run("empty-windows", func(t *testing.T) {
 		h := mk(t)
 		h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-			"updates.mode":    "full",
 			"updates.windows": `[]`,
 		})
 		h.leader()
@@ -217,8 +216,8 @@ func TestVerifyAlwaysOnWindowsEmptyAndModeOff(t *testing.T) {
 			t.Fatalf("UpdateMismatch = %d, want 1 (always on)", h.eventCount("UpdateMismatch"))
 		}
 	})
-	t.Run("mode-off", func(t *testing.T) {
-		h := mk(t) // no ConfigMap: built-in defaults (mode off)
+	t.Run("defaults", func(t *testing.T) {
+		h := mk(t) // no ConfigMap: built-in defaults
 		h.leader()
 		h.orch()
 		if h.eventCount("UpdateMismatch") != 1 {

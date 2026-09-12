@@ -17,8 +17,6 @@ import (
 
 // Config is one resolved snapshot of all feature settings.
 type Config struct {
-	// engine
-	EngineInterval time.Duration
 	// reboots
 	MaxConcurrentReboots int
 	OnRebootFailure      string // "pause" | "continue"
@@ -27,7 +25,6 @@ type Config struct {
 	RebootWindows        []cron.Schedule // empty = OFF (no non-forced reboots)
 	RebootWindowGrace    time.Duration
 	// updates
-	UpdateMode            string // "off" | "stage" | "full"
 	UpdateURL             string
 	UpdatePreserve        int
 	UpdateMaxPercentUsage int
@@ -42,14 +39,12 @@ func Defaults() Config {
 		panic("config: bad built-in updates.windows default")
 	}
 	return Config{
-		EngineInterval:        2 * time.Second,
 		MaxConcurrentReboots:  1,
 		OnRebootFailure:       "pause",
 		RebootDrainTimeout:    10 * time.Minute,
 		RebootIssueGrace:      15 * time.Minute,
 		RebootWindows:         nil, // OFF by default (PLAN.md §3.2)
 		RebootWindowGrace:     5 * time.Minute,
-		UpdateMode:            "off",
 		UpdateURL:             "https://dl.simplek8s.org/simplek8s/stable",
 		UpdatePreserve:        3,
 		UpdateMaxPercentUsage: 75,
@@ -76,12 +71,6 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 			raw := data[k]
 			ok := true
 			switch k {
-			case "engine.interval":
-				if v, valid := parseDuration(raw); valid {
-					out.EngineInterval = v
-				} else {
-					ok = false
-				}
 			case "reboots.max-concurrent":
 				if v, valid := parseMinInt(raw, 0); valid {
 					out.MaxConcurrentReboots = v
@@ -115,12 +104,6 @@ func Parse(base Config, data map[string]string) (Config, []string) {
 			case "reboots.window-grace":
 				if v, valid := parseDuration(raw); valid {
 					out.RebootWindowGrace = v
-				} else {
-					ok = false
-				}
-			case "updates.mode":
-				if v, valid := parseEnum(raw, "off", "stage", "full"); valid {
-					out.UpdateMode = v
 				} else {
 					ok = false
 				}

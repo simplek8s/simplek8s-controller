@@ -154,13 +154,13 @@ type updateHarness struct {
 	logBuf *bytes.Buffer
 }
 
-func newUpdateHarness(t *testing.T, mode string, kernelVersion string, anns map[string]string, storeVers []string) *updateHarness {
-	return newUpdateHarnessKey(t, mode, kernelVersion, anns, storeVers, newTestKey(t, true))
+func newUpdateHarness(t *testing.T, kernelVersion string, anns map[string]string, storeVers []string) *updateHarness {
+	return newUpdateHarnessKey(t, kernelVersion, anns, storeVers, newTestKey(t, true))
 }
 
 // newUpdateHarnessKey is the harness with an explicit signing key (used
 // to build second repos sharing the pod's keyring).
-func newUpdateHarnessKey(t *testing.T, mode string, kernelVersion string, anns map[string]string, storeVers []string, key *testKey) *updateHarness {
+func newUpdateHarnessKey(t *testing.T, kernelVersion string, anns map[string]string, storeVers []string, key *testKey) *updateHarness {
 	t.Helper()
 	fake := kubetest.NewFakeAPI()
 	t.Cleanup(fake.Close)
@@ -181,7 +181,6 @@ func newUpdateHarnessKey(t *testing.T, mode string, kernelVersion string, anns m
 		t.Fatal(err)
 	}
 	cm := map[string]string{
-		"updates.mode":    mode,
 		"updates.url":     repo.URL(),
 		"updates.windows": `["@every 2m"]`,
 	}
@@ -246,8 +245,9 @@ func (h *updateHarness) logs() string { return h.logBuf.String() }
 // --- Bootstrap (PLAN-M2 3.5) ------------------------------------------------
 
 func TestBootstrapAnchorsRunning(t *testing.T) {
-	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)", nil,
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)", nil,
 		[]string{"202501010000", "202601010000"})
+	setBothWindows(h, `[]`, `[]`) // bootstrap only; no check/stage
 	h.tick()
 	if got := h.nextKernel(); got != "202601010000" {
 		t.Fatalf("next-kernel = %q, want running version", got)
@@ -261,8 +261,9 @@ func TestBootstrapAnchorsRunning(t *testing.T) {
 
 func TestBootstrapAnchorsNewestLocal(t *testing.T) {
 	// Node does not run a simplek8s kernel: anchor the newest local.
-	h := newUpdateHarness(t, "off", "6.18.48 (amd64)", nil,
+	h := newUpdateHarness(t, "6.18.48 (amd64)", nil,
 		[]string{"202501010000", "202601010000"})
+	setBothWindows(h, `[]`, `[]`) // bootstrap only; no check/stage
 	h.tick()
 	if got := h.nextKernel(); got != "202601010000" {
 		t.Fatalf("next-kernel = %q, want newest local", got)
@@ -270,7 +271,8 @@ func TestBootstrapAnchorsNewestLocal(t *testing.T) {
 }
 
 func TestBootstrapRetriesWhenNoLocalVersions(t *testing.T) {
-	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)", nil, nil)
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)", nil, nil)
+	setBothWindows(h, `[]`, `[]`) // bootstrap only; no check/stage
 	h.tick()
 	if got := h.nextKernel(); got != "" {
 		t.Fatalf("next-kernel = %q, want empty (nothing local)", got)
@@ -283,37 +285,39 @@ func TestBootstrapRetriesWhenNoLocalVersions(t *testing.T) {
 }
 
 func TestBootstrapNeverOverwritesOperatorPin(t *testing.T) {
-	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202609090909"},
 		[]string{"202601010000"})
+	setBothWindows(h, `[]`, `[]`) // bootstrap only; no check/stage
 	h.tick()
 	if got := h.nextKernel(); got != "202609090909" {
 		t.Fatalf("operator pin clobbered: %q", got)
 	}
 }
 
-// --- Off mode -----------------------------------------------------------------
+// --- Closed windows (inert) -----------------------------------------------------------------
 
-func TestOffModeIsInert(t *testing.T) {
-	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)",
+func TestClosedWindowsAreInert(t *testing.T) {
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
+	setBothWindows(h, `[]`, `[]`)
 	h.tick()
 	if h.repo.hits() != 0 {
-		t.Fatalf("off mode must not check the repo: %d hits", h.repo.hits())
+		t.Fatalf("closed windows must not check the repo: %d hits", h.repo.hits())
 	}
 	if h.eventCount("UpdateAvailable") != 0 {
-		t.Fatal("off mode must not fire UpdateAvailable")
+		t.Fatal("closed windows must not fire UpdateAvailable")
 	}
 	if h.eventCount("UpdateCheckError") != 0 {
-		t.Fatal("off mode must not fire UpdateCheckError")
+		t.Fatal("closed windows must not fire UpdateCheckError")
 	}
 }
 
 // --- Check + events (PLAN-M2 3.6/3.11) ---------------------------------------
 
 func TestUpdateAvailableOncePerVersion(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	h.tick()
@@ -346,7 +350,7 @@ func TestUpdateAvailableOncePerVersion(t *testing.T) {
 }
 
 func TestNoEventWhenUpToDate(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202608291203 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202608291203 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202608291203"})
 	h.tick()
@@ -362,7 +366,7 @@ func TestURLPrecedenceAnnotationOverConfig(t *testing.T) {
 	// Both repos are signed by the pod's key (the keyring is per-pod,
 	// not per-repo), so both would verify. The per-repo hit counters
 	// reveal which URL was actually used.
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)", nil,
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)", nil,
 		[]string{"202601010000"})
 	repo2 := newCountingRepo(t, h.key)
 	repo2.set(t, kernelIndex())
@@ -386,7 +390,7 @@ func TestURLPrecedenceAnnotationOverConfig(t *testing.T) {
 }
 
 func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	// Serve an index signed by a FORKEY: verification must fail.
@@ -394,7 +398,6 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 	forge := newCountingRepo(t, forger)
 	forge.set(t, kernelIndex())
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.mode":    "full",
 		"updates.url":     forge.URL(),
 		"updates.windows": `["@every 2m"]`,
 	})
@@ -412,7 +415,6 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 
 	// Recovery: the good repo is restored, the failing stretch ends.
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.mode":    "full",
 		"updates.url":     h.repo.URL(),
 		"updates.windows": `["@every 2m"]`,
 	})
@@ -424,7 +426,6 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 
 	// A new failing stretch fires the event again.
 	h.fake.SetConfigMap("default", "simplek8s-controller", map[string]string{
-		"updates.mode":    "full",
 		"updates.url":     forge.URL(),
 		"updates.windows": `["@every 2m"]`,
 	})
@@ -440,7 +441,7 @@ func TestCheckErrorRateLimitedAndRecovers(t *testing.T) {
 // TestStagesAvailableReleaseAndAnchors: a quiescent node with a newer
 // release available (not local) gets it staged AND anchored.
 func TestStagesAvailableReleaseAndAnchors(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	h.tick()
@@ -459,7 +460,7 @@ func TestStagesAvailableReleaseAndAnchors(t *testing.T) {
 // to a version whose files are missing locally; it is re-staged, and the
 // (already set) annotation is left untouched (anchor is gated quiescent).
 func TestDefensiveRestageStagesMissingAnchoredVersion(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202601010000"})
 	h.tick()
@@ -473,7 +474,7 @@ func TestDefensiveRestageStagesMissingAnchoredVersion(t *testing.T) {
 
 // TestStagingSkippedWhenVersionAlreadyLocal: nothing to stage.
 func TestStagingSkippedWhenVersionAlreadyLocal(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202601010000", "202608291203"})
 	h.tick()
@@ -488,7 +489,7 @@ func TestStagingSkippedWhenVersionAlreadyLocal(t *testing.T) {
 // TestStagingFailureFiresEventNoAnnotationChange: a failed stage fires
 // UpdateStagingSkipped and never changes the annotation.
 func TestStagingFailureFiresEventNoAnnotationChange(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	h.store.setStageErr(errors.New("disk full"))
@@ -511,7 +512,7 @@ func TestStagingFailureFiresEventNoAnnotationChange(t *testing.T) {
 // plan trigger (PLAN.md §3.4 decision 12 — pod-side enqueue replaces
 // it).
 func TestFreshFullStageSetsNoTrigger(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	h.tick()
@@ -526,7 +527,7 @@ func TestFreshFullStageSetsNoTrigger(t *testing.T) {
 // TestStageModeDoesNotSetRebootEligible: staging mode stages and anchors the
 // release but never sets the plan trigger (plans are a full-mode concern).
 func TestStageModeDoesNotSetRebootEligible(t *testing.T) {
-	h := newUpdateHarness(t, "stage", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
 		[]string{"202601010000"})
 	h.tick()
@@ -543,7 +544,7 @@ func TestStageModeDoesNotSetRebootEligible(t *testing.T) {
 // not set the plan trigger (a plan is the consequence of staging a version
 // not in /boot before).
 func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
-	h := newUpdateHarness(t, "full", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{"simplek8s.org/next-kernel": "202608291203"},
 		[]string{"202601010000"})
 	h.tick()

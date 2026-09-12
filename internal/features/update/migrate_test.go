@@ -93,7 +93,7 @@ func TestMigrationRetriesOnNextAcquisition(t *testing.T) {
 // stale M2 reboot-eligible marker at pod start (one-shot,
 // best-effort), in every update mode.
 func TestMigrationDeletesLeftoverEligibleOnce(t *testing.T) {
-	h := newUpdateHarness(t, "off", "6.18.48-simplek8s-202601010000 (amd64)",
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
 		map[string]string{
 			"simplek8s.org/next-kernel": "202601010000",
 			nodestate.AnnRebootEligible: "202601010000",

@@ -172,10 +172,6 @@ func (f *Feature) RunLocal(ctx context.Context) {
 		dirty = true
 	}
 
-	if fc.UpdateMode == "off" {
-		return
-	}
-
 	// Master switch (PLAN.md §3.4): update work runs only while a
 	// window is open. Closed (or empty) windows skip the check/stage
 	// below with no HTTP fetch and no partition mount — but never the

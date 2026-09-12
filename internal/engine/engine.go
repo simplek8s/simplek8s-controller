@@ -141,12 +141,16 @@ func (e *Engine) LastSuccessfulCycle() time.Time {
 	return time.Time{}
 }
 
-// Run starts the polling loop and blocks until ctx is done. The period
-// comes from the per-cycle feature config (engine.interval).
+// engineInterval is the fixed poll period (not configurable: no
+// deployment varies it, and a flag would reopen the flag surface the
+// project removed).
+const engineInterval = 2 * time.Second
+
+// Run starts the polling loop and blocks until ctx is done.
 func (e *Engine) Run(ctx context.Context) {
 	e.Cycle(ctx)
 	for {
-		if e.cfg.Sleep(ctx, e.FeatureConfig().EngineInterval) != nil {
+		if e.cfg.Sleep(ctx, engineInterval) != nil {
 			return
 		}
 		e.Cycle(ctx)
@@ -183,9 +187,7 @@ func (e *Engine) loadConfig(ctx context.Context) {
 	e.feat = next
 	if changed {
 		e.cfg.Log.Info("feature config reloaded",
-			"updates.mode", next.UpdateMode,
-			"update-url", next.UpdateURL,
-			"engine.interval", next.EngineInterval.String())
+			"update-url", next.UpdateURL)
 	}
 	key := strings.Join(warns, "|")
 	if key != e.featWarns {

@@ -226,12 +226,11 @@ func TestFeatureConfigLoad(t *testing.T) {
 
 	// Present ConfigMap: values apply on top of the last snapshot.
 	fake.SetConfigMap(cmNS, cmName, map[string]string{
-		"engine.interval":        "30s",
 		"reboots.max-concurrent": "4",
 	})
 	a.Cycle(ctx)
 	got := a.FeatureConfig()
-	if got.EngineInterval != 30*time.Second || got.MaxConcurrentReboots != 4 {
+	if got.MaxConcurrentReboots != 4 {
 		t.Fatalf("ConfigMap values not applied: %+v", got)
 	}
 	if got.RebootDrainTimeout != 10*time.Minute {

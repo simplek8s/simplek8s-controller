@@ -1,6 +1,6 @@
 # Nested sections; the template flattens them to the flat dotted keys
-# the controller reads (so --set config.updates.mode=stage just
-# works — no escaped dots). Install: helm install <release> ./chart
+# the controller reads (so --set config.reboots.windows='["@daily"]'
+# just works). Install: helm install <release> ./chart
 # -n simplek8s --create-namespace [--set image.tag=vX.Y.Z].
 # Uninstall never deletes the namespace (the chart does not manage it).
 image:
@@ -18,8 +18,6 @@ secret:
 
 # Flat-key feature configuration (see README "Configuration").
 config:
-  engine:
-    interval: 2s
   reboots:
     max-concurrent: "1"
     on-failure: pause
@@ -28,7 +26,6 @@ config:
     windows: '[]'
     window-grace: 5m
   updates:
-    mode: "off"
     url: "https://dl.simplek8s.org/simplek8s/stable"
     preserve: "3"
     max-percent-usage: "75"
