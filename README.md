@@ -3,24 +3,21 @@
 [![ci](https://github.com/simplek8s/simplek8s-controller/actions/workflows/ci.yml/badge.svg)](https://github.com/simplek8s/simplek8s-controller/actions/workflows/ci.yml)
 [![image](https://github.com/simplek8s/simplek8s-controller/actions/workflows/image.yml/badge.svg)](https://github.com/simplek8s/simplek8s-controller/pkgs/container/simplek8s-controller)
 
-A node-management controller for self-built Kubernetes clusters
-(SimpleK8s distro: Buildroot, systemd, containerd, kubeadm). It runs as a privileged
-DaemonSet with one instance per node and provides operational
-capabilities over the hosts.
+A node-management controller for SimpleK8s Kubernetes clusters.
+It runs as a privileged DaemonSet and handles two jobs:
 
-First capability (v1): **node reboots** with a concurrency
-limit, availability waiting, and PodDisruptionBudget awareness.
+- **Distro updates**: verified staging of signed releases on each
+  node's boot partition, with optional window-gated automatic reboots.
+- **Node reboots**: concurrency-limited, availability-aware and
+  PDB-aware, driven by a small HTTP API.
 
 - Project: <https://simplek8s.org>
 - Repo: <https://github.com/simplek8s/simplek8s-controller>
 - Go 1.27, no client-go, no controller-runtime. Direct dependencies
-  are two (both for release verification/payloads, added with updates):
+  are two (release verification/payloads):
   `ProtonMail/go-crypto` (GPG) and `klauspost/compress` (zstd).
 
-Design: [PLAN.md](PLAN.md) — the single living design doc (shipped
-behavior + current plan). Historical plans (`PLAN-M1.md`, `PLAN-M2.md`,
-`PLAN-M3.md`, the E2E campaign files, `PLAN.FIXME.md`) were folded into
-it; their full text is in git history.
+Design: [PLAN.md](PLAN.md).
 
 ## How to install
 
