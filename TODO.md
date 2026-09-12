@@ -1,10 +1,10 @@
 # TODO — deferred backlog
 
 Cross-cutting items deliberately left out of the current plans
-(M1 reboots, M2 updates and M3 windows all shipped — see PLAN.md;
-items 1, 6, 8, 9, 11 and 12 were closed by M3 and left this file).
-Each item is ready to be picked up as its own plan; nothing here is
-blocking.
+(M1 reboots, M2 updates and M3 windows all shipped — see PLAN.md).
+Closed items leave this file (history in git log); what remains is
+open work, each ready to be picked up as its own plan; nothing here
+is blocking.
 
 ## 2. `simplek8s-update` CLI
 
@@ -84,41 +84,6 @@ at the leader vs N; the leader as a check-time SPOF; transfer reliability
 and resumability; and how this composes with the per-node `preserve`/purge
 and the pod split (item 3).
 
-## 12. BUG: stale `reboot-state` poisons a fresh update plan — CLOSED by the M3 plan (PLAN.md)
-
-A prior reboot left `reboot-state=completed`, and the M2 plan layer's
-`verifyPlan` read it **before** the plan's own enqueue — concluding the
-member "came up on the wrong kernel" and cancelling the plan in the same
-cycle it was created (reproduced 2026-09-08 in the 3-CP auto-update test;
-also broke successive auto-updates). Fixed 2026-09-08 in the plan layer:
-clear the stale terminal `reboot-state` when a plan starts
-(`resetStaleRebootState`; unit/integration tested).
-
-**Closed by the M3 plan:** the plan layer it lived in is abolished (the
-`simplek8s-update-plans` ConfigMap and plan start/cancel/verify are
-replaced by the window-open enqueue into the M1 queue + per-node
-verification, PLAN.md §3.4), so the bug class no longer exists. The
-pending E2E re-run (successive auto-update) is superseded by the
-windows E2E campaign (PLAN.md §7.4), case W5.
-
-## 13. Multi-platform container image — public publishing (CLOSED 2026-09-12)
-
-The multi-platform **build** was closed by PLAN.md §3.11 (`make image`:
-`linux/amd64` + `linux/arm64` via buildx). The publish half closed in
-the GitHub-publication pass:
-
-- registry: GHCR (`ghcr.io/simplek8s/simplek8s-controller`, as the
-  Makefile already defaulted);
-- `v*` scheme: semver `vX.Y.Z` tags → versioned image + GitHub
-  Release; branches → `<branch>` + `sha-<short>` (`main` also `edge` +
-  `latest`);
-- CI: `ci.yml` (fmt/vet/test/build per push+PR) gates `image.yml`
-  (multi-arch push to GHCR);
-- arm64 E2E: live on PROD rpi4-node (rpi4) + rpi5-node (rpi5), M5 F1–F4.
-
-Remaining activation (not code): `git push -u origin main`, flip the
-GHCR package to public, push the first `v*` tag.
-
 ## 14. Boot failure fallback (syslinux) — accepted risk, no plan
 
 W13 (PLAN.md §7.4) showed the shape: a correctly signed and staged
@@ -135,14 +100,3 @@ a good `LABEL`, repair, re-pin) is documented in the README runbook;
 the `completed`+mismatch verification and no-auto-retry already hold
 for whatever comes back.
 
-## 15. API token Secret: optional auth (CLOSED 2026-09-12)
-
-Resolved as optional auth: without the Secret the pods start and the
-API serves loopback clients only (`isLoopbackAddr` on `RemoteAddr` in
-the auth middleware — the `kubectl port-forward` path dials from
-inside the pod netns; direct pod-IP traffic gets 403). With the
-Secret, the bearer is required on top. `secretKeyRef` is
-`optional: true`, so a fresh `make deploy` works with zero secrets;
-rotation is Secret update + DaemonSet restart (token read at startup).
-The drop-the-bearer and dashboard-auth questions stay deferred to the
-dashboard scope.
