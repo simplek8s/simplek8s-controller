@@ -24,3 +24,22 @@ jobs:
       - run: go vet ./...
       - run: go test ./... -count=1
       - run: go build ./...
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: helm lint ./chart
+      - name: template default namespace
+        run: |
+          helm template skc ./chart -n simplek8s | grep -q 'namespace: simplek8s'
+          helm template skc ./chart -n simplek8s | grep -q 'namespace: default'
+      - name: template custom namespace
+        run: |
+          out=$(helm template skc ./chart -n demo-ns)
+          echo "$out" | grep -q 'namespace: demo-ns'
+          echo "$out" | grep -q 'namespace: default'
+          test -z "$(echo "$out" | grep 'namespace: simplek8s' || true)"
+      - name: template with bearer
+        run: |
+          helm template skc ./chart -n simplek8s --set secret.create=true | grep -q 'kind: Secret'

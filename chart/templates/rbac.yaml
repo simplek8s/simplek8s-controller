@@ -1,8 +1,10 @@
-# Cluster-wide verbs (PLAN 3.11): nodes, pods, evictions, PDBs.
+# Cluster-wide verbs: nodes, pods, evictions, PDBs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: simplek8s-controller
+  name: {{ include "skc.name" . }}
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: [nodes]
@@ -20,41 +22,46 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: simplek8s-controller
+  name: {{ include "skc.name" . }}
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: simplek8s-controller
-    namespace: simplek8s
+    name: {{ include "skc.name" . }}
+    namespace: {{ .Release.Namespace }}
 roleRef:
   kind: ClusterRole
-  name: simplek8s-controller
+  name: {{ include "skc.name" . }}
   apiGroup: rbac.authorization.k8s.io
 ---
 # The leader Lease lives in the controller's own namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: simplek8s-controller
-  namespace: simplek8s
+  name: {{ include "skc.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
 rules:
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, create, update]
-  # Flat-key feature ConfigMap (PLAN-M2 3.2); create/update for legacy
-  # plan-state writes; delete for the self-cleaning migration that
-  # removes a leftover M2 plan ConfigMap (PLAN.md §3.4 decision 15).
+  # Flat-key feature ConfigMap; create/update for legacy plan-state
+  # writes; delete for the self-cleaning M2 plan ConfigMap migration.
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, list, create, update, delete]
 ---
 # Node Events are cluster-scoped subjects: the API server requires them in
-# the "default" namespace (where kubelet's own node events live).
-# `kubectl get events -n default --field-selector involvedObject.name=<node>`
+# the "default" namespace (where kubelet's own node events live) — never
+# retargeted, whatever the release namespace is.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: simplek8s-controller-events
+  name: {{ include "skc.name" . }}-events
   namespace: default
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: [events]
@@ -63,27 +70,31 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: simplek8s-controller
-  namespace: simplek8s
+  name: {{ include "skc.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: simplek8s-controller
-    namespace: simplek8s
+    name: {{ include "skc.name" . }}
+    namespace: {{ .Release.Namespace }}
 roleRef:
   kind: Role
-  name: simplek8s-controller
+  name: {{ include "skc.name" . }}
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: simplek8s-controller-events
+  name: {{ include "skc.name" . }}-events
   namespace: default
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
-    name: simplek8s-controller
-    namespace: simplek8s
+    name: {{ include "skc.name" . }}
+    namespace: {{ .Release.Namespace }}
 roleRef:
   kind: Role
-  name: simplek8s-controller-events
+  name: {{ include "skc.name" . }}-events
   apiGroup: rbac.authorization.k8s.io

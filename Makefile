@@ -1,5 +1,5 @@
 IMAGE ?= ghcr.io/simplek8s/simplek8s-controller
-TAG ?= dev
+TAG ?= latest
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -39,11 +39,14 @@ image:
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILT=$(BUILT) \
 		-t $(IMAGE):$(TAG) .
 
+HELM_RELEASE ?= simplek8s-controller
+HELM_NAMESPACE ?= simplek8s
+
 deploy:
-	kubectl apply -k deploy/
+	helm upgrade --install $(HELM_RELEASE) ./chart -n $(HELM_NAMESPACE) --create-namespace --set image.tag=$(TAG)
 
 undeploy:
-	kubectl delete -k deploy/ --ignore-not-found
+	helm uninstall $(HELM_RELEASE) -n $(HELM_NAMESPACE)
 
 clean:
 	rm -rf bin

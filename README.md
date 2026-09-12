@@ -22,6 +22,40 @@ behavior + current plan). Historical plans (`PLAN-M1.md`, `PLAN-M2.md`,
 `PLAN-M3.md`, the E2E campaign files, `PLAN.FIXME.md`) were folded into
 it; their full text is in git history.
 
+## How to install
+
+Prerequisites: SimpleK8s-distro nodes, cluster-admin `kubectl`, `helm`.
+
+```sh
+# 0. Once: the namespace (skip the create if it exists). The labels
+#    are what the privileged DaemonSet needs from PodSecurity
+#    admission.
+kubectl create namespace simplek8s
+kubectl label namespace simplek8s \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted --overwrite
+
+# 1. Install (inert by default: updates off, no reboot windows).
+helm install simplek8s-controller oci://ghcr.io/simplek8s/charts/simplek8s-controller -n simplek8s --create-namespace
+
+# 2. Verify every node has a Running pod:
+kubectl -n simplek8s get pods -o wide
+kubectl -n simplek8s logs -l app=simplek8s-controller --tail=3
+```
+
+Then give it work (Helm owns the ConfigMap — hand edits are
+overwritten on the next `upgrade`):
+
+```sh
+helm upgrade simplek8s-controller ./chart -n simplek8s --reuse-values \
+  --set config.updates.mode=stage
+```
+
+start with `stage` to just install updates without automatic node
+reboots, and then consider `full` for automatic node reboots (see
+"Distro updates" below).
+
 ## How it works
 
 One binary, two roles per pod:
@@ -71,11 +105,11 @@ stateDiagram-v2
     failed --> absent: DELETE
 ```
 
-Queue gates while `requested`: at most `reboots.max-concurrent-reboots` nodes
+Queue gates while `requested`: at most `reboots.max-concurrent` nodes
 in flight, at most 1 control plane, PDB-blocked nodes wait (unless
 `force`), a requested node that is NotReady holds the queue. DELETE is
 **not** available on `draining` (409: an in-flight drain is not
-interruptible — wait out `reboots.reboot-drain-timeout`).
+interruptible — wait out `reboots.drain-timeout`).
 
 Completion evidence: the leader transitions `rebooting`→`completed` only
 when the node is Ready **and** either the local pod confirmed the boot ID
@@ -86,32 +120,47 @@ after `issuedAt` (covers the executor pod dying before confirming).
 
 ```sh
 make image            # docker build (VERSION/COMMIT/BUILT baked in)
-make deploy           # kubectl apply -k deploy/ (uses your kubeconfig)
+make deploy           # helm upgrade --install (uses your kubeconfig)
 ```
 
-`deploy/` tracks `:latest`. For a pinned PROD install, override the
-image per release (no file edit needed):
+`chart/` is a Helm chart: ServiceAccount, RBAC, ConfigMap,
+DaemonSet — no Service by design (reach the API via
+`kubectl port-forward`, see below), and no Namespace either (it often
+holds other things and uninstalling must never delete it; the chart
+never manages it). Pin the image per release in PROD:
 
 ```sh
-cd deploy && kustomize edit set image \
-  ghcr.io/simplek8s/simplek8s-controller:v0.1.0 && cd ..
-kubectl apply -k deploy/
+helm install simplek8s-controller ./chart -n simplek8s --create-namespace \
+  --set image.tag=vX.Y.Z
 ```
 
-`deploy/` is a kustomize bundle: namespace, ServiceAccount, RBAC,
-ConfigMap, DaemonSet, NetworkPolicy — no Service by design (reach the
-API via `kubectl port-forward`, see below). **The API token Secret is
-optional**: without it the pods still start and the API serves
-loopback clients only (i.e. `kubectl port-forward`); with it, every
-endpoint but the probes additionally requires its bearer. To create it:
+**The API token Secret is optional**: without it the pods still start
+and the API serves loopback clients only (i.e. `kubectl port-forward`);
+with it, every endpoint but the probes additionally requires its
+bearer. Helm-managed (`--set secret.create=true`, stable across
+upgrades), or by hand:
 
 ```sh
-kubectl -n simplek8s create secret generic simplek8s-api-token \
+kubectl -n simplek8s create secret generic simplek8s-controller-api-token \
   --from-literal=token="$(openssl rand -hex 32)"
 ```
 
 Rotation: update the Secret and `kubectl rollout restart -n simplek8s
 daemonset/simplek8s-controller` (the token is read once at startup).
+
+Uninstall keeps the namespace (the chart never manages it):
+
+```sh
+helm uninstall simplek8s-controller -n simplek8s
+```
+
+Canary on one node (what the old `prod-canary` overlay did):
+
+```sh
+helm install simplek8s-controller ./chart -n simplek8s --create-namespace \
+  --set image.tag=vX.Y.Z \
+  --set nodeSelector."kubernetes\.io/hostname"=rpi4-node
+```
 
 ### Configuration (ConfigMap)
 
@@ -124,12 +173,12 @@ typo never crashes the controller.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `engine.engine-interval` | `2s` | engine poll period |
-| `reboots.max-concurrent-reboots` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
-| `reboots.on-reboot-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
-| `reboots.reboot-drain-timeout` | `10m` | wall-clock cap on the drain phase |
-| `reboots.reboot-issue-grace` | `15m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
-| `updates.update-mode` | `off` | `off`: no release checks or staging (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + window-gated automatic reboots (no plans — the local pod enqueues the node into the M1 queue while a window is open) |
+| `engine.interval` | `2s` | engine poll period |
+| `reboots.max-concurrent` | `1` | in-flight reboot nodes at once (hard limit 1 for control planes) |
+| `reboots.on-failure` | `pause` | `pause`: queue halts while any node is `failed` (clear with DELETE). `continue`: a drain timeout proceeds to reboot anyway |
+| `reboots.drain-timeout` | `10m` | wall-clock cap on the drain phase |
+| `reboots.issue-grace` | `15m` | window to re-issue the reboot command after a crash between the annotation patch and `nsenter`; if the boot ID is still unchanged after it, the node goes to `failed` |
+| `updates.mode` | `off` | `off`: no release checks or staging (per-node `next-kernel` boot intent is still honored). `stage`: check + verified staging, no auto-reboot. `full`: staging + window-gated automatic reboots (no plans — the local pod enqueues the node into the M1 queue while a window is open) |
 | `updates.url` | `https://dl.simplek8s.org/simplek8s/stable` | release repo (root of `SHA256SUMS` + `SHA256SUMS.gpg`). Overridable per node with the `simplek8s.org/update-url` annotation |
 | `updates.preserve` | `3` | how many released versions are immune to purge on the boot partition after a successful update (the running version is never purged; purge only runs under space pressure) |
 | `updates.max-percent-usage` | `75` | after an update, purge oldest versions until the boot partition usage is at or below this percentage |
@@ -139,18 +188,14 @@ typo never crashes the controller.
 | `updates.window-grace` | `5m` | how long an update window stays open after each schedule occurrence |
 
 Deployment wiring is not feature configuration and stays as a flag:
-`--listen` (default `:8080`, API bind address). The old feature flags
-(`--max-concurrent-reboots`, `--on-reboot-failure`,
-`--reboot-drain-timeout`, `--reboot-issue-grace`, `--engine-interval`)
-are gone; an old DaemonSet manifest still passing them fails at startup
-with `flag provided but not defined` (the intended migration signal).
+`--listen` (default `:8080`, API bind address).
 
 ## Distro updates
 
 The update feature stages new SimpleK8s releases on each node's boot
 partition and (in `full` mode) reboots the node into them through the
 M1 queue — gated by maintenance windows. It is tuned by
-`updates.update-mode` and gated by `updates.windows` /
+`updates.mode` and gated by `updates.windows` /
 `reboots.windows`:
 
 - **`off`** (default): inert. No release checks, downloads or staging.
@@ -220,7 +265,7 @@ A kernel that is correctly signed and staged can still fail to boot on
 a given node (distro QA owns bootability; the controller cannot
 distinguish this case in advance). There is no automatic fallback:
 syslinux drops to a `boot:` prompt and the node sits `rebooting` +
-`NotReady` (past `reboots.reboot-issue-grace`, that shape is the
+`NotReady` (past `reboots.issue-grace`, that shape is the
 signal — a healthy reboot flaps Ready for ~1–2 min). Recover via the
 machine console:
 
@@ -337,11 +382,11 @@ kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
 
 ## Failure handling, pause/resume, hand repair
 
-- **Queue paused**: with `reboots.on-reboot-failure: pause`, any node in
+- **Queue paused**: with `reboots.on-failure: pause`, any node in
   `failed` halts the queue (`QueuePaused` event). Resume by clearing the
   node: `DELETE /api/v1/reboots/<node>`.
 - **Drain stuck**: evictions can wait for `terminationGracePeriodSeconds`
-  and PDBs. Escape hatches: wait out `reboots.reboot-drain-timeout` (node goes
+  and PDBs. Escape hatches: wait out `reboots.drain-timeout` (node goes
   to `failed` under `pause`, or proceeds under `continue`), or clear all
   four annotations by hand **and** `kubectl uncordon <node>`:
 
@@ -404,15 +449,15 @@ kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
 make            # vet + test + build
 make test       # go test ./...
 make image      # docker image with version/commit/built baked in
-make deploy     # kubectl apply -k deploy/ (needs the token Secret first)
+make deploy     # helm upgrade --install ./chart (TAG=vX.Y.Z pins the image)
 ```
 
 CI (`.github/workflows/`) runs `gofmt` check + `vet` + `test` + `build`
 on every push and PR. Pushing a branch also publishes a multi-arch
-(`amd64`/`arm64`) image to GHCR after tests pass (`main` → `edge` +
-`latest`, other branches → `<branch>` + `sha-<short>`). Pushing a
-`vX.Y.Z` tag publishes the versioned image (`X.Y.Z`, `X.Y`, `X`,
-`latest`) and creates the GitHub Release with static binaries.
+(`amd64`/`arm64`) image to GHCR after tests pass (branch name as tag).
+Pushing a `vX.Y.Z` tag publishes the versioned image (`X.Y.Z`, `X.Y`,
+`X`, `latest`), pushes the chart (`oci://ghcr.io/simplek8s/charts/simplek8s-controller`,
+same version) and creates the GitHub Release with static binaries.
 
 Layout:
 
@@ -426,7 +471,8 @@ internal/features/reboot/   orchestrator, executor, drain, PDB
 internal/features/update/   release check (verified index), staging, bootloader writers
 internal/api/               HTTP API (token auth, reboots endpoints)
 internal/kubetest/          fake API server for tests (stdlib only)
-deploy/                     kustomize bundle
+chart/                      Helm chart (ServiceAccount, RBAC, ConfigMap,
+                              DaemonSet, optional Secret)
 ```
 
 ## License

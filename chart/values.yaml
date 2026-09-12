@@ -1,0 +1,44 @@
+# Nested sections; the template flattens them to the flat dotted keys
+# the controller reads (so --set config.updates.mode=stage just
+# works — no escaped dots). Install: helm install <release> ./chart
+# -n simplek8s --create-namespace [--set image.tag=vX.Y.Z].
+# Uninstall never deletes the namespace (the chart does not manage it).
+image:
+  repository: ghcr.io/simplek8s/simplek8s-controller
+  # Pin per release in PROD (--set image.tag=vX.Y.Z).
+  tag: latest
+
+logLevel: info
+
+# Bearer token Secret. false (default): tokenless loopback-only API
+# (kubectl port-forward). true: create the Secret (stable across
+# upgrades via lookup) and require its bearer on top.
+secret:
+  create: false
+
+# Flat-key feature configuration (see README "Configuration").
+config:
+  engine:
+    interval: 2s
+  reboots:
+    max-concurrent: "1"
+    on-failure: pause
+    drain-timeout: 10m
+    issue-grace: 15m
+    windows: '[]'
+    window-grace: 5m
+  updates:
+    mode: "off"
+    url: "https://dl.simplek8s.org/simplek8s/stable"
+    preserve: "3"
+    max-percent-usage: "75"
+    windows: '["@every 12h"]'
+    window-grace: 5m
+
+# REQUIRED for control-plane nodes (no pod there = no CP reboots).
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+nodeSelector: {}
+priorityClassName: system-node-critical

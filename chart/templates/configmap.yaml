@@ -1,0 +1,15 @@
+# Nested values flattened to the flat dotted keys the controller
+# reads (one level: <section>.<key>).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "skc.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "skc.labels" . | nindent 4 }}
+data:
+  {{- range $section, $keys := .Values.config }}
+  {{- range $k, $v := $keys }}
+  {{ printf "%s.%s" $section $k }}: {{ $v | quote }}
+  {{- end }}
+  {{- end }}

@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: simplek8s-controller
-  namespace: simplek8s
+  name: {{ include "skc.name" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    app: simplek8s-controller
+    {{- include "skc.labels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
@@ -20,20 +20,20 @@ spec:
       labels:
         app: simplek8s-controller
     spec:
-      serviceAccountName: simplek8s-controller
+      serviceAccountName: {{ include "skc.name" . }}
       hostPID: true
-      priorityClassName: system-node-critical
+      priorityClassName: {{ .Values.priorityClassName }}
       # REQUIRED: without the CP toleration there is no pod on
-      # control-plane nodes, and CP reboots are impossible (PLAN 3.12).
+      # control-plane nodes, and CP reboots are impossible.
       tolerations:
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-          effect: NoSchedule
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: controller
-          # Release images live on GHCR (see README "CI / releases");
-          # :dev never leaves the workstation (local `make image` tag).
-          image: ghcr.io/simplek8s/simplek8s-controller:latest
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           securityContext:
             privileged: true
           env:
@@ -53,27 +53,24 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            # Optional bearer (TODO 15): absent Secret (or absent key)
-            # -> the pod still starts and the API serves loopback
-            # clients only (kubectl port-forward). Present -> bearer
-            # required on top.
+            {{- if .Values.secret.create }}
             - name: SIMPLEK8S_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: simplek8s-api-token
+                  name: {{ include "skc.name" . }}-api-token
                   key: token
-                  optional: true
+            {{- end }}
             # Chatty development logging: "debug" surfaces the staging steps
             # (mount, download, extract, write, bootloader) and config reloads.
             - name: SIMPLEK8S_LOG_LEVEL
-              value: "info"
+              value: {{ .Values.logLevel | quote }}
           ports:
             - name: api
               containerPort: 8080
           volumeMounts:
             # Optional custom GPG keyring (custom repo/signed-by-a-custom
             # key). Absent Secret -> mount empty -> the embedded image
-            # keyring is used (PLAN-M2 3.6/3.14).
+            # keyring is used (see README "Keyring override").
             - name: keyring
               mountPath: /etc/simplek8s/custom
               readOnly: true

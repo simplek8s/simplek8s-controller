@@ -58,7 +58,7 @@ design in git (`PLAN-M1.md`).
 **Updates (M2).** The same pod can check a signed release repo
 (GPG + sha256 verification), stage a new kernel on the boot
 partition, and — in `full` mode — reboot the node into it.
-`updates.update-mode` = `off|stage|full`; the annotation is
+`updates.mode` = `off|stage|full`; the annotation is
 `next-kernel` (target) — per-node check throttling was in-memory
 (`update-last-check` is new in M3, §3.4). The leader-side plan layer (per-version all-or-nothing
 plans, plan ConfigMap) is **abolished** by the active plan (§3.4).
@@ -131,7 +131,7 @@ bounded and consistent over time.
 - **M1 invariants untouched.** The window is one more gate on *start*.
   Serialization, workers-before-CP ordering, the CP gate, PDB (for
   non-forced), drain timeout, no-effect grace, and
-  `on-reboot-failure` pause/continue all keep their M1 semantics. An
+  `reboots.on-failure` pause/continue all keep their M1 semantics. An
   in-flight reboot is **never** interrupted by a closing window.
 - **Stateless windows.** Window openness is computed from the clock and
   the ConfigMap every cycle — nothing is persisted (the
@@ -185,7 +185,7 @@ Consequences:
     Forced reboots always execute immediately.
   - `updates.windows` explicit `[]` → the update *work* is **fully
     inert**: no release checks, no downloads, no staging — regardless
-    of `updates.update-mode`. Per-node verification (purely
+    of `updates.mode`. Per-node verification (purely
     observational) stays on (§3.4); reboots remain governed by
     `reboots.windows` regardless.
 - **Edge case (documented, not validated — KISS):** if the grace is
@@ -297,16 +297,16 @@ plan verification).
 (`update.RunLocal`) runs a window check **first**: `updates.windows`
 empty or no window open at `now` → skip the cycle (no HTTP fetch, no
 partition mount, rate-limited log).
-`updates.update-mode: off` still wins over everything (no update
+`updates.mode: off` still wins over everything (no update
 behavior at all). So the effective dial is:
 
-| `update-mode` | `updates.windows` | Behavior |
+| `updates.mode` | `updates.windows` | Behavior |
 | --- | --- | --- |
 | `off` | any | no update behavior. |
 | `stage` / `full` | explicit `[]` | **fully inert** — not even checks. |
 | `stage` / `full` | non-empty (default `["@every 12h"]`) | check + stage only while a window is open; staging itself (mount, download, verify, extract, bootloader, purge) runs as one unit inside the window. Once started inside an open window, the run completes even if the window closes mid-flight (start-gate only, like reboots — §3.1); what is gated is the *start*, never the in-flight run. |
 
-**Scope of the gate.** `updates.windows` (and `update-mode`) gate the
+**Scope of the gate.** `updates.windows` (and `updates.mode`) gate the
 *update work* only: the periodic check and the staging of new versions
 (network + partition). The following are **always ungated** — they
 never touch the release repository: the change-triggered bootloader
@@ -314,7 +314,7 @@ reconciliation (§3.7, including operator pins and goal corrections),
 the M1-state re-arm (below), and per-node verification (leader,
 observational, below). So an operator pin re-points `DEFAULT` — and, in
 `full` mode, re-arms a reboot — even with `updates.windows: []`. With
-`update-mode: off` the reconciliation still re-points (the operator's
+`updates.mode: off` the reconciliation still re-points (the operator's
 own edit must be honored) but the node is not reboot-eligible (rule 1,
 below).
 
@@ -357,7 +357,7 @@ boot partition. Where a rule says "valid", it means well-formed.
 
 A node is **reboot-eligible** iff, all at once:
 
-1. the effective `updates.update-mode` is `full`;
+1. the effective `updates.mode` is `full`;
 2. `next-kernel` is **well-formed**;
 3. the node is **non-quiescent** (`running != next-kernel`);
 4. its M1 reboot state is **absent** — never `completed`, never
@@ -456,7 +456,7 @@ re-arms (decision 34) — both are precondition-checked and idempotent.
 cycle, for each node with a well-formed `next-kernel`. **Always on** — purely
 observational (no network, no disk): it runs even with
 `updates.windows: []`, which is *not* part of the "fully inert" scope,
-and with `update-mode: off` (events only — eligibility rule 1 still
+and with `updates.mode: off` (events only — eligibility rule 1 still
 bars any reboot):
 
 - `running == next-kernel` → **quiescent**; nothing to do. The
@@ -555,9 +555,9 @@ local pod ensures the bootloader `DEFAULT` equals `next-kernel`,
 **whatever changed the annotation**, but change-triggered — the boot
 partition is vfat and must not be mounted every 2 s. It is **always
 ungated** — it runs regardless of `updates.windows` and
-`updates.update-mode`: it never touches the release repository, only
+`updates.mode`: it never touches the release repository, only
 the partition, and it exists to honor the operator's own edits (an
-`update-mode: off` install must still honor a manual pin/rollback).
+`updates.mode: off` install must still honor a manual pin/rollback).
 Mount + write happen only:
 
 1. **Pod start** — the initial applied value is unknown; one mount,
@@ -842,12 +842,12 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 7. **No local-storage gate in the drain** (the `kubectl drain`
    `--delete-emptydir-data` gate is client-side and protects against
    data loss a reboot causes anyway). Documented as a warning instead.
-8. **`--on-reboot-failure=pause|continue`** (default `pause`): queue
+8. **`reboots.on-failure=pause|continue`** (default `pause`): queue
    behavior while any node is `failed`; resumed by the operator clearing
    the `failed` state.
 9. **Reboot verification via boot ID** (`reboot-exec`:
    `issuedAt`/`bootId`/`attempt`/`executorPodUID`/`confirmedAt` +
-   `--reboot-issue-grace`):
+   `reboots.issue-grace`):
    `completed` requires `reboot-exec` plus evidence that the host
    actually rebooted (boot ID change — durable via `confirmedAt` — or a
    `NotReady` the current leader observed, per-leader in-memory);
@@ -855,7 +855,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
    `completed`. Chosen over grace-only heuristics: the boot ID is
    exact, local, and works in the single-CP case.
 10. **Cap on concurrent control-plane reboots: 1, not configurable**
-    (constant): independent of `--max-concurrent-reboots`, so a batch
+    (constant): independent of `reboots.max-concurrent`, so a batch
     can never drop etcd below quorum on a multi-CP cluster. Deliberately
     a constant, not a flag: rebooting two CPs at once is never a valid
     goal, only a quorum hazard.
@@ -880,7 +880,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 14. **An in-flight drain is not interruptible**: `DELETE` on a
     `draining` node is 409 — the operator does not interfere with an
     ongoing drain; if the drain fails, the node is `failed` and the
-    plan pauses per `--on-reboot-failure`.
+    plan pauses per `reboots.on-failure`.
 15. **API read semantics**: `GET /reboots` shows the plan — every node
     with a reboot state (in-flight states plus `completed`/`failed`
     history until cleared); nodes without state are never listed, and
@@ -901,13 +901,13 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
     cannot clobber the local pod's fields).
 18. **`failed` is terminal, by design**: no automatic re-evaluation — if
     a node marked `failed` later turns out to have rebooted (slow boot
-    beyond `--reboot-issue-grace`, or an operator unbricking it), the
+    beyond `reboots.issue-grace`, or an operator unbricking it), the
     plan is not resumed or completed; the operator starts a **new** plan
     or clears the history (`DELETE`). The pause-on-failure principle
     outranks self-healing bookkeeping.
 19. **A PDB denial mid-drain is retried, not immediately fatal**: a 429
     from the Eviction API during the drain is retried with backoff for
-    as long as `--reboot-drain-timeout` remains — a PDB's state can
+    as long as `reboots.drain-timeout` remains — a PDB's state can
     fluctuate due to activity unrelated to the draining node (the same
     rationale as `kubectl drain`'s retry loop, and consistent with the
     documented pre-check/API divergence, 3.7); only a denial that
@@ -915,7 +915,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 
 ### 4.2 Updates era (M2)
 
-1. **Single `updates.update-mode` enum** `off|stage|full` (KISS) — not
+1. **Single `updates.mode` enum** `off|stage|full` (KISS) — not
    separate enable/check/stage booleans.
 2. **Flat ConfigMap with feature-prefixed keys** — `data` is
    `map[string]string` (proven on the cluster: `kubectl explain
@@ -1042,7 +1042,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
   check cadence, preserved). The shipped `deploy/configmap.yaml`
   carries the keys present, so "absent" only occurs on operator-edited
   ConfigMaps — the built-in is the fallback, not a second source. To stop the update feature entirely (not
-  even checks), set `updates.windows: '[]'` explicitly (or `update-mode:
+  even checks), set `updates.windows: '[]'` explicitly (or `updates.mode:
   off`).
 - **Non-forced reboots are OFF by default** (D6, D10). The built-in default for
   `reboots.windows` is empty: after an M3 rollout, `POST /reboots`
@@ -1270,7 +1270,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | C6 | PASS | 2026-09-06 | PDB on wk2, `POST {"force":true}` → eviction rejected by PDB, force-DELETE removes the pod, drain completes, wk2 `completed` (Deployment recreated the pod after the reboot) |
 | A7 | PASS | 2026-09-06 | `POST [wk1,wk2]` → strict serialization: wk1 `completed` first, wk2 admitted only after (slot=1) |
 | B3 | PASS | 2026-09-06 | re-POST after `completed` → accepted (completed is re-requestable), full lifecycle again |
-| C4 | PASS | 2026-09-06 | unmanaged pod on wk1, `force:false` → drain skipped the pod, hit `reboots.reboot-drain-timeout` exactly (10m0s) → `failed` + uncordon + `RebootFailed` event; node back to Ready |
+| C4 | PASS | 2026-09-06 | unmanaged pod on wk1, `force:false` → drain skipped the pod, hit `reboots.drain-timeout` exactly (10m0s) → `failed` + uncordon + `RebootFailed` event; node back to Ready |
 | D1 | PASS | 2026-09-06 | leader pod deleted mid-drain → standby took over via lease; drain finished and node reached `completed` |
 | D2 | PASS | 2026-09-06 | DS rollout (pod restart) while node `rebooting` → no re-issue: `attempt` stayed 1, no second reboot |
 | D3 | PASS | 2026-09-06 | DELETE while `draining` → 409 (in-flight drain not interruptible); `failed`/`completed` DELETE → 204 |
@@ -1288,7 +1288,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | D12 | PASS | 2026-09-06 | `virsh destroy` (hard power-off, no reboot) 1 s after issue: node NotReady, stays `rebooting` past the 5 m grace (no executor → no boot-ID check → **no auto-fail**); queued node stayed `requested` (slot held); DELETE cleared annotations on the bricked node; `virsh start` → Ready. First attempt void: the Buildroot guest reboots in ~17 s, completing before a late power-off lands. |
 | D16 | PASS | 2026-09-06 | `virsh suspend` (freeze) in the same second as issue, held 6.5 min (past grace): node stayed `rebooting`, **not** `failed` (executor pod frozen with the host); `virsh resume` → node returned 6m26s after issuedAt → `completed` |
 | B2 | PASS | 2026-09-06 | same campaign: late return (>30 s after issuedAt) → `completed` via the NotReady-after-issuedAt evidence path (no `confirmedAt` in reboot-exec: the local pod never confirmed, exactly as designed) |
-| D14 | PASS | 2026-09-06 | `reboots.max-concurrent-reboots: "2"`: `POST [wk1,cp1]` → BOTH `rebooting` concurrently; cp1 reboot took the API down ~1 min (< drain-timeout); on recovery both `completed`, nothing `failed`; leader handover on recovery |
+| D14 | PASS | 2026-09-06 | `reboots.max-concurrent: "2"`: `POST [wk1,cp1]` → BOTH `rebooting` concurrently; cp1 reboot took the API down ~1 min (< drain-timeout); on recovery both `completed`, nothing `failed`; leader handover on recovery |
 | D15 | PASS | 2026-09-06 | unmanaged pod on wk1 (drain pending); CP apiserver is a static pod on this distro — outage by `mv`-ing its manifest off for 13 min (> drain-timeout); `failed` at 05:46:33, i.e. **on recovery**, not at the 05:43:18 deadline while API was down (wall-clock); `drain timed out after 10m0s`, uncordoned next cycle |
 
 #### Phase A — API & admission (no reboot)
@@ -1319,7 +1319,7 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | C1 | PDB block | Deployment + PDB (`maxUnavailable:0`) pinned to the worker; POST | stays `requested`; `reboot-status.blockedBy` set; `PDBBlocked` event; queue continues past it |
 | C2 | 2-node PDB skip | C1 on w1 + POST w2 | w1 blocked, w2 drains/completes (skip rule) |
 | C3 | PDB unblock | delete the PDB (or scale dep to 0) | drain proceeds on next cycle |
-| C4 | unmanaged pod, no force | `kubectl run orphan --rm=false ...` on the worker (no owner); POST | drain blocks; at `reboots.reboot-drain-timeout` → `failed` + uncordon + `error` set; queue pauses (pause mode) |
+| C4 | unmanaged pod, no force | `kubectl run orphan --rm=false ...` on the worker (no owner); POST | drain blocks; at `reboots.drain-timeout` → `failed` + uncordon + `error` set; queue pauses (pause mode) |
 | C5 | unmanaged pod, force | same, `POST -d '{"force":true}'` | pod deleted, drain completes, reboot proceeds |
 | C6 | force bypasses PDB | C1 setup, `POST -d '{"force":true}'` | drain proceeds despite PDB |
 
@@ -1336,12 +1336,12 @@ with no routing, so pod IPs collide and NodePort fails. Calico
 | D7 | corrupt `cordonedPrev` | on a `failed` cordoned node: set `reboot-status='{"cordonedPrev":"yes"}'` (wrong type) | uncordon **skipped** (cordon preserved), `UncordonBlocked` event; `kubectl uncordon` repairs |
 | D8 | `cordonedPrev` respected | `kubectl cordon <node>` first, then reboot to `failed`/`completed` | node stays cordoned (operator's cordon) |
 | D9 | pause → resume | let a node reach `failed` (e.g. C4); POST another node | `QueuePaused` event, new node stays `requested`; DELETE the failed node → queue resumes |
-| D10 | no-effect reboot | image variant whose reboot shim is a no-op (or patch the container command) | boot ID unchanged; `failed` after `reboots.reboot-issue-grace` ("reboot did not take effect") |
+| D10 | no-effect reboot | image variant whose reboot shim is a no-op (or patch the container command) | boot ID unchanged; `failed` after `reboots.issue-grace` ("reboot did not take effect") |
 | D11 | nsenter failure | image without `nsenter` (e.g. scratch-based) | `RebootFailed` command-failure path, node `failed`, uncordoned |
 | D12 | bricked node | POST a worker, then power off the VM (do not reboot) | stays `rebooting`; NotReady; queue holds the slot; no auto-assumption; DELETE clears |
 | D13 | batch `*` with NotReady | make one node NotReady; `POST -d '{"nodes":["*"]}'` | partial 202: Ready nodes accepted, the NotReady one rejected 422 |
-| D14 | API outage mid-drain (short) | `reboots.max-concurrent-reboots: "2"`, w1 draining + cp rebooting; stop apiserver < drain-timeout | nothing marked `failed` while down; leader handover on recovery; drain resumes and completes |
-| D15 | API outage > drain-timeout | same, outage longer than `reboots.reboot-drain-timeout` | draining node `failed` + uncordoned on recovery (wall-clock) |
+| D14 | API outage mid-drain (short) | `reboots.max-concurrent: "2"`, w1 draining + cp rebooting; stop apiserver < drain-timeout | nothing marked `failed` while down; leader handover on recovery; drain resumes and completes |
+| D15 | API outage > drain-timeout | same, outage longer than `reboots.drain-timeout` | draining node `failed` + uncordoned on recovery (wall-clock) |
 | D16 | host hang during shutdown | hang the host's shutdown (e.g. qemu pause at reboot) | its pod dies, so the boot-ID check cannot fire: node stays `rebooting` until Ready (does **not** fail after the grace); escape = DELETE |
 | D17 | CP reboot last | batch including the CP node | CP admitted only when nothing else in-flight; single-CP: API down until the node returns, then everything resumes from annotations |
 
@@ -1399,7 +1399,7 @@ namespace `default`).
   cases below is shorthand for that dir. See M2 §3.7 (ground-truth
   layout; historical text in git).
 - **ConfigMap**: `updates.url` pointed at the PROD repo (`dev/`);
-  `updates.update-mode` set per case; `updates.windows` set per case
+  `updates.mode` set per case; `updates.windows` set per case
   (e.g. `["@every 2m"]` for a fast campaign cadence).
 - **Reboots regression subset**: after the updates-era config
   migration (flags → ConfigMap), re-run §7.2 cases A1, B1, C1 before
@@ -1420,13 +1420,13 @@ namespace `default`).
 
 | # | Case | Trigger | Expect |
 | --- | --- | --- | --- |
-| U0 | no update activity | `updates.update-mode: "off"`, PROD repo reachable with a newer version | no HTTP traffic to the repo (server access log empty), no annotations created, no update events, engine + reboot API healthy |
+| U0 | no update activity | `updates.mode: "off"`, PROD repo reachable with a newer version | no HTTP traffic to the repo (server access log empty), no annotations created, no update events, engine + reboot API healthy |
 
 #### U1 — staging, `stage` mode
 
 | # | Case | Trigger | Expect |
 | --- | --- | --- | --- |
-| U1 | full staging happy path | `updates.update-mode: stage`; the PROD repo has a newer version | every node: `UpdateAvailable` then `UpdateStaged`; `/boot/simplek8s/` contains the new version + bootloader entry; `next-kernel := V` on all nodes; bootloader default points at V; **nodes keep running the old version** (no reboots); purge respected: running version NOT deleted, old versions pruned per `preserve` |
+| U1 | full staging happy path | `updates.mode: stage`; the PROD repo has a newer version | every node: `UpdateAvailable` then `UpdateStaged`; `/boot/simplek8s/` contains the new version + bootloader entry; `next-kernel := V` on all nodes; bootloader default points at V; **nodes keep running the old version** (no reboots); purge respected: running version NOT deleted, old versions pruned per `preserve` |
 | U1b | idempotent re-check | wait for the next window occurrence | no re-download (V already in `/boot`), no annotation change, no plan — "V in /boot → nothing" rule |
 
 #### U2 — GPG rejection
@@ -1451,7 +1451,7 @@ namespace `default`).
 
 | # | Case | Trigger | Expect |
 | --- | --- | --- | --- |
-| U5 | full cluster update | `updates.update-mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `max-concurrent-reboots` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan-state ConfigMap entry cleared → cluster fully on the new version; no `failed` (M2 plan mechanism — abolished by M3; the same outcome via windows is W4) |
+| U5 | full cluster update | `updates.mode: full`; maintainer publishes a new dev release | all nodes stage → `UpdatePlanStarted` → reboots serialize per `reboots.max-concurrent` (M1 queue: cordon/drain/issue/verify) → each node returns on the new version (`running == next-kernel`, quiescent) → plan-state ConfigMap entry cleared → cluster fully on the new version; no `failed` (M2 plan mechanism — abolished by M3; the same outcome via windows is W4) |
 
 #### U6 — plan failure → all-or-nothing cancel
 
@@ -1475,7 +1475,7 @@ namespace `default`).
 
 Re-validates U5 on the **HA** cluster (cp1/cp2/cp3 + wk1/wk2). The new
 aspect: the update reboot plan must bring all 3 control planes back (one at
-a time, `max-concurrent-reboots: 1`) **without the API losing quorum**.
+a time, `reboots.max-concurrent: 1`) **without the API losing quorum**.
 
 ### Phase A — manual downgrade
 
@@ -1487,7 +1487,7 @@ auto-updater would have to re-download it.
 
 ### Phase B — auto re-update
 
-`updates.update-mode: full`. The auto-updater re-downloaded, re-staged
+`updates.mode: full`. The auto-updater re-downloaded, re-staged
 (`DEFAULT`→new), anchored (eligible), and the leader drove the plan through
 all 5 reboots (workers-first, CP-last, serialized). **The API never
 dropped**: etcd kept 3 members — each CP's etcd/apiserver restarted only on

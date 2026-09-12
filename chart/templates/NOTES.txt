@@ -1,0 +1,9 @@
+simplek8s-controller in namespace {{ .Release.Namespace }}.
+Starts inert (updates off, no reboot windows) — configure the
+{{ include "skc.name" . }} ConfigMap to give it work.
+Reach the API: kubectl -n {{ .Release.Namespace }} port-forward daemonset/{{ include "skc.name" . }} 1880:8080
+{{- if .Values.secret.create }}
+Bearer enabled: kubectl -n {{ .Release.Namespace }} get secret {{ include "skc.name" . }}-api-token -o jsonpath='{.data.token}' | base64 -d
+{{- else }}
+Tokenless loopback-only API (set secret.create=true for a bearer).
+{{- end }}

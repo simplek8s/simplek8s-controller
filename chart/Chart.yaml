@@ -1,0 +1,7 @@
+apiVersion: v2
+name: simplek8s-controller
+description: Node-management controller for SimpleK8s clusters (reboots, distro updates)
+type: application
+version: 0.2.0
+appVersion: 0.2.0
+icon: https://simplek8s.org
