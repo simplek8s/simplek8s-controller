@@ -90,7 +90,8 @@ make deploy           # kubectl apply -k deploy/ (uses your kubeconfig)
 ```
 
 `deploy/` is a kustomize bundle: namespace, ServiceAccount, RBAC,
-ConfigMap, DaemonSet, Service, NetworkPolicy. **The API token Secret is
+ConfigMap, DaemonSet, NetworkPolicy — no Service by design (reach the
+API via `kubectl port-forward`, see below). **The API token Secret is
 deliberately not in the bundle** — create it with real material first:
 
 ```sh
@@ -376,9 +377,9 @@ kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
   single-CP cluster takes the API server down until the node returns;
   the controller's state is annotation-derived, so it resumes cleanly
   afterwards, but expect the cluster to be unavailable during the gap.
-- **API transport**: plain HTTP with a bearer token. Keep the Service
-  inside the cluster (the shipped NetworkPolicy restricts ingress); do
-  not expose it publicly without TLS termination.
+- **API transport**: plain HTTP with a bearer token, reachable only
+  via `kubectl port-forward` (no Service, no TLS); do not expose the pod
+  port publicly without TLS termination.
 - **Privilege**: the DaemonSet pod is privileged (it must reach PID 1's
   namespaces to issue `reboot`). Treat the `simplek8s` namespace and its
   token Secret accordingly.
@@ -389,7 +390,7 @@ kubectl -n simplek8s logs -l app=simplek8s-controller --tail=50
 make            # vet + test + build
 make test       # go test ./...
 make image      # docker image with version/commit/built baked in
-make deploy-minikube   # build + apply + refresh image on minikube
+make deploy     # kubectl apply -k deploy/ (needs the token Secret first)
 ```
 
 CI (`.github/workflows/`) runs `gofmt` check + `vet` + `test` + `build`
@@ -405,11 +406,15 @@ Layout:
 cmd/simplek8s-controller/   entrypoint (flags, env, wiring)
 internal/config/            flat-key ConfigMap config (defaults, last-valid-wins)
 internal/kube/              stdlib REST client + minimal K8s types
-internal/nodestate/         the six annotations: schema, parse, patches
+internal/nodestate/         node annotations: schema, parse, patches
 internal/engine/            poll loop, leader election (Lease), roles
 internal/features/reboot/   orchestrator, executor, drain, PDB
-internal/features/update/   release check (verified index), staging, plans
+internal/features/update/   release check (verified index), staging, bootloader writers
 internal/api/               HTTP API (token auth, reboots endpoints)
 internal/kubetest/          fake API server for tests (stdlib only)
 deploy/                     kustomize bundle
 ```
+
+## License
+
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
