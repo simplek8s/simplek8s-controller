@@ -37,7 +37,8 @@ kubectl label namespace simplek8s \
   pod-security.kubernetes.io/warn=restricted --overwrite
 
 # 1. Install (inert by default: updates off, no reboot windows).
-helm install simplek8s-controller oci://ghcr.io/simplek8s/charts/simplek8s-controller -n simplek8s --create-namespace
+helm -n simplek8s install simplek8s-controller \
+  oci://ghcr.io/simplek8s/charts/simplek8s-controller --create-namespace
 
 # 2. Verify every node has a Running pod:
 kubectl -n simplek8s get pods -o wide
@@ -48,7 +49,7 @@ Then give it work (Helm owns the ConfigMap — hand edits are
 overwritten on the next `upgrade`):
 
 ```sh
-helm upgrade simplek8s-controller ./chart -n simplek8s --reuse-values \
+helm -n simplek8s upgrade simplek8s-controller ./chart --reuse-values \
   --set config.updates.mode=stage
 ```
 
@@ -91,18 +92,19 @@ controller touched it; the controller only uncordons nodes it cordoned.
 ```mermaid
 stateDiagram-v2
     direction LR
-    absent --> requested: POST /api/v1/reboots
-    requested --> draining: admit (one node per cycle)
+    [*] --> requested: POST /api/v1/reboots
+    requested --> draining: admit (one per cycle)
     draining --> rebooting: drain done
     draining --> failed: drain failure / timeout
-    rebooting --> failed: no effect after grace / command failure
-    rebooting --> completed: node Ready + reboot evidence
-    completed --> requested: POST again (re-requestable)
-    failed --> requested: POST again (re-requestable)
-    requested --> absent: DELETE
-    rebooting --> absent: DELETE
-    completed --> absent: DELETE
-    failed --> absent: DELETE
+    rebooting --> completed: Ready + boot-ID evidence
+    rebooting --> failed: no effect after grace
+    completed --> requested: POST again
+    failed --> requested: POST again
+
+    note right of draining
+        DELETE clears any state
+        except draining (409)
+    end note
 ```
 
 Queue gates while `requested`: at most `reboots.max-concurrent` nodes
@@ -130,7 +132,7 @@ holds other things and uninstalling must never delete it; the chart
 never manages it). Pin the image per release in PROD:
 
 ```sh
-helm install simplek8s-controller ./chart -n simplek8s --create-namespace \
+helm -n simplek8s install simplek8s-controller ./chart --create-namespace \
   --set image.tag=vX.Y.Z
 ```
 
@@ -151,13 +153,13 @@ daemonset/simplek8s-controller` (the token is read once at startup).
 Uninstall keeps the namespace (the chart never manages it):
 
 ```sh
-helm uninstall simplek8s-controller -n simplek8s
+helm -n simplek8s uninstall simplek8s-controller
 ```
 
 Canary on one node (what the old `prod-canary` overlay did):
 
 ```sh
-helm install simplek8s-controller ./chart -n simplek8s --create-namespace \
+helm -n simplek8s install simplek8s-controller ./chart --create-namespace \
   --set image.tag=vX.Y.Z \
   --set nodeSelector."kubernetes\.io/hostname"=node-1
 ```
