@@ -58,8 +58,10 @@ below — canary first, always).
 ## Observing
 
 ```sh
-# boot intent + reboot state (all nodes)
+# boot intent (all nodes)
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/next-kernel}{"\n"}{end}'
+
+# reboot state (all nodes)
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/reboot-state}{"\n"}{end}'
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.simplek8s\.org/reboot-request}{"\n"}{end}'
 
