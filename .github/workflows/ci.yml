@@ -5,7 +5,15 @@ name: ci
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - "assets/**"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - "assets/**"
 
 permissions:
   contents: read

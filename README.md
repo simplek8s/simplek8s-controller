@@ -437,11 +437,13 @@ make deploy     # helm upgrade --install ./chart (TAG=vX.Y.Z pins the image)
 ```
 
 CI (`.github/workflows/`) runs `gofmt` check + `vet` + `test` + `build`
-on every push and PR. Pushing a branch also publishes a multi-arch
+on every push and PR, plus `helm lint` and chart renders — docs-only
+changes skip it all. Pushing a branch also publishes a multi-arch
 (`amd64`/`arm64`) image to GHCR after tests pass (branch name as tag).
-Pushing a `vX.Y.Z` tag publishes the versioned image (`X.Y.Z`, `X.Y`,
-`X`, `latest`), pushes the chart (`oci://ghcr.io/simplek8s/charts/simplek8s-controller`,
-same version) and creates the GitHub Release with static binaries.
+Pushing a `vX.Y.Z` tag (always a full run) publishes the versioned
+image (`X.Y.Z`, `X.Y`, `latest`), pushes the chart
+(`oci://ghcr.io/simplek8s/charts/simplek8s-controller`, same version)
+and creates the GitHub Release with static binaries.
 
 Layout:
 
