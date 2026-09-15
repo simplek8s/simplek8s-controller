@@ -66,7 +66,7 @@ Agreed scope for this iteration (2026-09-15 conversation):
   an exclusive `flock` (second instance exits 1): it
   mounts the boot partition (`PARTLABEL=boot` preferred, then
   `EFI`/`boot` fs labels — same enumeration + contents verification
-  as M5 §3.6), writes kernels under `simplek8s/`, re-points the
+  as PLAN.md §3.12), writes kernels under `simplek8s/`, re-points the
   bootloader, and guarantees `umount` (defer, no mounts left behind).
   An explicit `--bootloader`/`--bootdevice` contradicting detection
   aborts (fail-closed, D16). It never contacts the k8s API and never reads/writes
@@ -116,8 +116,8 @@ write half is `boot set` / `update --next-kernel`.
 | `--url` | `https://dl.simplek8s.org/simplek8s/stable`, accepts `dev\|rolling\|stable\|<custom-URL>` (legacy `flags.go` short-expansion kept) | Same default as controller (`config.go:48`). |
 | `--keyring` | embedded via `go:embed` of `keys/simplek8s-pubring.gpg`, override path allowed | Legacy default `/usr/lib/systemd/import-pubring.gpg` (`flags.go:144`) is dropped — this enables TODO 5 (keyring leaves the distro). |
 | `--checksign` | `true`; `false` skips GPG (explicit) | Power-user escape; `false` warns loudly on stderr. |
-| `--arch` | `auto` (device-tree + partition scan; values `x86-64\|rpi4\|rpi5`, legacy `arm64` accepted as alias of the legacy lineage, M5 §3.7) | Replaces legacy `x86-64\|rpi4\|rpi5` filter (`flags.go:28`); resolution order: staged-filename flavor (`ResolveFlavor`) first, device-tree fallback, explicit override last. |
-| `--bootdevice` | `auto` (`/dev/disk/by-label/EFI` → `boot`, then M5 candidate enumeration) | Override path for debug only. |
+| `--arch` | `auto` (device-tree + partition scan; values `x86-64\|rpi4\|rpi5`; `arm64` accepted only as legacy alias for stale partitions — generic-`arm64` is unsupported per PLAN.md §4.4 D5, no hardware/image) | Replaces legacy `x86-64\|rpi4\|rpi5` filter (`flags.go:28`); resolution order: staged-filename flavor (`ResolveFlavor`, PLAN.md §3.12) first, device-tree fallback, explicit override last. |
+| `--bootdevice` | `auto` (`PARTLABEL=boot` first — GPT only, absent on MBR layouts like rpi — then by-label `EFI` → `boot`, then blkid scan, PLAN.md §3.12) | Override path for debug only. |
 | `--bootloader` | `auto` (`grub\|syslinux\|rpi`, detected by config presence: `grub/grub.cfg`, `syslinux/syslinux.cfg`, `config.txt`) | Legacy knew only `syslinux\|rpi` (`flags.go:198`); `grub` is new and mandatory (GRUB is the managed bootloader). |
 | `--next-kernel` | `true` | (D4) Legacy name `next-boot` (`flags.go:256`) and generic `set-default` both rejected: the flag means "make this `ts` the node's boot goal", i.e. the local equivalent of the `next-kernel` annotation. `--next-kernel=false` stages without re-pointing. |
 | `--preserve` | `3` | Aligns with controller (`config.go:49`), not legacy `5` (`flags.go:264`). |
@@ -163,9 +163,21 @@ for symmetry but is hidden advanced), all short aliases.
 
 ### 3.4 Boot device + bootloader writers
 
-Reuse `PhysicalStore.findBootDevice`/`mountDevice` (M5 §3.6:
-enumerate `PARTLABEL=boot` → fs labels, verify `simplek8s/` +
-bootloader config, fail closed, no mounts left behind) and the
+Reuse `PhysicalStore.mountedBoot` (plus `candidates` /
+`verifyCandidate` / `parseBlkidCandidates`, PLAN.md §3.12 D2 as
+shipped by M5 `f013580`): enumerate `PARTLABEL=boot` (GPT only) →
+by-label `EFI`/`boot` → blkid scan, mount-verify each candidate
+(`simplek8s/` + a bootloader config), first verifying wins, none
+fails closed with no mounts left behind. Proven live (PLAN.md §7.5
+F5 decoy drill: decoy skipped, fail-closed with zero mounts, heal
+without restart). The per-pod verified-device cache is per-process,
+so a one-shot CLI simply gets one resolution per run; stale-cache
+retry (`invalidate` + re-resolve on mount failure) is reused as is.
+Empty-partition consequence (README bootstrap, F5 run H): a
+partition with no `simplek8s/` dir fails verification by design, so
+`update` cannot bootstrap a wiped partition alone — that stays
+`install` territory (§8); C8 preconditions a distro-fresh partition
+(bootloader config present). Reuse the
 three writers (`setGrubDefault`, `setSyslinuxDefault`,
 `setRPIDefault` in `bootloader.go`). Newest-first GRUB menu order
 and MOK-last invariant stay as in the controller.
@@ -184,7 +196,7 @@ ships (TODO 5).
 | # | Decision | Rationale / status |
 | --- | --- | --- |
 | 1 | Static binary in the distro, no container (CLOSED 2026-09-15) | Local-only + pre-cluster + root mounts: container adds privilege plumbing for zero benefit. Legacy precedent (`-extldflags=-static`, `x86-64`+`arm64`). |
-| 2 | `grub` + `rpi` day 1, `syslinux` legacy-only (CLOSED 2026-09-15) | GRUB is the managed bootloader; rpi writer never proven except via M5 F2 — CLI must exercise both from day 1. |
+| 2 | `grub` + `rpi` day 1, `syslinux` legacy-only (CLOSED 2026-09-15) | GRUB is the managed bootloader; rpi writer first proven live in PLAN.md §7.5 F2 — CLI must exercise both from day 1. systemd-boot stays rejected (PLAN.md §4.4). |
 | 3 | `--checksign=false` allowed (CLOSED 2026-09-15) | Escape hatch for air-gapped/custom repos; loud warning, never default. |
 | 4 | Boot-goal flag named `--next-kernel` (CLOSED 2026-09-15) | Aligns with the annotation (`next-kernel` = target `ts`); `next-boot` (legacy) and `set-default` (grub jargon) rejected. |
 | 5 | Flag set §3.2; short aliases dropped (CLOSED 2026-09-15) | Kebab-case longs only; hidden `--grub-config` for symmetry. |
@@ -263,7 +275,7 @@ ships (TODO 5).
 | C5 | rpi update | rpi4 + rpi5 nodes | `*.rpi4/rpi5.efi` staged, `config.txt` re-pointed, running untouched. |
 | C6 | `purge --preserve 3` + prune | node with ≥5 staged | Oldest deleted, grub/syslinux entries pruned, default + running protected, foreign files kept. |
 | C7 | `boot set` validation | `boot set <absent-ts>` | Refused (file-first); exit non-zero; default unchanged. |
-| C8 | Pre-cluster install | fresh node, no kubelet | Full `update` works with only userspace + boot partition. |
+| C8 | Pre-cluster install | distro-fresh node, no kubelet, bootloader config present (not a wiped partition — empty `simplek8s/` fails verification by design, README bootstrap) | Full `update` works with only userspace + boot partition; a wiped partition stays `install` territory (§8). |
 
 ## 8. Deferred
 
@@ -271,11 +283,13 @@ ships (TODO 5).
   name, spec pending; not in M6 scope (D17).
 - Fleet loop helper (ssh-for over nodes) — operator shell, not CLI scope.
 - Shell completions / man pages (legacy had none worth keeping).
-- `systemd-boot`/UEFI questions (distro, same as M5 §8).
+- `systemd-boot`/UEFI questions — REJECTED (PLAN.md §4.4 M5 D5-era):
+  systemd-boot is UEFI-only, SimpleK8s keeps BIOS boot; GRUB (+
+  syslinux legacy, + rpi `config.txt`) stays the managed set.
 
 ## 9. Risks & safety notes
 
-- **Wrong-flavor staging bricks with the wrong DTB** (M5 §9): flavor
+- **Wrong-flavor staging bricks with the wrong DTB** (PLAN.md §9): flavor
   pinned at detection, never re-derived mid-run; foreign files never
   written/purged/pruned.
 - **Silent `--checksign=false`**: always warn; never persist as
@@ -287,26 +301,33 @@ ships (TODO 5).
   as mutually exclusive (CLI is for pre-cluster / out-of-band with
   `updates.windows: []`, or controller paused).
 - **Single `kernel=` on rpi**: re-point is all-or-nothing per write
-  (same as syslinux `DEFAULT`, no worse — M5 §9).
+  (same as syslinux `DEFAULT`, no worse — PLAN.md §9).
 
-## 10. Approval baseline
+## 10. Approval baseline + M5 review
 
-Approved against this tree state (2026-09-15 conversation).
-M5 work continues in another session; revalidate M6 against it
-before phase 1:
+Approved 2026-09-15 on `083f89f` (= rewritten `322a151` after the
+origin history rewrite; M6 commit `7c1387a` = rewritten `49e7dde`).
+M5 then shipped on top (`f013580` feat D2 enumerate-then-verify +
+per-pod cache, `9cfa12b` bootstrap/F5 evidence, `e714ac5` fold M5
+into `PLAN.md` removing `PLAN-M5.md`, `d1a9cf7` gofmt). Reviewed
+2026-09-16 at `d1a9cf7`:
 
-- Commit: `083f89fe5540a32bfd7200e3c7d31cd2a6a412f6`
-  (`083f89f`, `main`, `2026-09-15 00:33:19 +0000`,
-  `update: grub menu newest-first, MOK enroll last`).
-- Tree: clean except untracked `PLAN-M6.md` (this file, the
-  approved v1 itself).
-- Reuse boundary studied: `internal/features/update/` at that
-  commit (key blobs: `bootloader.go d010871`, `check.go 71f3ede`,
-  `flavor.go b117739`).
-- Revalidate with:
+- Reuse boundary: `bootstore.go` rewritten — `findBootDevice` is now
+  cached enumerate-then-verify; all callers go through `mountedBoot`
+  (resolve + mount, stale-cache retry). §3.4 updated to reuse
+  `mountedBoot`/`candidates`/`verifyCandidate`; one-shot CLI gets one
+  resolution per run, no negative caching. Public `PhysicalStore`
+  method signatures unchanged.
+- M5 refs updated: `PLAN-M5.md` gone → `PLAN.md` §3.12 (design) /
+  §4.4 (decisions incl. generic-`arm64` unsupported D5, systemd-boot
+  rejected) / §7.5 (F1–F5 incl. decoy drill).
+- New constraint from M5: empty partition fails verification by
+  design → C8 scoped to distro-fresh partitions; wiped-partition
+  bootstrap stays `install` territory (§8, README procedure, F5 H).
+- Revalidate further M5 work with:
 
-      git diff 083f89f..HEAD -- internal/features/update cmd/ keys/ Makefile Dockerfile
+      git diff 49e7dde..HEAD -- internal/features/update cmd/ keys/ Makefile Dockerfile
 
   Any change to that boundary (signatures, `check.go`,
-  `flavor.go`, writers, `staging`/`purge`/`disk`/`gpg`) can
-  invalidate D8/D12/D16.
+  `flavor.go`, writers, `staging`/`purge`/`disk`/`gpg`/`bootstore`)
+  can invalidate D8/D12/D16.
