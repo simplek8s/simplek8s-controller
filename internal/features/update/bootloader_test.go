@@ -271,7 +271,10 @@ func TestGrubSetAndGetDefaultReplacesExistingDefault(t *testing.T) {
 			t.Fatalf("unrelated line %q not preserved:\n%s", want, got)
 		}
 	}
-	// New entry inserted BEFORE the MOK conditional, keeping it last.
+	// New entry goes FIRST (newest first); the MOK entry stays last.
+	if iNew, iOld := strings.Index(got, "--id "+base), strings.Index(got, "--id simplek8s.202608291203.x86-64"); iNew > iOld {
+		t.Fatalf("new entry must precede older entries:\n%s", got)
+	}
 	if strings.Index(got, "--id "+base) > strings.Index(got, "grub_platform") {
 		t.Fatalf("new entry must precede the MOK guard:\n%s", got)
 	}

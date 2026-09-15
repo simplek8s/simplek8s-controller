@@ -666,8 +666,9 @@ The syslinux-legacy writer behaves the same (`LABEL` block +
   equal to the kernel basename without extension), symmetric to
   syslinux `DEFAULT <label>`. Numeric defaults from the pre-`--id`
   template are accepted on read (Nth `menuentry`) and normalized to
-  the named form on write. New entries are inserted before the
-  `grub_platform` MOK conditional so the enroll entry stays last; the
+  the named form on write. New entries are inserted before the first
+  `menuentry` (newest first, oldest last); the MOK conditional is never
+  inserted before or into, so the enroll entry stays last. The
   ESP redirect configs (`EFI/BOOT/grub.cfg`, `EFI/debian/grub.cfg`,
   `boot/grub/grub.cfg`) are never touched — only `grub/grub.cfg` is
   managed.

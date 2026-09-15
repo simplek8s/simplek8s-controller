@@ -247,8 +247,10 @@ func syslinuxKernelForLabel(f *os.File, label string) (string, error) {
 //   menuentry "SimpleK8s <ts> <arch>" --id simplek8s.<ts>.<arch> {
 //       linux /simplek8s/simplek8s.<ts>.<arch>.efi
 //   }
-// Numeric defaults (the pre-id template's `set default=0`) are
-// accepted on read (Nth menuentry) and normalized to --id on write.
+// New entries are inserted before the first menuentry (newest first);
+// the MOK enroll entry stays last. Numeric defaults (the pre-id
+// template's `set default=0`) are accepted on read (Nth menuentry) and
+// normalized to --id on write.
 
 var (
 	reGrubDefault  = regexp.MustCompile(`(?i)^\s*set\s+default\s*=\s*(.+?)\s*$`)
@@ -256,7 +258,6 @@ var (
 	reGrubID       = regexp.MustCompile(`--id[=\s]+("[^"]+"|'[^']+'|[^\s]+)`)
 	reGrubLinux    = regexp.MustCompile(`(?i)^\s*linux\s+(?P<kernel>\S+)`)
 	reGrubClose    = regexp.MustCompile(`^\s*\}\s*$`)
-	reGrubMokGuard = regexp.MustCompile(`grub_platform`)
 )
 
 // grubEntry is one parsed menuentry block.
@@ -406,20 +407,17 @@ func setGrubDefault(partRoot, relKernelPath string) error {
 			"}",
 			"",
 		}
+		// Newest first: insert before the first menuentry, so the
+		// menu reads newest-to-oldest. The MOK conditional is
+		// never inserted before or into — it stays last.
 		at := len(lines)
 		for i, ln := range lines {
-			if reGrubMokGuard.MatchString(ln) {
-				// Insert before the MOK conditional so it stays
-				// last; back up over blank lines for tidy output.
+			if reGrubMenuentr.MatchString(ln) {
 				at = i
-				for at > 0 && strings.TrimSpace(lines[at-1]) == "" {
-					at--
-				}
 				break
 			}
 		}
-		// Keep a blank line between the previous content and the
-		// new block.
+		// Keep a blank line between the header and the new block.
 		if at > 0 && strings.TrimSpace(lines[at-1]) != "" {
 			block = append([]string{""}, block...)
 		}
