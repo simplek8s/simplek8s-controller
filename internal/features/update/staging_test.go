@@ -131,8 +131,63 @@ func TestStagePartitionEndToEnd(t *testing.T) {
 	}
 }
 
-func TestStagePartitionChecksumMismatchFails(t *testing.T) {
+// TestStagePartitionGrubEndToEnd mirrors the syslinux end-to-end flow
+// on a grub partition: the staged kernel gets a menuentry and the
+// named default points at it.
+func TestStagePartitionGrubEndToEnd(t *testing.T) {
 	const (
+		ts   = "202601010000"
+		arch = "x86-64"
+	)
+	payload := []byte("kernel-image-bytes")
+	artifact := kernelArtifactName(ts, arch)
+	zst := zstdCompress(t, payload)
+	sum := sha256.Sum256(zst)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/"+artifact {
+			w.Write(zst)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	partRoot := t.TempDir()
+	writeRel(t, partRoot, grubConfigRel, "set default=old\nset timeout=5\n")
+	dir := "simplek8s"
+	workDir := t.TempDir()
+
+	req := StageRequest{
+		Version:      ts,
+		Arch:         arch,
+		Checksum:     hex.EncodeToString(sum[:]),
+		ArtifactFile: artifact,
+		RepoBase:     srv.URL,
+		Preserve:     2,
+		Running:      "",
+		Bootloader:   BootloaderGrub,
+	}
+	if err := stagePartition(context.Background(), srv.Client(), discardLogger{}, req, partRoot, dir, workDir); err != nil {
+		t.Fatal(err)
+	}
+
+	storedPath := filepath.Join(partRoot, dir, kernelStoredName(ts, arch))
+	got, err := os.ReadFile(storedPath)
+	if err != nil {
+		t.Fatalf("stored kernel missing: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("stored kernel content = %q, want %q", got, payload)
+	}
+
+	wantKernel := "/" + filepath.Join(dir, kernelStoredName(ts, arch))
+	if def := GetBootloaderDefault(BootloaderGrub, partRoot); def != wantKernel {
+		t.Fatalf("bootloader default = %q, want %q", def, wantKernel)
+	}
+}
+
+func TestStagePartitionChecksumMismatchFails(t *testing.T) {	const (
 		ts   = "202601010000"
 		arch = "x86-64"
 	)

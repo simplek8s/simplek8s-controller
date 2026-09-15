@@ -29,10 +29,18 @@ func readRel(t *testing.T, root, rel string) string {
 
 func TestDetectBootloader(t *testing.T) {
 	root := t.TempDir()
+	writeRel(t, root, grubConfigRel, "set default=0\n")
 	writeRel(t, root, syslinuxConfigRel, "DEFAULT old\n")
 	writeRel(t, root, rpiConfigRel, "kernel=old\n")
-	if got, err := DetectBootloader(root); err != nil || got != BootloaderSyslinux {
-		t.Fatalf("DetectBootloader = %q, %v; want syslinux (wins when both)", got, err)
+	if got, err := DetectBootloader(root); err != nil || got != BootloaderGrub {
+		t.Fatalf("DetectBootloader = %q, %v; want grub (wins when all three)", got, err)
+	}
+
+	rootSys := t.TempDir()
+	writeRel(t, rootSys, syslinuxConfigRel, "DEFAULT old\n")
+	writeRel(t, rootSys, rpiConfigRel, "kernel=old\n")
+	if got, err := DetectBootloader(rootSys); err != nil || got != BootloaderSyslinux {
+		t.Fatalf("DetectBootloader = %q, %v; want syslinux (legacy, wins over rpi)", got, err)
 	}
 
 	root2 := t.TempDir()
@@ -214,4 +222,190 @@ func TestPruneSyslinuxFileEndToEnd(t *testing.T) {
 	}
 	// Non-syslinux partition (no config): silent no-op.
 	pruneSyslinuxFile(t.TempDir(), dir, "x86-64", discardLogger{})
+}
+
+// GRUB fixtures mirror the distro's grub/grub.cfg: a named default, one
+// entry per staged kernel, and the Secure Boot MOK enroll entry last.
+const grubSample = `set default=simplek8s.202609061935.x86-64
+set timeout=5
+
+menuentry "SimpleK8s 202608291203 x86-64" --id simplek8s.202608291203.x86-64 {
+	linux /simplek8s/simplek8s.202608291203.x86-64.efi
+}
+
+menuentry "SimpleK8s 202609061935 x86-64" --id simplek8s.202609061935.x86-64 {
+	linux /simplek8s/simplek8s.202609061935.x86-64.efi
+}
+
+if [ "$grub_platform" = "efi" ]; then
+menuentry "Enroll MOK key (first boot with Secure Boot)" {
+	chainloader /EFI/BOOT/mmx64.efi
+}
+fi
+`
+
+func TestGrubSetAndGetDefaultReplacesExistingDefault(t *testing.T) {
+	root := t.TempDir()
+	writeRel(t, root, grubConfigRel, grubSample)
+
+	newKernel := "simplek8s/simplek8s.202601010000.x86-64.efi"
+	if err := SetBootloaderDefault(BootloaderGrub, root, "/"+newKernel, "/"); err != nil {
+		t.Fatal(err)
+	}
+	got := readRel(t, root, grubConfigRel)
+
+	base := kernelBasename("/" + newKernel)
+	if !strings.Contains(got, "set default="+base) {
+		t.Fatalf("config missing set default=%s:\n%s", base, got)
+	}
+	if strings.Contains(got, "set default=simplek8s.202609061935.x86-64\n") {
+		t.Fatalf("old default not replaced:\n%s", got)
+	}
+	// Unrelated content preserved: timeout, old entries, MOK entry.
+	for _, want := range []string{
+		"set timeout=5",
+		`--id simplek8s.202608291203.x86-64`,
+		"chainloader /EFI/BOOT/mmx64.efi",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("unrelated line %q not preserved:\n%s", want, got)
+		}
+	}
+	// New entry inserted BEFORE the MOK conditional, keeping it last.
+	if strings.Index(got, "--id "+base) > strings.Index(got, "grub_platform") {
+		t.Fatalf("new entry must precede the MOK guard:\n%s", got)
+	}
+
+	if def := GetBootloaderDefault(BootloaderGrub, root); def != "/"+newKernel {
+		t.Fatalf("GetBootloaderDefault = %q, want %q", def, "/"+newKernel)
+	}
+}
+
+func TestGrubSetDefaultKeepsExistingEntry(t *testing.T) {
+	root := t.TempDir()
+	writeRel(t, root, grubConfigRel, grubSample)
+
+	// Re-point at an already-listed kernel: no new block, just default.
+	want := "/simplek8s/simplek8s.202608291203.x86-64.efi"
+	if err := SetBootloaderDefault(BootloaderGrub, root, want, "/"); err != nil {
+		t.Fatal(err)
+	}
+	got := readRel(t, root, grubConfigRel)
+	if n := strings.Count(got, "menuentry"); n != 3 {
+		t.Fatalf("menuentry count = %d, want 3 (no duplicate added):\n%s", n, got)
+	}
+	if def := GetBootloaderDefault(BootloaderGrub, root); def != want {
+		t.Fatalf("GetBootloaderDefault = %q, want %q", def, want)
+	}
+}
+
+func TestGrubNumericDefaultCompat(t *testing.T) {
+	root := t.TempDir()
+	// Legacy template form: numeric default, entries without --id.
+	writeRel(t, root, grubConfigRel, `set default=0
+set timeout=5
+
+menuentry "SimpleK8s 202608291203 x86-64" {
+	linux /simplek8s/simplek8s.202608291203.x86-64.efi
+}
+
+menuentry "SimpleK8s 202609061935 x86-64" {
+	linux /simplek8s/simplek8s.202609061935.x86-64.efi
+}
+`)
+	if def := GetBootloaderDefault(BootloaderGrub, root); def != "/simplek8s/simplek8s.202608291203.x86-64.efi" {
+		t.Fatalf("numeric GetBootloaderDefault = %q, want first entry", def)
+	}
+	// Writing normalizes to the named form.
+	if err := SetBootloaderDefault(BootloaderGrub, root, "/simplek8s/simplek8s.202609061935.x86-64.efi", "/"); err != nil {
+		t.Fatal(err)
+	}
+	got := readRel(t, root, grubConfigRel)
+	if !strings.Contains(got, "set default=simplek8s.202609061935.x86-64") {
+		t.Fatalf("default not normalized to --id form:\n%s", got)
+	}
+}
+
+func TestPruneGrubEntries(t *testing.T) {
+	gone := func(base string) bool {
+		return base == "simplek8s.202608291203.x86-64.efi"
+	}
+	got, n := pruneGrubEntries(grubSample, "simplek8s.202609061935.x86-64", "x86-64", gone)
+	if n != 1 {
+		t.Fatalf("pruned = %d, want 1", n)
+	}
+	if strings.Contains(got, "--id simplek8s.202608291203.x86-64") {
+		t.Fatalf("stale entry must be pruned:\n%s", got)
+	}
+	for _, want := range []string{
+		"set default=simplek8s.202609061935.x86-64",
+		"--id simplek8s.202609061935.x86-64",
+		"chainloader /EFI/BOOT/mmx64.efi",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("line %q must survive:\n%s", want, got)
+		}
+	}
+}
+
+func TestPruneGrubEntriesGuards(t *testing.T) {
+	never := func(string) bool { return false }
+	// Nothing gone: byte-identical, including the DOC header.
+	doc := "# distro documentation header\n# kept verbatim\n" + grubSample
+	if got, n := pruneGrubEntries(doc, "simplek8s.202609061935.x86-64", "x86-64", never); n != 0 || got != doc {
+		t.Fatalf("no-op rewrite: n=%d identical=%v", n, got == doc)
+	}
+	// DEFAULT block is never pruned even when its file is gone.
+	always := func(string) bool { return true }
+	got, n := pruneGrubEntries(grubSample, "simplek8s.202609061935.x86-64", "x86-64", always)
+	if n != 1 {
+		t.Fatalf("pruned = %d, want 1 (DEFAULT spared)", n)
+	}
+	if !strings.Contains(got, "--id simplek8s.202609061935.x86-64") {
+		t.Fatal("DEFAULT block must survive")
+	}
+	// MOK/foreign entries are never touched, file present or not.
+	if !strings.Contains(got, "Enroll MOK") {
+		t.Fatal("MOK entry must survive")
+	}
+	// Foreign-FLAVOR entries are never touched either (PLAN-M5 §3.4).
+	otherarch := "set default=other\n\nmenuentry \"rpi\" --id rpi {\n\tlinux /simplek8s/simplek8s.1.rpi4.efi\n}\n\nmenuentry \"ours\" --id ours {\n\tlinux /simplek8s/simplek8s.1.x86-64.efi\n}\n"
+	if _, n := pruneGrubEntries(otherarch, "other", "x86-64", always); n != 1 {
+		t.Fatalf("pruned = %d, want 1 (foreign flavor spared, ours pruned)", n)
+	}
+	// Entries without a linux line are never touched.
+	nokern := "set default=other\n\nmenuentry \"odd\" --id odd {\n\tchainloader /EFI/BOOT/mmx64.efi\n}\n\nmenuentry \"ours\" --id ours {\n\tlinux /simplek8s/simplek8s.1.x86-64.efi\n}\n"
+	if _, n := pruneGrubEntries(nokern, "other", "x86-64", always); n != 1 {
+		t.Fatalf("pruned = %d, want 1 (linux-less spared, ours pruned)", n)
+	}
+}
+
+func TestPruneGrubFileEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	dir := "simplek8s"
+	writeRel(t, root, "grub/grub.cfg", grubSample)
+	// Only the old kernel file is gone; the default's file exists.
+	writeRel(t, root, "simplek8s/simplek8s.202609061935.x86-64.efi", "kernel")
+	pruneGrubFile(root, dir, "x86-64", discardLogger{})
+	cfg := readRel(t, root, "grub/grub.cfg")
+	if strings.Contains(cfg, "--id simplek8s.202608291203.x86-64") {
+		t.Fatal("stale entry must be pruned")
+	}
+	if !strings.Contains(cfg, "--id simplek8s.202609061935.x86-64") {
+		t.Fatal("DEFAULT entry must survive")
+	}
+	// Non-grub partition (no config): silent no-op.
+	pruneGrubFile(t.TempDir(), dir, "x86-64", discardLogger{})
+}
+
+func TestAutoGrubResolvesByDetection(t *testing.T) {
+	root := t.TempDir()
+	writeRel(t, root, grubConfigRel, grubSample)
+	newKernel := "/simplek8s/simplek8s.202601010000.x86-64.efi"
+	if err := SetBootloaderDefault(BootloaderAuto, root, newKernel, "/"); err != nil {
+		t.Fatal(err)
+	}
+	if def := GetBootloaderDefault(BootloaderAuto, root); def != newKernel {
+		t.Fatalf("GetBootloaderDefault(auto) = %q, want %q", def, newKernel)
+	}
 }

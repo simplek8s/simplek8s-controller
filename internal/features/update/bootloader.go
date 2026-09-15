@@ -1,11 +1,12 @@
 package update
 
 // Bootloader entry writers (PLAN-M2 3.7 step 5), ported from the
-// reference project's syslinux/rpi writers. They point the partition's
-// bootloader default at a staged kernel. All operate on a mounted
-// partition root and are pure file manipulation (unit-testable in temp
-// dirs). The managed line is the only line ever rewritten; everything
-// else is preserved verbatim.
+// reference project's syslinux/rpi writers and extended for the
+// distro's GRUB menu (grub/grub.cfg; syslinux stays for legacy
+// images). They point the partition's bootloader default at a staged
+// kernel. All operate on a mounted partition root and are pure file
+// manipulation (unit-testable in temp dirs). The managed line is the
+// only line ever rewritten; everything else is preserved verbatim.
 
 import (
 	"bufio"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -23,19 +25,25 @@ type BootloaderType string
 
 const (
 	BootloaderAuto     BootloaderType = "auto"
+	BootloaderGrub     BootloaderType = "grub"
 	BootloaderSyslinux BootloaderType = "syslinux"
 	BootloaderRpi      BootloaderType = "rpi"
 )
 
 const (
+	grubConfigRel     = "grub/grub.cfg"
 	syslinuxConfigRel = "syslinux/syslinux.cfg"
 	rpiConfigRel      = "config.txt"
 )
 
 // DetectBootloader inspects the mounted partition root and returns the
-// bootloader type whose config file is present (syslinux wins when both
-// exist). No config present is an error (nothing to point at).
+// bootloader type whose config file is present (grub wins when several
+// exist: new x86-64 images ship grub only, pre-grub images syslinux
+// only). No config present is an error (nothing to point at).
 func DetectBootloader(partRoot string) (BootloaderType, error) {
+	if fileExists(filepath.Join(partRoot, grubConfigRel)) {
+		return BootloaderGrub, nil
+	}
 	if fileExists(filepath.Join(partRoot, syslinuxConfigRel)) {
 		return BootloaderSyslinux, nil
 	}
@@ -50,6 +58,8 @@ func DetectBootloader(partRoot string) (BootloaderType, error) {
 // /simplek8s/simplek8s.<ts>.<arch>.efi).
 func SetBootloaderDefault(bootType BootloaderType, partRoot, relKernelPath, relUcode string) error {
 	switch resolveBootloader(bootType) {
+	case BootloaderGrub:
+		return setGrubDefault(partRoot, relKernelPath)
 	case BootloaderSyslinux:
 		return setSyslinuxDefault(partRoot, relKernelPath, relUcode)
 	case BootloaderRpi:
@@ -69,6 +79,9 @@ func SetBootloaderDefault(bootType BootloaderType, partRoot, relKernelPath, relU
 // purge guard.
 func GetBootloaderDefault(bootType BootloaderType, partRoot string) string {
 	switch resolveBootloader(bootType) {
+	case BootloaderGrub:
+		k, _ := grubDefault(partRoot)
+		return k
 	case BootloaderSyslinux:
 		k, _ := syslinuxDefault(partRoot)
 		return k
@@ -224,6 +237,230 @@ func syslinuxKernelForLabel(f *os.File, label string) (string, error) {
 	return "", s.Err()
 }
 
+// --- grub ------------------------------------------------------------
+// The x86-64 GRUB menu (grub/grub.cfg) is the managed file; the
+// redirect configs (EFI/BOOT/grub.cfg, EFI/debian/grub.cfg,
+// boot/grub/grub.cfg) only locate the ESP and are never touched.
+// Default is a NAME (the entry --id, i.e. the kernel basename without
+// extension), symmetric to syslinux DEFAULT <label>:
+//   set default=simplek8s.<ts>.<arch>
+//   menuentry "SimpleK8s <ts> <arch>" --id simplek8s.<ts>.<arch> {
+//       linux /simplek8s/simplek8s.<ts>.<arch>.efi
+//   }
+// Numeric defaults (the pre-id template's `set default=0`) are
+// accepted on read (Nth menuentry) and normalized to --id on write.
+
+var (
+	reGrubDefault  = regexp.MustCompile(`(?i)^\s*set\s+default\s*=\s*(.+?)\s*$`)
+	reGrubMenuentr = regexp.MustCompile(`(?i)^\s*menuentry\s+(?:"([^"]+)"|'([^']+)')(.*)\{\s*$`)
+	reGrubID       = regexp.MustCompile(`--id[=\s]+("[^"]+"|'[^']+'|[^\s]+)`)
+	reGrubLinux    = regexp.MustCompile(`(?i)^\s*linux\s+(?P<kernel>\S+)`)
+	reGrubClose    = regexp.MustCompile(`^\s*\}\s*$`)
+	reGrubMokGuard = regexp.MustCompile(`grub_platform`)
+)
+
+// grubEntry is one parsed menuentry block.
+type grubEntry struct {
+	index int // 0-based among menuentries
+	id    string
+	linux string // first linux path in the block, "" when none
+	start int    // line index of the menuentry line
+	end   int    // line index of the closing brace (inclusive)
+}
+
+func stripGrubQuotes(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+func grubEntryID(line string) string {
+	if m := reGrubID.FindStringSubmatch(line); m != nil {
+		return stripGrubQuotes(m[1])
+	}
+	return ""
+}
+
+func grubEntryTitle(line string) string {
+	if m := reGrubMenuentr.FindStringSubmatch(line); m != nil {
+		if m[1] != "" {
+			return m[1]
+		}
+		return m[2]
+	}
+	return ""
+}
+
+// parseGrubEntries enumerates the menuentry blocks in cfg lines. A block
+// runs from its menuentry line to the first closing-brace-only line, or
+// — when malformed — to the next menuentry line or EOF.
+func parseGrubEntries(lines []string) []grubEntry {
+	var starts []int
+	for i, ln := range lines {
+		if reGrubMenuentr.MatchString(ln) {
+			starts = append(starts, i)
+		}
+	}
+	out := make([]grubEntry, 0, len(starts))
+	for n, s := range starts {
+		e := len(lines)
+		if n+1 < len(starts) {
+			e = starts[n+1]
+		}
+		end := e - 1
+		for i := s + 1; i < e; i++ {
+			if reGrubClose.MatchString(lines[i]) {
+				end = i
+				break
+			}
+		}
+		id := grubEntryID(lines[s])
+		linux := ""
+		for _, ln := range lines[s : end+1] {
+			if m := reGrubLinux.FindStringSubmatch(ln); m != nil {
+				linux = strings.Trim(m[reGrubLinux.SubexpIndex("kernel")], `"`)
+				break
+			}
+		}
+		out = append(out, grubEntry{index: n, id: id, linux: linux, start: s, end: end})
+	}
+	return out
+}
+
+func grubDefault(partRoot string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(partRoot, grubConfigRel))
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(raw), "\n")
+	entries := parseGrubEntries(lines)
+	val := ""
+	for _, ln := range lines {
+		if m := reGrubDefault.FindStringSubmatch(ln); m != nil {
+			val = stripGrubQuotes(m[1])
+			break
+		}
+	}
+	if val == "" {
+		return "", nil
+	}
+	if n, err := strconv.Atoi(val); err == nil {
+		for _, e := range entries {
+			if e.index == n {
+				return e.linux, nil
+			}
+		}
+		return "", nil
+	}
+	for _, e := range entries {
+		if e.id != "" && e.id == val {
+			return e.linux, nil
+		}
+	}
+	// Fallback: match the menuentry title.
+	for _, e := range entries {
+		if grubEntryTitle(lines[e.start]) == val {
+			return e.linux, nil
+		}
+	}
+	return "", nil
+}
+
+// grubMenuTitle derives the display title for a staged kernel.
+func grubMenuTitle(relKernelPath string) string {
+	if ts, fa, ok := ParseStoredKernel(filepath.Base(relKernelPath)); ok {
+		return fmt.Sprintf("SimpleK8s %s %s", ts, fa)
+	}
+	return kernelBasename(relKernelPath)
+}
+
+func setGrubDefault(partRoot, relKernelPath string) error {
+	cfgPath := filepath.Join(partRoot, grubConfigRel)
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(raw), "\n")
+	entries := parseGrubEntries(lines)
+	id := kernelBasename(relKernelPath)
+
+	found := false
+	for _, e := range entries {
+		key := e.id
+		if key == "" && e.linux != "" {
+			key = kernelBasename(e.linux)
+		}
+		if key == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		block := []string{
+			fmt.Sprintf(`menuentry "%s" --id %s {`, grubMenuTitle(relKernelPath), id),
+			fmt.Sprintf("\tlinux %s", relKernelPath),
+			"}",
+			"",
+		}
+		at := len(lines)
+		for i, ln := range lines {
+			if reGrubMokGuard.MatchString(ln) {
+				// Insert before the MOK conditional so it stays
+				// last; back up over blank lines for tidy output.
+				at = i
+				for at > 0 && strings.TrimSpace(lines[at-1]) == "" {
+					at--
+				}
+				break
+			}
+		}
+		// Keep a blank line between the previous content and the
+		// new block.
+		if at > 0 && strings.TrimSpace(lines[at-1]) != "" {
+			block = append([]string{""}, block...)
+		}
+		lines = append(lines[:at], append(block, lines[at:]...)...)
+		entries = parseGrubEntries(lines)
+	}
+
+	defLine := fmt.Sprintf("set default=%s", id)
+	done := false
+	for i, ln := range lines {
+		if reGrubDefault.MatchString(ln) {
+			lines[i] = defLine
+			done = true
+		}
+	}
+	if !done {
+		at := 0
+		for i, ln := range lines {
+			if reGrubMenuentr.MatchString(ln) {
+				at = i
+				break
+			}
+		}
+		lines = append(lines[:at], append([]string{defLine}, lines[at:]...)...)
+	}
+
+	out := strings.Join(lines, "\n")
+	fo, err := os.CreateTemp("", "tmp-grub-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		fo.Close()
+		os.Remove(fo.Name())
+	}()
+	if _, err := fo.WriteString(out); err != nil {
+		return err
+	}
+	return copyOver(fo, cfgPath)
+}
+
 // --- rpi --------------------------------------------------------------
 
 func setRPIDefault(partRoot, relKernelPath string) error {
@@ -282,7 +519,7 @@ func rpiDefault(partRoot string) (string, error) {
 }
 
 // kernelBasename strips the directory and the final extension from a
-// kernel path (the syslinux/rpi LABEL name).
+// kernel path (the syslinux LABEL / grub --id name).
 func kernelBasename(path string) string {
 	base := filepath.Base(path)
 	return strings.TrimSuffix(base, filepath.Ext(base))
@@ -434,4 +671,110 @@ func pruneSyslinuxFile(partRoot, dir, flavor string, log Logger) {
 		return
 	}
 	log.Info("update: syslinux stale entries pruned", "entries", n)
+}
+
+// --- grub stale-entry prune (PLAN.md §3.9) ------------------------------
+
+// pruneGrubEntries removes menuentry blocks for our kernels whose files
+// are gone, returning the rewritten config and the pruned-block count.
+// A block runs from its menuentry line to its closing-brace line (the
+// mirror of the writer's block form), with one trailing blank line
+// belonging to the block. Global lines (set default/timeout, the distro
+// DOC header, the MOK conditional) are preserved verbatim. Candidate =
+// first linux line references one of our kernel files
+// (simplek8s.<ts>.<arch>.efi) whose file is gone AND the block is not
+// the current default (belt-and-braces: the purge never deletes the
+// default's file). Entries without a linux line (e.g. the MOK
+// chainloader entry) and foreign entries (non-matching linux path) are
+// never touched, file present or not.
+func pruneGrubEntries(cfg, defID, flavor string, fileGone func(kernelBase string) bool) (string, int) {
+	lines := strings.Split(cfg, "\n")
+	entries := parseGrubEntries(lines)
+	drop := make([]bool, len(lines))
+	pruned := 0
+	for _, e := range entries {
+		key := e.id
+		if key == "" && e.linux != "" {
+			key = kernelBasename(e.linux)
+		}
+		if strings.EqualFold(key, defID) {
+			continue
+		}
+		if e.linux == "" {
+			continue
+		}
+		base := filepath.Base(strings.Trim(e.linux, `"`))
+		if _, fa, ok := ParseStoredKernel(base); !ok || fa != flavor {
+			continue // foreign entry (or foreign flavor: never touched)
+		}
+		if !fileGone(base) {
+			continue
+		}
+		end := e.end
+		if end+1 < len(lines) && strings.TrimSpace(lines[end+1]) == "" {
+			// One trailing blank line belongs to the block.
+			end++
+		}
+		for i := e.start; i <= end; i++ {
+			drop[i] = true
+		}
+		pruned++
+	}
+	if pruned == 0 {
+		return cfg, 0
+	}
+	out := make([]string, 0, len(lines))
+	for i, ln := range lines {
+		if !drop[i] {
+			out = append(out, ln)
+		}
+	}
+	return strings.Join(out, "\n"), pruned
+}
+
+// pruneGrubFile prunes stale entries from the partition's grub.cfg
+// after a purge deleted kernels (same mounted session). Non-grub
+// partitions (incl. syslinux legacy and rpi) and missing configs are
+// skipped silently. A prune failure never fails staging: the error is
+// Warned and the next purge-triggered session retries (staging already
+// succeeded — rolling it back would strand the node).
+func pruneGrubFile(partRoot, dir, flavor string, log Logger) {
+	if bt, err := DetectBootloader(partRoot); err != nil || bt != BootloaderGrub {
+		return
+	}
+	cfgPath := filepath.Join(partRoot, grubConfigRel)
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		log.Warn("update: grub prune: cannot read config", "err", err)
+		return
+	}
+	defID := ""
+	if def, _ := grubDefault(partRoot); def != "" {
+		defID = kernelBasename(def)
+	}
+	gone := func(base string) bool {
+		return !fileExists(filepath.Join(partRoot, dir, base))
+	}
+	rewritten, n := pruneGrubEntries(string(raw), defID, flavor, gone)
+	if n == 0 {
+		return
+	}
+	tmp, err := os.CreateTemp("", "tmp-grub-prune-*")
+	if err != nil {
+		log.Warn("update: grub prune: temp file", "err", err)
+		return
+	}
+	defer func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}()
+	if _, err := tmp.WriteString(rewritten); err != nil {
+		log.Warn("update: grub prune: temp write", "err", err)
+		return
+	}
+	if err := copyOver(tmp, cfgPath); err != nil {
+		log.Warn("update: grub prune failed after successful staging; will retry on the next purge", "err", err)
+		return
+	}
+	log.Info("update: grub stale entries pruned", "entries", n)
 }

@@ -157,7 +157,7 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 
 	protected := protectedSet(req, partRoot)
 
-	// Track purge deletions for the syslinux prune below (§3.9).
+	// Track purge deletions for the bootloader prune below (§3.9).
 	var purged []string
 	purge := func(names []string) error {
 		if err := applyPurge(partRoot, dir, names); err != nil {
@@ -221,11 +221,14 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 		return err
 	}
 
-	// 8. syslinux stale-entry prune (PLAN.md §3.9): only when a purge
+	// 8. bootloader stale-entry prune (PLAN.md §3.9): only when a purge
 	// deleted at least one kernel, in this same mounted session, after
-	// the staging work. A prune failure never fails staging (Warn +
-	// retry on the next purge-triggered session).
+	// the staging work. Grub and syslinux-legacy partitions prune
+	// their own config; rpi has nothing to prune. A prune failure
+	// never fails staging (Warn + retry on the next purge-triggered
+	// session).
 	if len(purged) > 0 {
+		pruneGrubFile(partRoot, dir, req.Arch, log)
 		pruneSyslinuxFile(partRoot, dir, req.Arch, log)
 	}
 	return nil
