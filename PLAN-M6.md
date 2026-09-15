@@ -1,0 +1,312 @@
+# PLAN-M6 — `simplek8sctl` node CLI (TODO 2) — APPROVED v2
+
+Era tag: **M6** = node CLI. Status: **approved for implementation**
+(2026-09-15, v2 renames the binary — see D17). Like PLAN-M3/M5, it
+folds into `PLAN.md` when shipped.
+
+## 1. Purpose
+
+Successor of the legacy `simplek8s-update` project
+(`/workspace/simplek8s-update`), rebuilt against this repo's
+k8s-agnostic update core as the single-node admin CLI
+`simplek8sctl`. It manages **its own node only**: no
+controller, no cluster access, no `internal/kube`, no annotations, no
+API. Use cases (TODO 2, in git): pre-cluster installs and
+out-of-band maintenance (or a fleet via an operator loop).
+
+Agreed scope for this iteration (2026-09-15 conversation):
+
+- RPi supported day 1; GRUB also day 1 (syslinux stays legacy).
+- Boot-goal flag is `next-kernel` (bool, default `true`), not
+  `set-default` and not legacy `next-boot`: it sets the bootloader
+  default to the staged version, using the controller's
+  `next-kernel` vocabulary (`simplek8s.org/next-kernel`, the release
+  `ts`).
+- `--checksign` defaults `true`; `false` (skip verification) is
+  explicitly allowed, power-user only.
+- Breaking changes allowed: legacy is reference only.
+- Reuse via two new pure helpers in `internal/features/update`
+  (D8): `FilterIndexByFlavor` + `DetectArchAuto`. No behavior change
+  to the controller.
+- CLI contract (D9): human text on stdout, errors on stderr, exits
+  `0` ok / `1` operational error / `2` misuse or unresolvable
+  auto-detect; `check --verbose` subsumes legacy `search`.
+- Runtime (D11/D12/D16): `--arch auto` unresolvable is fail-closed
+  (exit 2); root + `flock` single-instance + guaranteed `umount`;
+  explicit `--bootloader`/`--bootdevice` contradicting detection
+  aborts; capacity pre-check runs before download.
+- Build (D10/D13/D14/D17): `make node-cli` in this repo (static
+  `amd64`/`arm64`, `git describe` stamping) + port of the legacy
+  publish flow (upx + GPG sign + upload) as `node-publish`; keyring via `go:embed`
+  of `keys/simplek8s-pubring.gpg` with `--keyring` override;
+  minimal flag×command matrix (§3.2). E2E fleet confirmed (D15).
+- Shape (D17): flat subcommands `simplek8sctl
+  check|update|list|purge|boot` (no `simplek8sctl update update`
+  nesting); `install` reserved for a later spec, out of M6 scope.
+  No compat symlink: clean break, legacy stays frozen as reference.
+
+## 2. Constraints
+
+- **Stdlib CLI.** No `urfave/cli`, no `logrus`, no `xz`, no
+  `dbus`/`systemd` client libs. `flag` + `log/slog` like
+  `cmd/simplek8s-controller/main.go`; the only non-stdlib deps are
+  the repo's existing two (`go-crypto`, `klauspost/compress`).
+- **Reuse boundary.** The CLI may import only the k8s-agnostic core
+  of `internal/features/update`: `index.go`, `gpg.go`, `download.go`,
+  `extract.go` (zst only), `staging.go` (`stagePartition`,
+  `listPartitionVersions`), `purge.go`, `bootloader.go`,
+  `bootstore.go` (`PhysicalStore`), `disk.go`, `versions.go`,
+  plus the two new pure helpers (D8): `FilterIndexByFlavor(index,
+  flavor)` and `DetectArchAuto(staged, devtree, override)`.
+  Forbidden: `update.go` (`RunLocal`, anchor, events),
+  `check.go` (takes `*kube.Node`), `enqueue.go`, `verify.go`,
+  `reconcile.go`, `migrate.go`, `flavor.go`'s engine wiring
+  (the pure `ResolveFlavor` helper is allowed).
+- **Local-only, root + flock.** Must run as root on the node itself with
+  an exclusive `flock` (second instance exits 1): it
+  mounts the boot partition (`PARTLABEL=boot` preferred, then
+  `EFI`/`boot` fs labels — same enumeration + contents verification
+  as M5 §3.6), writes kernels under `simplek8s/`, re-points the
+  bootloader, and guarantees `umount` (defer, no mounts left behind).
+  An explicit `--bootloader`/`--bootdevice` contradicting detection
+  aborts (fail-closed, D16). It never contacts the k8s API and never reads/writes
+  node annotations.
+- **Exit codes + output (D9).** Human text on stdout, diagnostics on
+  stderr: `0` ok, `1` operational error (network, IO, GPG, mount),
+  `2` misuse or unresolvable auto-detect (`--arch auto` with no
+  staged flavor nor device-tree). `check --verbose` subsumes legacy
+  `search`.
+- **Static binary, shipped in the distro (D1/D10/D17).** `CGO_ENABLED=0`,
+  `linux/amd64` + `linux/arm64` via `make node-cli` in this repo
+  (`git describe` stamping like the controller), plus a port of the
+  legacy publish flow (`node-publish`: upx + GPG sign + upload to the public channel),
+  released alongside the kernels
+  (signed `SHA256SUMS.gpg` channel). No container image: a container
+  would need privileged + host `/dev` + boot mounts just to replicate
+  what the binary already has outside, and it cannot work
+  pre-cluster. No `selfupdate` subcommand (legacy `cmds.go`
+  `selfupdate`): the CLI updates like any other distro payload.
+- **KISS.** Flat subcommands, five max for M6 (`check|update|list|purge|boot`);
+  `install` reserved, not nested (`simplek8sctl update ...` is one level only);
+  one mechanism per concern; kebab-case
+  long flags only (no single-letter aliases — legacy `-u/-k/-bd/-bl`
+  collide and are dropped).
+
+## 3. Design
+
+### 3.1 Commands (`simplek8sctl <cmd>`; M6 scope, `install` deferred to §8)
+
+| Command | Effect |
+| --- | --- |
+| `check` | Fetch + verify index at `--url`; print newest `ts` for the node's flavor vs running (`uname -r` → `RunningVersion`) vs staged. Read-only (no mount write). |
+| `update [<ts>]` | `check` + download + verify + extract + `stagePartition` + purge (retention) + bootloader re-point iff `--next-kernel=true`. No arg = newest. Idempotent: already-staged `ts` is a no-op (log, exit 0). |
+| `list` | Local staged versions (`listPartitionVersions`) + running + current bootloader default. Read-only. |
+| `purge` | Retention-only (`--preserve`, `--max-percent-usage`) + bootloader prune in the same mounted session (grub + syslinux; rpi `config.txt` has a single `kernel=`, nothing to prune — PLAN.md §3.9). |
+| `boot [show\|set <ts>]` | Inspect / re-point the bootloader default without downloading. `set` refuses a `ts` whose file is absent (file-first, PLAN.md §3.10). |
+
+Dropped from legacy (`cmd/.../cmds.go`): `selfupdate`, `download`
+(folded into `update`), `search` (folded into `check --verbose`).
+`boot` subsumes the legacy `boot` command's display half; its
+write half is `boot set` / `update --next-kernel`.
+
+### 3.2 Flags (final set)
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--url` | `https://dl.simplek8s.org/simplek8s/stable`, accepts `dev\|rolling\|stable\|<custom-URL>` (legacy `flags.go` short-expansion kept) | Same default as controller (`config.go:48`). |
+| `--keyring` | embedded via `go:embed` of `keys/simplek8s-pubring.gpg`, override path allowed | Legacy default `/usr/lib/systemd/import-pubring.gpg` (`flags.go:144`) is dropped — this enables TODO 5 (keyring leaves the distro). |
+| `--checksign` | `true`; `false` skips GPG (explicit) | Power-user escape; `false` warns loudly on stderr. |
+| `--arch` | `auto` (device-tree + partition scan; values `x86-64\|rpi4\|rpi5`, legacy `arm64` accepted as alias of the legacy lineage, M5 §3.7) | Replaces legacy `x86-64\|rpi4\|rpi5` filter (`flags.go:28`); resolution order: staged-filename flavor (`ResolveFlavor`) first, device-tree fallback, explicit override last. |
+| `--bootdevice` | `auto` (`/dev/disk/by-label/EFI` → `boot`, then M5 candidate enumeration) | Override path for debug only. |
+| `--bootloader` | `auto` (`grub\|syslinux\|rpi`, detected by config presence: `grub/grub.cfg`, `syslinux/syslinux.cfg`, `config.txt`) | Legacy knew only `syslinux\|rpi` (`flags.go:198`); `grub` is new and mandatory (GRUB is the managed bootloader). |
+| `--next-kernel` | `true` | (D4) Legacy name `next-boot` (`flags.go:256`) and generic `set-default` both rejected: the flag means "make this `ts` the node's boot goal", i.e. the local equivalent of the `next-kernel` annotation. `--next-kernel=false` stages without re-pointing. |
+| `--preserve` | `3` | Aligns with controller (`config.go:49`), not legacy `5` (`flags.go:264`). |
+| `--max-percent-usage` | `75` | Same as controller (`config.go:50`) and legacy (`flags.go:277`). |
+| `--dry-run` | `false` | Kept from legacy; prints planned writes, touches nothing. |
+| `--overwrite` | `true` | Kept from legacy (`flags.go:360`). |
+| `--no-confirm` | `false` | Purge prompts unless set (legacy `flags.go:367`). |
+
+Deliberately **removed**: `--distribution`, `--component`
+(single-distro/single-component now), `--output`,
+`--syslinux-config`, `--rpi-config`, `--ucode` (sane defaults +
+auto-detect; `--grub-config` exists with default `grub/grub.cfg`
+for symmetry but is hidden advanced), all short aliases.
+
+**Flag×command matrix (D14, CLOSED 2026-09-15).** Global:
+`--url`, `--keyring`, `--checksign`, `--arch`, `--dry-run`,
+`--verbose` (`check` only, subsumes `search`). Scoped:
+`--bootdevice`/`--bootloader` (commands that mount),
+`--next-kernel` (`update` only), `--preserve`/`--max-percent-usage`
+(`update` + `purge`), `--overwrite` (`update`), `--no-confirm`
+(`purge`). No flag is silently ignored outside its commands.
+
+### 3.3 Check / stage flow (local equivalents, no kube)
+
+- `check`: `httpGet` index + `SHA256SUMS.gpg` → `VerifyIndex`
+  (skipped iff `--checksign=false`) → `ParseIndex` → `FilterIndexByFlavor`
+  (extracted from the logic currently inline in `check.go`) → compare newest vs
+  `RunningVersion(uname -r)` vs `listPartitionVersions`.
+  Network failures are fatal to the command (exit 1), never
+  silently ignored — there is no "next occurrence" here (unlike the
+  controller's per-occurrence claim, PLAN.md §3.4). Unresolvable
+  `--arch auto` is exit 2 and performs no network I/O.
+- `update`: claim-free single pass — capacity pre-check
+  (`PathInfo`, `disk.go:13`, before any download, D16) → `downloadAndVerify` (sha256) →
+  `extractZstd` → `stagePartition` → retention purge →
+  bootloader re-point (`SetBootloaderDefault`, iff
+  `--next-kernel`) → prune (iff purge deleted something) →
+  temp-file + synchronous `copyOver` discipline (PLAN.md §3.9).
+  Any step failing aborts before the re-point; a staged-but-
+  unpointed result is reported, never half-pointed.
+- Running kernel is never purged; the bootloader default is never
+  pruned (belt-and-braces, PLAN.md §3.9).
+
+### 3.4 Boot device + bootloader writers
+
+Reuse `PhysicalStore.findBootDevice`/`mountDevice` (M5 §3.6:
+enumerate `PARTLABEL=boot` → fs labels, verify `simplek8s/` +
+bootloader config, fail closed, no mounts left behind) and the
+three writers (`setGrubDefault`, `setSyslinuxDefault`,
+`setRPIDefault` in `bootloader.go`). Newest-first GRUB menu order
+and MOK-last invariant stay as in the controller.
+
+### 3.5 Keyring + verification
+
+`ResolveKeyring(custom, embedded)` (`gpg.go:27`): `--keyring`
+override wins, else `go:embed` of `keys/simplek8s-pubring.gpg` (D13). `--checksign=false` bypasses
+`VerifyIndex` but keep sha256 `downloadAndVerify` (transport
+integrity without identity — stated in output). The distro file
+`/usr/lib/systemd/import-pubring.gpg` becomes removable once this
+ships (TODO 5).
+
+## 4. Decision log (M6, closed — numbers restart per era)
+
+| # | Decision | Rationale / status |
+| --- | --- | --- |
+| 1 | Static binary in the distro, no container (CLOSED 2026-09-15) | Local-only + pre-cluster + root mounts: container adds privilege plumbing for zero benefit. Legacy precedent (`-extldflags=-static`, `x86-64`+`arm64`). |
+| 2 | `grub` + `rpi` day 1, `syslinux` legacy-only (CLOSED 2026-09-15) | GRUB is the managed bootloader; rpi writer never proven except via M5 F2 — CLI must exercise both from day 1. |
+| 3 | `--checksign=false` allowed (CLOSED 2026-09-15) | Escape hatch for air-gapped/custom repos; loud warning, never default. |
+| 4 | Boot-goal flag named `--next-kernel` (CLOSED 2026-09-15) | Aligns with the annotation (`next-kernel` = target `ts`); `next-boot` (legacy) and `set-default` (grub jargon) rejected. |
+| 5 | Flag set §3.2; short aliases dropped (CLOSED 2026-09-15) | Kebab-case longs only; hidden `--grub-config` for symmetry. |
+| 6 | `selfupdate`/`download`/`search` dropped (CLOSED 2026-09-15) | Folded into `update`/`check --verbose`; CLI updates via distro releases, not self-replacement. |
+| 7 | `--preserve=3` to match controller (CLOSED 2026-09-15) | Legacy `5` vs controller `3`: one retention story. |
+| 8 | Two new pure helpers (CLOSED 2026-09-15) | `FilterIndexByFlavor` + `DetectArchAuto(staged, devtree, override)` in `internal/features/update`; no controller behavior change. |
+| 9 | Human output + 0/1/2 exits (CLOSED 2026-09-15) | stdout human, stderr diagnostics; `0` ok / `1` operational / `2` misuse-unresolvable; `check --verbose` subsumes `search`. |
+| 10 | `make node-cli` + ported publish, `git describe` stamping (CLOSED 2026-09-15, renamed by D17) | Static `amd64`/`arm64` here; legacy upx+GPG-sign+upload flow ported as `node-publish`, version via `git describe` like the controller. |
+| 11 | `--arch auto` fail-closed exit 2 (CLOSED 2026-09-15) | No staged flavor nor device-tree → no network, no writes. |
+| 12 | Root + `flock` + guaranteed `umount` (CLOSED 2026-09-15) | Second instance exits 1; explicit-vs-detected mismatch aborts (see D16). |
+| 13 | Keyring `go:embed` + override (CLOSED 2026-09-15) | Embed `keys/simplek8s-pubring.gpg`; `--keyring` wins; `--checksign=false` skips only `VerifyIndex`. |
+| 14 | Minimal flag×command matrix (CLOSED 2026-09-15) | §3.2; no silently-ignored flags. |
+| 15 | E2E fleet confirmed (CLOSED 2026-09-15) | x86-64 + rpi4 + rpi5 + pre-cluster node; C1–C8 runnable as written. |
+| 16 | Explicit-vs-auto fail-closed + pre-download capacity check (CLOSED 2026-09-15) | Contradicting `--bootloader`/`--bootdevice` aborts; `PathInfo` check before download. |
+| 17 | Single local binary `simplek8sctl`, flat subcommands (CLOSED 2026-09-15) | `cmd/simplek8sctl` with `check\|update\|list\|purge\|boot`; `install` reserved (deferred, §8); `make node-cli` + `node-publish`; no compat symlink (clean break). `sk8sctl` rejected (cryptic, inconsistent). |
+
+## 5. Behavior changes & migration
+
+- Legacy CLI stays usable until v2 ships; no flag-compat promise
+  (aliases removed, filters removed, keyring default moved).
+  Distro ships `simplek8sctl` only; no `simplek8s-update` symlink (D17).
+- Nodes managed by the controller need no migration: the CLI writes
+  the same files + bootloader default the controller writes; the
+  controller's change-triggered reconciliation (PLAN.md §3.7)
+  adopts a CLI-staged default via the normal `next-kernel`
+  comparison once the annotation is set (CLI never writes the
+  annotation itself).
+- Distro change (TODO 5): after v2 ships with the embedded keyring,
+  remove `/usr/lib/systemd/import-pubring.gpg`.
+
+## 6. Implementation
+
+### 6.1 Modules
+
+| Module | Change |
+| --- | --- |
+| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), `uname -r` + device-tree helpers, root + `flock`, exit 0/1/2. No `internal/kube` import (enforced by a `go list` CI check). `Makefile`: `node-cli` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring) + ported `node-publish` (upx + GPG sign + upload). |
+| `internal/features/update` | No kube-coupled changes. Add two pure helpers: `FilterIndexByFlavor` (extracted from `check.go` inline logic) + `DetectArchAuto(staged, devtree, override)` (`ResolveFlavor` + device-tree fallback). No behavior change to the controller. |
+| Legacy `/workspace/simplek8s-update` | Frozen reference; not modified. |
+
+### 6.2 Unit test matrix
+
+- `FilterIndexByFlavor`: mixed index → own flavor only;
+  `latest`-style files ignored.
+- `DetectArchAuto`: staged-first, device-tree fallback, explicit
+  override last; unresolvable → error (caller exits 2).
+- `ParseStoredKernel` / `versionFromStoredKernel` naming per
+  flavor (`stored`/`artifact`).
+- Purge planning own-flavor only; foreign files survive.
+- Prune fixtures: grub named-default sample + syslinux sample
+  (PLAN.md §3.9) — candidate pruned, foreign kept, default kept,
+  globals verbatim.
+- `boot set` refuses absent-`ts`; `update` with `--next-kernel=false`
+  leaves default untouched; `--dry-run` writes nothing.
+- Keyring: custom override wins; `--checksign=false` skips
+  `VerifyIndex` but still sha256-verifies downloads.
+- No-kube import test (CLI package graph contains no
+  `internal/kube`/`internal/engine`).
+
+### 6.3 Phases
+
+| Phase | Content |
+| --- | --- |
+| 1 | `cmd/simplek8sctl` skeleton + `check`/`list` (read-only) + unit matrix (no writes) + `go list` no-kube check. |
+| 2 | `update`/`purge`/`boot` writes + prune + `go:embed` keyring + root/`flock`/`umount`; static `linux/amd64,arm64` builds via `node-cli`. |
+| 3 | Live E2E (§7) on x86-64 (grub + syslinux-legacy) and rpi4/rpi5 (rpi, fleet confirmed D15); ported `node-publish` dry-run; distro keyring removal (TODO 5) after. |
+
+## 7. E2E (live, own-node)
+
+| # | Case | Trigger | Expect |
+| --- | --- | --- | --- |
+| C1 | `check` on each flavor | run on x86-64, rpi4, rpi5 nodes | Newest remote `ts` reported correctly per flavor; exit 0; zero writes. |
+| C2 | `update --dry-run` | same fleet | Plan printed, partition untouched (mount audit). |
+| C3 | `update <ts> --next-kernel` (grub) | x86-64 node, uncached `ts` | File staged under `simplek8s/`, `grub/grub.cfg` default re-pointed newest-first, running untouched, reboot left to operator. |
+| C4 | `update --next-kernel=false` | x86-64 node | File staged, default unchanged. |
+| C5 | rpi update | rpi4 + rpi5 nodes | `*.rpi4/rpi5.efi` staged, `config.txt` re-pointed, running untouched. |
+| C6 | `purge --preserve 3` + prune | node with ≥5 staged | Oldest deleted, grub/syslinux entries pruned, default + running protected, foreign files kept. |
+| C7 | `boot set` validation | `boot set <absent-ts>` | Refused (file-first); exit non-zero; default unchanged. |
+| C8 | Pre-cluster install | fresh node, no kubelet | Full `update` works with only userspace + boot partition. |
+
+## 8. Deferred
+
+- `install` subcommand (node provisioning from scratch) — reserved
+  name, spec pending; not in M6 scope (D17).
+- Fleet loop helper (ssh-for over nodes) — operator shell, not CLI scope.
+- Shell completions / man pages (legacy had none worth keeping).
+- `systemd-boot`/UEFI questions (distro, same as M5 §8).
+
+## 9. Risks & safety notes
+
+- **Wrong-flavor staging bricks with the wrong DTB** (M5 §9): flavor
+  pinned at detection, never re-derived mid-run; foreign files never
+  written/purged/pruned.
+- **Silent `--checksign=false`**: always warn; never persist as
+  default; document as break-glass only.
+- **CLI vs controller racing on one node**: last writer of the
+  bootloader default wins; both writers use temp-file + sync
+  `copyOver`, so the file never corrupts — but concurrent
+  `update` (CLI) + controller staging is operator error; document
+  as mutually exclusive (CLI is for pre-cluster / out-of-band with
+  `updates.windows: []`, or controller paused).
+- **Single `kernel=` on rpi**: re-point is all-or-nothing per write
+  (same as syslinux `DEFAULT`, no worse — M5 §9).
+
+## 10. Approval baseline
+
+Approved against this tree state (2026-09-15 conversation).
+M5 work continues in another session; revalidate M6 against it
+before phase 1:
+
+- Commit: `083f89fe5540a32bfd7200e3c7d31cd2a6a412f6`
+  (`083f89f`, `main`, `2026-09-15 00:33:19 +0000`,
+  `update: grub menu newest-first, MOK enroll last`).
+- Tree: clean except untracked `PLAN-M6.md` (this file, the
+  approved v1 itself).
+- Reuse boundary studied: `internal/features/update/` at that
+  commit (key blobs: `bootloader.go d010871`, `check.go 71f3ede`,
+  `flavor.go b117739`).
+- Revalidate with:
+
+      git diff 083f89f..HEAD -- internal/features/update cmd/ keys/ Makefile Dockerfile
+
+  Any change to that boundary (signatures, `check.go`,
+  `flavor.go`, writers, `staging`/`purge`/`disk`/`gpg`) can
+  invalidate D8/D12/D16.
