@@ -187,7 +187,8 @@ func TestStagePartitionGrubEndToEnd(t *testing.T) {
 	}
 }
 
-func TestStagePartitionChecksumMismatchFails(t *testing.T) {	const (
+func TestStagePartitionChecksumMismatchFails(t *testing.T) {
+	const (
 		ts   = "202601010000"
 		arch = "x86-64"
 	)
