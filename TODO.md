@@ -84,18 +84,19 @@ at the leader vs N; the leader as a check-time SPOF; transfer reliability
 and resumability; and how this composes with the per-node `preserve`/purge
 and the pod split (item 3).
 
-## 14. Boot failure fallback (syslinux) — accepted risk, no plan
+## 14. Boot failure fallback (grub + syslinux legacy) — accepted risk, no plan
 
 W13 (PLAN.md §7.4) showed the shape: a correctly signed and staged
-kernel that does not boot on a node leaves it at the syslinux `boot:`
-prompt (`rebooting` + `NotReady`), with no automatic fallback — and
-none is planned. (A `TIMEOUT`+`ONTIMEOUT` native fallback was
+kernel that does not boot on a node leaves it at the GRUB menu
+(syslinux legacy: the `boot:` prompt), stuck `rebooting` +
+`NotReady`, with no automatic fallback — and
+none is planned. (A native fallback was
 verified to exist in the syslinux docs and sketched, but not
 approved.) Rationale: bootability of a signed release is the distro
 QA's job; the correlated bad-release case is contained by process,
 not mechanism — roll out in `stage` mode with manual canary reboots
 before `full`, keep N kernels preserved, and guarantee
-machine-console access per node. The verified console recovery (type
-a good `LABEL`, repair, re-pin) is documented in the README runbook;
+machine-console access per node. The verified console recovery (pick
+a good entry, repair, re-pin) is documented in the README runbook;
 the `completed`+mismatch verification and no-auto-retry already hold
 for whatever comes back.

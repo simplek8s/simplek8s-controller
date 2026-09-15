@@ -92,7 +92,7 @@ expected, but never proven — that is the point).
 
 ### 3.4 Flavor-scoped ownership (purge / prune / defensive)
 
-Today `listKernels`/`planPurge`/`pruneSyslinuxEntries` match any arch
+Today `listKernels`/`planPurge`/`pruneSyslinuxEntries`/`pruneGrubEntries` match any arch
 by pattern. Under flavors that is wrong (an rpi4 node must never
 purge a stray `x86-64` file, and vice versa):
 
@@ -126,7 +126,8 @@ becomes enumerate-then-verify:
    symlinks and the `blkid` export scan (current sources, kept).
 2. **Verify each candidate** (mount, read-only check): it must
    contain the `simplek8s/` directory AND a bootloader config
-   (`syslinux/syslinux.cfg` or `config.txt`). First verifying
+   (`grub/grub.cfg`, `syslinux/syslinux.cfg` on legacy images, or
+   `config.txt`). First verifying
    candidate wins; a second one Warns loudly (pathological —
    operator-owned ambiguity, first wins deterministically).
 3. **No verifying candidate ⇒ fail closed**: Warn + no updates, no
@@ -183,7 +184,7 @@ the index, scoped to your flavor, does not contain it).
 | `internal/features/update` (`versions.go`) | flavor type + `ResolveFlavor` from staged filenames; `MapArch` removed (its `aarch64` output matched nothing — the bug). |
 | `internal/features/update` (`bootstore.go`) | `findBootDevice` rework per §3.6: PARTLABEL preference, blkid export already parsed, candidate enumeration, contents verification (`simplek8s/` + bootloader config), per-pod device cache with re-resolve on failure. |
 | `internal/features/update` (`check.go`) | filter index by flavor; `res.Arch` becomes the flavor. |
-| `internal/features/update` (`staging.go`, `purge.go`, `bootloader.go` prune) | flavor filter on `listKernels`; purge/prune/defensive own-flavor only. |
+| `internal/features/update` (`staging.go`, `purge.go`, `bootloader.go` prune) | flavor filter on `listKernels`; purge/prune (grub + syslinux)/defensive own-flavor only. |
 | `internal/features/update` (`update.go`, `enqueue.go`, `reconcile.go`) | `MapArch` call sites take the resolved flavor (plumbing). |
 
 ### 6.2 Unit test matrix

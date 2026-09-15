@@ -24,7 +24,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.2 | Shipped baseline (M1 reboots, M2 updates) |
 > | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 2 | Constraints |
-> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 syslinux prune · 3.10 `next-kernel` validation · 3.11 multi-platform build |
+> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build |
 > | 4 | Decision log (per era; §4.3 active) — 4.1 M1 · 4.2 M2 · 4.3 M3 (numbers restart per era) |
 > | 5 | Behavior changes & migration |
 > | 6 | Implementation — 6.1 modules · 6.2 unit test matrix · 6.3 phases |
@@ -94,10 +94,11 @@ update engine. It closes five TODO items plus the build half of a sixth:
   the next `reboots.windows` window (§3.4) — the change-triggered
   bootloader reconciliation designed in M2 §3.5 but not yet
   implemented.
-- **TODO 6 — syslinux stale-entry cleanup.** The bootloader entry writer
-  only ever appends, so `syslinux.cfg` on the boot partition grows one
-  entry per staged kernel. Entries for kernels the purge has already
-  deleted are pruned in the same mounted session (§3.9).
+- **TODO 6 — bootloader stale-entry cleanup.** The bootloader entry writer
+  only ever appends, so the bootloader config on the boot partition
+  (`grub/grub.cfg` on GRUB images, `syslinux.cfg` on legacy syslinux
+  images) grows one entry per staged kernel. Entries for kernels the
+  purge has already deleted are pruned in the same mounted session (§3.9).
 - **TODO 8 — `next-kernel` validation & safe-state recovery.** The
   annotation is the node's boot goal and it is **file-first**: no
   controller writer sets a value whose file is not on the boot partition
@@ -612,47 +613,64 @@ delete attempt.
 The `NoWindowsConfigured` rejection is returned in the API response and
 logged at `Info` (an expected operator-visible condition).
 
-### 3.9 Syslinux stale-entry prune (TODO 6)
+### 3.9 Bootloader stale-entry prune (TODO 6)
 
-The syslinux writer (M2 staging step 5, the target of §3.7's
-reconciliation) only ever appends a `LABEL` block and moves `DEFAULT`;
-`syslinux.cfg` therefore grows one entry per staged kernel. The prune
-bounds it:
+The GRUB writer (M2 staging step 5, the target of §3.7's
+reconciliation) only ever appends a `menuentry` block and moves `set
+default`; `grub/grub.cfg` therefore grows one entry per staged kernel.
+The syslinux-legacy writer behaves the same (`LABEL` block +
+`DEFAULT`). The prune bounds both:
 
-- **Prune candidate** — an entry block whose `KERNEL` line references
+- **Prune candidate** — an entry block whose kernel line (`linux` on
+  grub, `KERNEL` on syslinux) references
   one of *our* kernel files (matching the stored-kernel pattern
   `simplek8s.<ts>.<arch>.efi` under the release directory) **and** whose
-  file no longer exists on the partition. Blocks whose `KERNEL` path
-  does not match our pattern (foreign entries) are **never touched**,
-  file present or not. Global lines (`DEFAULT`, `TIMEOUT`, `PROMPT`, …)
+  file no longer exists on the partition. Blocks whose kernel path
+  does not match our pattern (foreign entries — including the GRUB
+  MOK-enroll `chainloader` entry, which has no `linux` line at all) are
+  **never touched**,
+  file present or not. Global lines (`set default`/`set timeout`,
+  `DEFAULT`, `TIMEOUT`, `PROMPT`, …)
   are preserved verbatim.
-- **Block** — a block runs from its `LABEL` line to (not including) the
-  next `LABEL` line or EOF — the exact mirror of the writer's block
-  form, so the prune parser and the writer can never disagree about
+- **Block** — on grub, a block runs from its `menuentry` line to its
+  closing-brace line (the exact mirror of the writer's block form);
+  on syslinux, from its `LABEL` line to (not including) the
+  next `LABEL` line or EOF — so each prune parser and its writer can never disagree about
   block boundaries.
-- **Protection** — the block named by the current `DEFAULT` is never
+- **Protection** — the block named by the current default (`set
+  default` / `DEFAULT`) is never
   pruned. In practice it can never be a candidate: the purge's
   `protectedSet` includes the bootloader default, so that file is never
   deleted. The guard is belt-and-braces.
 - **Trigger** — the prune runs **only when a purge deleted at least one
   kernel** (capacity pre-check, staging step 4, or retention, step 7),
   in the same mounted session, after the staging work. No purge
-  deletion → no rewrite: rewriting `syslinux.cfg` is a vfat write and is
+  deletion → no rewrite: rewriting the bootloader config is a vfat write and is
   not done gratuitously. The rewrite uses the writer's existing
   discipline (temp file + synchronous `copyOver`). If the rewrite fails
   after staging succeeded, staging is **not** rolled back: the error is
   Warn-logged (purge-triggered sessions are rare, so no dedicated
   rate limit) and the prune retries in the next purge-triggered
   session. A hand-deleted file with no purge deletion
-  this session leaves its `LABEL` block dangling until a future purge
-  triggers a pass (bounded growth, never unbootable — `DEFAULT` is
+  this session leaves its entry block dangling until a future purge
+  triggers a pass (bounded growth, never unbootable — the default is
   guarded).
-- **Scope** — syslinux only. The rpi config (`config.txt`) carries a
+- **Scope** — grub and syslinux-legacy. The rpi config (`config.txt`) carries a
   single `kernel=` line; there is nothing to prune.
 - **The distro's initial entry** (confirmed to reference one of our
   kernels) is a normal candidate: when the purge deletes that kernel,
   the entry goes with it. Accepted behavior change — the entry cannot
   boot once its file is gone, so nothing usable is lost.
+- **GRUB default form** — the distro template and the writer use a
+  named default (`set default=simplek8s.<ts>.<arch>`, entry `--id`
+  equal to the kernel basename without extension), symmetric to
+  syslinux `DEFAULT <label>`. Numeric defaults from the pre-`--id`
+  template are accepted on read (Nth `menuentry`) and normalized to
+  the named form on write. New entries are inserted before the
+  `grub_platform` MOK conditional so the enroll entry stays last; the
+  ESP redirect configs (`EFI/BOOT/grub.cfg`, `EFI/debian/grub.cfg`,
+  `boot/grub/grub.cfg`) are never touched — only `grub/grub.cfg` is
+  managed.
 
 Real sample (captured 2026-09-10 from the `sk8s-cp1` test node's boot
 partition: the distro's initial entry plus one staged by the
@@ -689,6 +707,13 @@ Parser/fixture notes from the sample:
   any global line verbatim; the file ends with a blank line (`\n\n`),
   and the blank lines after a block belong to that block (pruning
   block 1 above leaves a clean file).
+
+The GRUB side has no captured-partition sample (new layout); its
+reference fixture lives in the unit tests (`grubSample` in
+`bootloader_test.go`: named default, one `menuentry --id` per kernel,
+MOK conditional last). Parser rules mirror syslinux: ownership from
+the `linux` path only, one trailing blank line belongs to the block,
+`--id`-less legacy entries resolve by `linux` basename.
 
 ### 3.10 `next-kernel` validation & safe-state recovery (TODO 8)
 

@@ -287,14 +287,16 @@ kubectl annotate node <node> --overwrite simplek8s.org/next-kernel=<running-V>
 A kernel that is correctly signed and staged can still fail to boot on
 a given node (distro QA owns bootability; the controller cannot
 distinguish this case in advance). There is no automatic fallback:
-syslinux drops to a `boot:` prompt and the node sits `rebooting` +
-`NotReady` (past `reboots.issue-grace`, that shape is the
+the GRUB menu stays on screen (legacy syslinux images drop to a
+`boot:` prompt instead) and the node sits `rebooting` + `NotReady`
+(past `reboots.issue-grace`, that shape is the
 signal — a healthy reboot flaps Ready for ~1–2 min). Recover via the
 machine console:
 
-1. At the `boot:` prompt, type a good entry name
-   (`simplek8s.<ts>.<arch>`, any kernel file present on the boot
-   partition) + Enter. This was proven live (W13).
+1. Select a good entry (`SimpleK8s <ts> <arch>`, any kernel file
+   present on the boot partition) + Enter — on legacy syslinux
+   images, type the good entry name at the `boot:` prompt instead.
+   This was proven live (W13, on syslinux).
 2. The node lands `completed`+`UpdateMismatch` (goal ≠ running) — no
    auto-retry fires.
 3. Repair the bad file (delete it and let the next occurrence re-stage
