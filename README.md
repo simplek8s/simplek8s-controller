@@ -307,6 +307,40 @@ Prevention without new code: keep `reboots.windows` closed and reboot
 nodes one by one through the M1 API (canary), opening the window only
 after the release has proven bootable on your hardware.
 
+### Empty boot partition bootstrap
+
+A boot partition with no `simplek8s/` dir (freshly formatted, wiped)
+fails verification by design (M5 D2): the pod logs `no verifying boot
+partition found` / `board flavor unresolvable` and never writes there
+— the controller will not heal this alone. The node must already be
+running (reach it by IP over ssh, as root); the procedure below only
+restores *updates*, not bootability — a node that cannot boot must be
+reimaged instead. One time per node, no pod restart needed (failure is
+never cached; detection adopts the files on the next cycle — proven
+live, PLAN-M5 F5):
+
+```sh
+# 1. Mount the boot partition (PARTLABEL first; MBR layouts like the
+#    rpi nodes have no PARTLABEL — use the fs label instead).
+mkdir -p /mnt/boot && mount /dev/disk/by-partlabel/boot /mnt/boot \
+  || mount -L EFI /mnt/boot  # or: mount -L boot /mnt/boot
+# 2. Stage ONE kernel of the node's own flavor by hand
+#    (x86-64 | rpi4 [bcm2711] | rpi5 [bcm2712] | arm64 legacy;
+#    when in doubt: cat /proc/device-tree/model).
+mkdir -p /mnt/boot/simplek8s
+curl -o /mnt/boot/simplek8s/simplek8s.<ts>.<flavor>.efi \
+  <updates.url>/simplek8s.<ts>.<flavor>.efi
+# 3. The partition must also carry its bootloader config
+#    (grub/grub.cfg, syslinux/syslinux.cfg, or config.txt) — a fresh
+#    distro partition does. If it is missing, stop: that is not a
+#    SimpleK8s boot partition.
+umount /mnt/boot
+```
+
+From there the pod resolves the flavor, stages newer releases on the
+next `updates.windows` occurrence, and re-points the bootloader itself
+— no manual bootloader edit needed.
+
 ### Keyring override
 
 The image embeds the distro public key at

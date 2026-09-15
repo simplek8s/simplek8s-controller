@@ -165,7 +165,7 @@ the index, scoped to your flavor, does not contain it).
 | 3 | No override annotation (REJECTED 2026-09-11) | No flavor migration exists; every escape (legacy bootstrap, empty partition, mixed cleanup) is a one-time ssh. Permanent API surface for nonevents is declined. |
 | 7 | Out-of-flavor pins follow normal W12 rules (no special case) | With no migration, a ts absent from your flavor's index is simply not verifiable: path-2 corrects exactly like a never-existed ts. No extra event, no extra code path. |
 | 4 | Purge/prune/defensive scoped to own flavor | Cross-flavor deletion would be data loss by design (a stray foreign file is the operator's, like any foreign entry). |
-| 5 | Generic `arm64` supported-but-unexercised | Strings are cheap; live proof waits on hardware. |
+| 5 | Generic `arm64` unsupported: no live proof, no hardware (CLOSED 2026-09-16, supersedes "supported-but-unexercised") | On ARM only rpi4/rpi5 are supported; no generic-`arm64` hardware exists or is planned, and no generic-`arm64` image is published. The `arm64` strings stay in code as harmless legacy compat (a node with only `*.arm64.efi` files still resolves within its stale artifacts, never a wrong flavor) — but nothing new is proven or promised for it. |
 | 6 | rpi5 live E2E waits on rpi5-node drain approval | Same code path as rpi4 + unit matrix; the drain (postgres, gateway) is the cost, not the code. |
 
 ## 5. Behavior changes & migration
@@ -220,16 +220,29 @@ the index, scoped to your flavor, does not contain it).
 | --- | --- | --- | --- |
 | F1 | Flavor detection on rpi4-node | read-only: controller logs after deploy (or a unit-driven annotation) | PASS 2026-09-11 (PROD): `board flavor resolved: rpi4` in pod log (build `edc6174`), no writes. |
 | F2 | First rpi staging | `stage` + newer `rpi4` release in index (or pin an uncached `rpi4` ts) | PASS 2026-09-11 (PROD rpi4-node): `202609090435.rpi4` staged + `config.txt` re-pointed, running untouched, no `reboot-state`. First live exercise of the rpi writer. |
-| F3 | Full auto-update on rpi4 (W4-shaped) | `full` + windows open | PASS 2026-09-11 (PROD rpi4-node): auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent (`next`==running). `UpdateApplied` state-proven (event not retrieved from the PROD sink — minor follow-up). |
+| F3 | Full auto-update on rpi4 (W4-shaped) | `full` + windows open | PASS 2026-09-11 (PROD rpi4-node): auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent (`next`==running). `UpdateApplied` state-proven (PROD sink retrieval closed 2026-09-16 as
+  expired: k8s Events TTL outlived the 09-11 observation — `kubectl get
+  events -n default --field-selector reason=UpdateApplied` returns empty
+  5 days later, as expected; emission itself is unit-covered,
+  `plan_test.go:144-169`. Lesson: retrieve E2E events inside the run
+  window next time). |
 | F4 | rpi5 on rpi5-node (pending approval) | same as F2–F3 after a rpi5-node drain | PASS 2026-09-11 (PROD rpi5-node, drained): flavor `rpi5`, `202609090435.rpi5` staged + `config.txt` re-pointed (F2, no reboot), then auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent. Pod-to-node SSH host keys verified via console fingerprints both times (rpi4-node/rpi5-node rotation). |
-| F5 | Decoy-label drill (deferred lab) | on a scratch/test VM (never PROD): extra disk carrying a decoy `boot`-labeled vfat without SimpleK8s contents | controller ignores the decoy (verification fails), uses the real partition; with NO valid partition anywhere → Warn + zero writes (provable via block-layer trace or mount audit). |
+| F5 | Decoy-label drill (scratch VM, never PROD) | scratch guest (clean `simplek8s.latest.x86-64` + decoy `boot`-labeled vfat): `PhysicalStore` lab harness | PASS 2026-09-16 (libvirt scratch, x86-64, clean image + decoy, three runs): (A) candidates `[by-partlabel/boot, by-label/boot]` (`by-label/EFI` deduped to the same `vda1`) → winner `by-partlabel/boot → /dev/vda1`, `202609121031` listed end-to-end; decoy `/dev/vdb` enumerated, verify-mounted, skipped, left empty. (N) `simplek8s/` renamed away online (root is tmpfs, guest survives; reboot not needed) → `no verifying boot device among 2 candidate(s)`, fail-closed, zero mounts left. (H) dir restored → resolves again with no reboot (no negative caching). Scratch domain + images removed afterwards. |
 
 ## 8. Deferred
 
-- Generic-`arm64` live proof (no hardware) + what boots it.
-- UEFI/systemd-boot questions (distro).
-- Empty-partition manual bootstrap doc (stage one file of the right
-  flavor by hand, once; detection adopts it).
+- ~~Generic-`arm64` live proof~~ — CLOSED 2026-09-16 per D5: on ARM
+  only rpi4/rpi5 are supported (no generic-`arm64` hardware, no image);
+  no live proof needed or planned. Partial evidence stands: the full
+  `go test ./...` suite (incl. the flavor matrix + D2 discovery tests)
+  passes natively on `linux/arm64`; `arm64` strings remain as legacy
+  compat only.
+- ~~UEFI/systemd-boot questions~~ — REJECTED 2026-09-16: systemd-boot
+  is UEFI-only and SimpleK8s must keep booting on BIOS machines.
+  GRUB (+ syslinux legacy, + rpi `config.txt`) stays the managed set.
+- ~~Empty-partition manual bootstrap doc~~ — DONE 2026-09-16
+  (README "Empty boot partition bootstrap"; heal path proven live in
+  F5 run H).
 
 ## 9. Risks & safety notes
 
