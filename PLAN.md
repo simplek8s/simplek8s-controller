@@ -4,9 +4,11 @@
 > Consolidated 2026-09-11 from `PLAN-M1.md` (reboots, shipped),
 > `PLAN-M2.md` (updates, implemented), `PLAN-M3.md` (windows, in
 > planning, v4) and the E2E campaign files (`E2E.md`,
-> `E2E-UPDATE.md`). `PLAN.FIXME.md` (implementation deviations found
+> `E2E-UPDATE.md`), and 2026-09-16 from `PLAN-M5.md` (board flavors,
+> shipped). `PLAN.FIXME.md` (implementation deviations found
 > against a real cluster) stays in git history only. Full historical
-> text: `git log --follow` / `git show <commit>:PLAN-M2.md`.
+> text: `git log --follow` / `git show <commit>:PLAN-M2.md`
+> (`PLAN-M5.md` likewise).
 
 **How to read this file.** Sections are numbered and the numbers are
 stable — jump with `grep -n '^### 3.4' PLAN.md` instead of reading the
@@ -23,12 +25,13 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.1 | This document (status per era) |
 > | 1.2 | Shipped baseline (M1 reboots, M2 updates) |
 > | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
+> | 1.4 | Shipped plan (M5: board flavors, boot-device verification) |
 > | 2 | Constraints |
-> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build |
-> | 4 | Decision log (per era; §4.3 active) — 4.1 M1 · 4.2 M2 · 4.3 M3 (numbers restart per era) |
+> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) |
+> | 4 | Decision log (per era; §4.4 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 (numbers restart per era) |
 > | 5 | Behavior changes & migration |
 > | 6 | Implementation — 6.1 modules · 6.2 unit test matrix · 6.3 phases |
-> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) |
+> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) |
 > | 8 | Deferred |
 > | 9 | Risks & safety notes |
 
@@ -41,6 +44,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M1 | Node reboots (state machine, drain, orchestrator, API) | Shipped; E2E 28/28 PASS (§7.2) |
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
 | M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
+| M5 | Board flavors for updates + boot-device verification | Shipped 2026-09-16 (F1–F5 5/5 PASS, 8 decisions, §7.5) |
 
 ### 1.2 Shipped baseline
 
@@ -115,6 +119,24 @@ reboot starts and no update work happens outside the windows an
 operator has explicitly configured, auto-reboots (full mode) are
 opt-in via `reboots.windows` (§5), and the boot partition stays
 bounded and consistent over time.
+
+### 1.4 Shipped plan (was PLAN-M5)
+
+The fourth feature, built on the M2 update engine. The release repo
+carries per-board kernel flavors (`x86-64`, `rpi4`, `rpi5` — plus the
+legacy `arm64` lineage, ended), but nodes only expose `arch=arm64`
+with no board labels, and the old `MapArch` translation matched no
+repo artifact — arm64 updates silently no-opped. M5 makes updates work
+per board flavor without changing the update state machine (§3.4
+stands): each node infers its flavor from the staged filenames on its
+own boot partition and considers only its own flavor's files for
+check, staging, purge, prune and defensive re-staging. Boot-device
+discovery becomes enumerate-then-verify (`PARTLABEL=boot` preferred,
+then `EFI`/`boot` labels; each candidate mounted and checked for
+`simplek8s/` + a bootloader config; first verifying wins, none fails
+closed), cached per pod lifetime. Full historical design in git
+(`git show <M5-commit>:PLAN-M5.md`); shipped behavior in §3.12,
+decisions in §4.4, E2E in §7.5.
 
 ## 2. Constraints
 
@@ -828,7 +850,52 @@ architecture), so an `aarch64` node could not run it.
   platforms build; once an arm64 node is stood up, deploy the aarch64
   image and run one full auto-update (W4-shaped).
 
-## 4. Decision log (per era; §4.3 active)
+### 3.12 Board flavors + boot-device verification (M5)
+
+Release artifact flavors are `x86-64`, `rpi4`, `rpi5` (plus the legacy
+`arm64` lineage — old releases only, ended with rpi5). Nodes expose
+only `arch=arm64` (no board labels); the flavor is discoverable only
+from the staged filenames on the boot partition.
+
+- **Flavor resolution** (`ResolveFlavor`, `internal/features/update`):
+  inferred once per pod lifetime from the staged kernel basenames
+  (`simplek8s.<ts>.<flavor>.efi`); first flavor seen wins, a mix
+  Warn-logs and sticks to the first, empty/foreign-only stays
+  unresolvable (update work skipped, no negative caching — a later
+  hand-staged file heals without a pod restart). `MapArch` is retired
+  (its `aarch64` output matched nothing — the M2-era silent-no-op
+  bug). Pins stay flavor-agnostic: `next-kernel` carries a bare `ts`,
+  resolved per node at use time.
+- **Flavor-scoped updates**: check keeps only index files of the node's
+  own flavor; staging names (`kernelStoredName`/`kernelArtifactName`),
+  purge planning, grub/syslinux prune candidates and the defensive
+  re-stage target consider own-flavor files only — foreign-flavor files
+  are never written, purged or pruned. `latest`-style non-numeric files
+  never match the version regex anywhere.
+- **Legacy `arm64` + out-of-flavor pins** (decisions D5, D7): `arm64`
+  stays a first-class (legacy) flavor — old nodes keep working within
+  their stale artifacts; newer releases carry nothing for them. A pin
+  whose `ts` exists only under other flavors follows the normal W12
+  path-2 rules (corrected like a never-existed `ts`); no migration
+  path exists by design (no override annotation, D3).
+- **Boot-device identification and verification** (decision D2):
+  `findBootDevice` enumerates all candidates — `PARTLABEL=boot` first
+  (distro convention; GPT only, absent on MBR layouts like the rpi
+  nodes), then `EFI`/`boot` filesystem labels via by-label symlinks
+  and the `blkid` export scan (which also yields `PARTLABEL`;
+  same-device entries collapse) — and verifies each by mount: the
+  candidate must hold the `simplek8s/` dir AND a bootloader config
+  (`grub/grub.cfg`, `syslinux/syslinux.cfg`, `config.txt`). First
+  verifying candidate wins (a second one Warns loudly); none verifying
+  fails closed (Warn, no mounts left behind, nothing written). An empty
+  partition fails verification and heals with one manual `mkdir
+  simplek8s` (README "Empty boot partition bootstrap"). The verified
+  device is cached per pod lifetime; any use-mount failure invalidates
+  it and re-resolves once from scratch.
+- The update state machine (§3.4) is unchanged; only *which files* each
+  node considers its own changed. x86-64 behavior is byte-identical.
+
+## 4. Decision log (per era; §4.4 latest)
 
 Numbers restart per era; unqualified references in this document are
 to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
@@ -1058,6 +1125,19 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 33 | `@<seconds>` accepted as an alias for `@every <N>s`; `@reboot` stays rejected | The numeric form is the last Vixie schedule form without a mapping; the clock-anchored alias is exact for window openness (only occurrence timestamps matter). `@reboot` has no occurrence set at all and cannot be mapped onto stateless evaluation. |
 | 34 | Re-arm rides transitions only: a goal-value change observed in-lifetime, a staging-completes event, or a goal correction install a new goal and may re-arm; a no-op observation (pod start rediscovering the applied goal with `DEFAULT` already correct) never re-arms | A completed mismatch resting state must survive pod restarts — otherwise every restart auto-retries broken versions, voiding the no-retry guarantee (found live in the W13 campaign: a pod restart cleared `completed` → re-enqueue → reboot into the broken kernel again). Residual: a crash between the bootloader write and the state RMW, followed by a restart before any new trigger, leaves `completed` stuck; the operator `DELETE` (→ absent → eligible) is the escape. |
 
+### 4.4 Flavors era (M5)
+
+| # | Decision | Rationale |
+| --- | --- | --- |
+| 1 | Flavor set `{x86-64, arm64, rpi4, rpi5}`; `aarch64` dropped (repo has none) | Match reality, not Debian naming. `MapArch` retired for flavor purposes; flavor resolves from staged files, not node architecture. |
+| 2 | Identify the expected boot partition; fail closed on ambiguity | Stray `EFI`/`boot`-labeled partitions (USB stick, second ESP, reused label) would otherwise be mounted, then written. Enumerate all candidates (`PARTLABEL=boot` preferred, then fs labels), verify contents (`simplek8s/` + bootloader config), first-verifying wins, none ⇒ touch nothing. Device cached per pod lifetime, re-resolved on failure. |
+| 3 | No override annotation (REJECTED) | No flavor migration exists; every escape (legacy bootstrap, empty partition, mixed cleanup) is a one-time ssh. Permanent API surface for nonevents is declined. |
+| 4 | Purge/prune/defensive scoped to own flavor | Cross-flavor deletion would be data loss by design (a stray foreign file is the operator's, like any foreign entry). |
+| 5 | Generic `arm64` unsupported: no live proof, no hardware (CLOSED 2026-09-16) | On ARM only rpi4/rpi5 are supported; no generic-`arm64` hardware exists or is planned and no generic image is published. The `arm64` strings stay as harmless legacy compat (a node with only `*.arm64.efi` files still resolves within its stale artifacts, never a wrong flavor). |
+| 6 | rpi5 live E2E waited on drain approval (done, F4 PASS) | Same code path as rpi4 + unit matrix; the drain (postgres, gateway) was the cost, not the code. |
+| 7 | Out-of-flavor pins follow normal W12 rules (no special case) | With no migration, a `ts` absent from your flavor's index is simply not verifiable: path-2 corrects exactly like a never-existed `ts`. No extra event, no extra code path. |
+| 8 | systemd-boot not adopted (REJECTED 2026-09-16) | systemd-boot is UEFI-only and SimpleK8s must keep booting on BIOS machines. GRUB (+ syslinux legacy, + rpi `config.txt`) stays the managed set. |
+
 ## 5. Behavior changes & migration
 
 - **Updates keep working after an M3 rollout** (D6): absent
@@ -1140,6 +1220,12 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
   '["@every 12h"]'`, graces `5m`) plus a commented example
   (`reboots.windows: '["@daily"]'`) — the reboots opt-in point is
   explicit.
+- **arm64 nodes go from silent no-op to flavor-scoped updates** (M5,
+  §3.12): each node only ever sees its own flavor's artifacts
+  (`x86-64`/`arm64`/`rpi4`/`rpi5`); x86-64 behavior is byte-identical.
+  Pins need no migration (bare `ts`, resolved per node); no new
+  annotation, no RBAC, no ConfigMap change. On ARM only rpi4/rpi5 are
+  supported (M5 D5); `arm64` strings remain as legacy compat.
 
 ## 6. Implementation
 
@@ -1157,6 +1243,9 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | `internal/nodestate` | New conditional-RMW builds: enqueue (state→`requested`, one patch), **M1-state re-arm** (state→absent, precondition-checked), and check-claim (`update-last-check`, write only if absent/older). |
 | `deploy/configmap.yaml` | The four new keys with their built-in defaults (`reboots.windows: '[]'`, `updates.windows: '["@every 12h"]'`, graces `5m`), commented example; remove `updates.check-interval`. |
 | `deploy/rbac.yaml` | The `configmaps` role gains the `delete` verb (stale-ConfigMap cleanup, decision 15). |
+| `internal/features/update` (`versions.go`, `flavor.go`, M5) | Flavor type + `ResolveFlavor` from staged filenames; `MapArch` retired; `parseBlkidCandidates` (PARTLABEL-first ordering, pure). |
+| `internal/features/update` (`bootstore.go`, M5) | `findBootDevice` rework (D2): `PARTLABEL=boot` preference, by-label symlinks, blkid scan with same-device dedup, per-candidate mount verification (`simplek8s/` + bootloader config), first-verifying-wins, fail-closed, per-pod device cache with single re-resolve retry (`mountedBoot`, used by all four store entry points). |
+| `internal/features/update` (`check.go`, `staging.go`, `purge.go`, `bootloader.go`, M5) | Index filtering by flavor; `listKernels` flavor filter; purge/prune/defensive own-flavor only; `MapArch` call sites take the resolved flavor (plumbing, no behavior change on x86-64). |
 
 ### 6.2 Unit test matrix
 
@@ -1231,6 +1320,19 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
   one patch; re-arm build (state→absent) precondition failures abort;
   check-claim build (absent → write, older → write, newer → skip, race →
   abort).
+- **flavors (M5, §3.12)**: resolution (rpi4-only / mixed-first-wins /
+  empty-unresolvable / x86-64-only / foreign-only; unresolvable ⇒
+  callers skip, no negative caching); discovery (`PARTLABEL=boot`
+  preferred over fs labels; decoy `boot`-labeled layout skipped;
+  none-verifying ⇒ error with no mount left behind; cached device
+  reused, re-resolved after an injected mount failure;
+  `parseBlkidCandidates` order incl. PARTLABEL-beats-LABEL);
+  name construction per flavor (`stored`/`artifact`); check filtering
+  (mixed-flavor index → own flavor only); out-of-flavor pin (ts under
+  other flavors → skip + `UpdateStagingSkipped`; ts nowhere → W12
+  correction); legacy node (only `arm64` visible; newer ts → skip, no
+  correction); purge/prune/defensive ignore foreign-flavor files;
+  `latest`-style files ignored everywhere.
 
 ### 6.3 Phases
 
@@ -1562,6 +1664,18 @@ Live on the 5-node test cluster (cp1, wk1, wk2 driven; cp2/cp3 converged unatten
 | W16 | PASS 2026-09-11 — `[@every 5m, bogus]` + grace `0s` → both `WARN … keeping previous` (whole-key rejected); `POST` still accepted + held per the kept schedule. | Invalid window config | one bad entry in a good list; bad `*-window-grace` | whole key rejected, last valid kept + warn; behavior unchanged (no spurious opens or closes). |
 | W17 | PASS 2026-09-11 — stale `simplek8s-update-plans` CM: new leader attempted delete on first Run → 403 (old RBAC) + Warn (proves the acquisition edge + rollout-race cover); after applying the RBAC + next handover → deleted. `reboot-eligible` marker → deleted at pod restart. (A decoy CM in `default` was the wrong namespace — the real leftover lives in `simplek8s`.) | Migration cleanup | pre-create a stale `simplek8s-update-plans` ConfigMap and a leftover `reboot-eligible` annotation | the leader deletes the ConfigMap (live RBAC `delete`); the pod deletes the leftover at start; no plan behavior remains. |
 
+### 7.5 Board flavors campaign (F1–F5, 5/5 PASS)
+
+Live on PROD rpi4-node (rpi4, F1–F3) and rpi5-node (rpi5, F4, after drain approval), plus a libvirt scratch VM with the clean x86-64 image for the decoy drill (F5, never PROD). The rpi bootloader path (`config.txt` single `kernel=`) is exercised live for the first time here.
+
+| # | Result (live) | Case | Trigger | Expect |
+| --- | --- | --- | --- | --- |
+| F1 | PASS 2026-09-11 (PROD) | Flavor detection on rpi4-node | read-only: controller logs after deploy | `board flavor resolved: rpi4` in pod log, no writes. |
+| F2 | PASS 2026-09-11 (PROD rpi4-node) | First rpi staging | `stage` + newer `rpi4` release (pin of an uncached `rpi4` ts) | `202609090435.rpi4` staged + `config.txt` re-pointed, running untouched, no `reboot-state`. |
+| F3 | PASS 2026-09-11 (PROD rpi4-node) | Full auto-update on rpi4 (W4-shaped) | `full` + windows open | auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent (`next`==running). `UpdateApplied` state-proven; sink retrieval closed 2026-09-16 as expired (k8s Events TTL outlived the observation — empty list 5 days later is expected; emission is unit-covered). |
+| F4 | PASS 2026-09-11 (PROD rpi5-node, drained) | rpi5 on rpi5-node | same as F2–F3 after a rpi5-node drain | flavor `rpi5`, `202609090435.rpi5` staged + `config.txt` re-pointed (F2, no reboot), then auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent. |
+| F5 | PASS 2026-09-16 (libvirt scratch, clean x86-64 image + decoy `boot`-labeled vfat, three runs) | Decoy-label drill | `PhysicalStore` lab harness against the guest's disks | (A) candidates `[by-partlabel/boot, by-label/boot]` → winner `by-partlabel/boot → /dev/vda1`, version listed end-to-end; decoy `/dev/vdb` enumerated, verify-mounted, skipped, left empty. (N) `simplek8s/` renamed away online (root on tmpfs, no reboot) → `no verifying boot device among 2 candidate(s)`, fail-closed, zero mounts left. (H) dir restored → resolves again with no reboot (no negative caching). Scratch domain + images removed afterwards. |
+
 ## 8. Deferred
 
 - TODO item 10 (leader-centralized check + distribution) is untouched by
@@ -1577,8 +1691,10 @@ Live on the 5-node test cluster (cp1, wk1, wk2 driven; cp2/cp3 converged unatten
   undecided), the build-check workflow, and the release push. Explicitly
   out of M3 (maintainer decision, 2026-09-09); §3.11 carries the notes
   for when it is built (LFS checkout, binfmt, provenance).
-- **arm64 E2E**: no arm64 test node exists yet; when one is stood up,
-  deploy the aarch64 image and run one full auto-update (W4-shaped).
+- **arm64**: rpi4/rpi5 proven live (F1–F4, §7.5); generic `arm64`
+  unsupported — no hardware, no image, no live proof needed (M5 D5);
+  `arm64` strings remain as legacy compat only. The full `go test
+  ./...` suite passes natively on `linux/arm64`.
 - TODO items 2 (CLI), 4 (rollback helper), 5 (keyring), 7 (reboot-log
   observability) are untouched by this plan and stay deferred.
 
