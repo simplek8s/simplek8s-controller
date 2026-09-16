@@ -356,6 +356,12 @@ rebooted during E2E (running `ts` untouched throughout).
   → staged + re-pointed, exit 0.
 - Cross-node spot: `update --next-kernel=false 202609121031` on cp1
   → staged, default (already newest) unchanged.
+- Boot-into-staged round trip (wk2, 2026-09-16): `boot set
+  202609090435` + reboot → running `6.18.50-simplek8s-202609090435`
+  (~15 s downtime, hostname + keys intact via re-applied yaml);
+  `boot set 202609161303` + reboot → back on
+  `6.18.52-simplek8s-202609161303`. The grub default mechanism works
+  end to end, not just on files.
 - syslinux-legacy fleet (wk1 recreated with August release
   `202608291203`, 2026-09-16): `list` detects `syslinux`, `check
   --url dev` reports newest, `boot set <absent>` refused exit 1,
