@@ -261,7 +261,12 @@ never across them.
   controller's change-triggered reconciliation (PLAN.md §3.7)
   adopts a CLI-staged default via the normal `next-kernel`
   comparison once the annotation is set (CLI never writes the
-  annotation itself).
+  annotation itself). Proven live 2026-09-16 on both bootloader
+  families: syslinux (wk1, stock `:latest` image) and grub (cp3,
+  `m6-e2e` image built from this source and distributed via
+  `ctr import`, since `:latest` predates GRUB support) — annotate
+  → default re-pointed in <20 s, no reboot; annotation removed →
+  bootstrap re-anchors to running and re-points back.
 - Distro change (TODO 5): after v2 ships with the embedded keyring,
   remove `/usr/lib/systemd/import-pubring.gpg`.
 
