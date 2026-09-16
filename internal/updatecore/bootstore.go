@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // PhysicalStore is the real BootStore (PLAN-M2 3.7): it discovers the
 // boot device over the host /dev, mounts it at a private mountpoint with
@@ -10,6 +10,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -193,6 +194,9 @@ func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
 	defer os.RemoveAll(work)
 	return stagePartition(ctx, s.http, s.log, req, mnt, s.kernelDir, work)
 }
+
+// ErrGoalAbsent: the goal kernel file is not on the boot partition.
+var ErrGoalAbsent = errors.New("goal kernel file absent from boot partition")
 
 // EnsureBootGoal verifies version's kernel file is present and ensures
 // the bootloader DEFAULT points at it, in one mounted session

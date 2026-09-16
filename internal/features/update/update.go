@@ -7,7 +7,6 @@ package update
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"github.com/simplek8s/simplek8s-controller/internal/engine"
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // BootStore lists the release versions present on this node's boot
@@ -26,7 +26,7 @@ import (
 // physical store does device discovery + mount; tests use fakes.
 type BootStore interface {
 	Versions(ctx context.Context) ([]string, error)
-	Stage(ctx context.Context, req StageRequest) error
+	Stage(ctx context.Context, req updatecore.StageRequest) error
 	// Kernels lists staged kernel basenames (with flavor part), for
 	// flavor resolution (PLAN-M5 §3.1). Foreign (non-matching) files
 	// are omitted.
@@ -39,9 +39,6 @@ type BootStore interface {
 	// it re-pointed: re-arm rides transitions only (decision 34).
 	EnsureBootGoal(ctx context.Context, version, arch string) (repointed bool, err error)
 }
-
-// ErrGoalAbsent: the goal kernel file is not on the boot partition.
-var ErrGoalAbsent = errors.New("goal kernel file absent from boot partition")
 
 // Config carries the update feature's settings. Feature tuning
 // (updates.* keys) comes from the per-cycle feature Config snapshot
@@ -119,10 +116,10 @@ func New(e *engine.Engine, cfg Config) *Feature {
 		cfg.Log = slog.Default()
 	}
 	if cfg.EmbeddedKeyring == "" {
-		cfg.EmbeddedKeyring = EmbeddedKeyringPath
+		cfg.EmbeddedKeyring = updatecore.EmbeddedKeyringPath
 	}
 	if cfg.CustomKeyring == "" {
-		cfg.CustomKeyring = CustomKeyringPath
+		cfg.CustomKeyring = updatecore.CustomKeyringPath
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 5 * time.Minute}
@@ -269,7 +266,7 @@ func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) bool {
 	if len(local) == 0 {
 		return false // case 3: retry next cycle
 	}
-	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
+	running := updatecore.RunningVersion(node.Status.NodeInfo.KernelVersion)
 	target := ""
 	for _, v := range local {
 		if v == running {
@@ -279,7 +276,7 @@ func (f *Feature) bootstrap(ctx context.Context, node *kube.Node) bool {
 	}
 	if target == "" {
 		for _, v := range local {
-			if target == "" || NewerTS(v, target) {
+			if target == "" || updatecore.NewerTS(v, target) {
 				target = v
 			}
 		}
@@ -325,11 +322,11 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 	// staged, purged around, or treated as present.
 	localSet := make(map[string]bool, len(local))
 	for _, name := range local {
-		if ts, fa, ok := ParseStoredKernel(name); ok && fa == res.Arch {
+		if ts, fa, ok := updatecore.ParseStoredKernel(name); ok && fa == res.Arch {
 			localSet[ts] = true
 		}
 	}
-	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
+	running := updatecore.RunningVersion(node.Status.NodeInfo.KernelVersion)
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
 	arch := res.Arch
 	dirty := false
@@ -376,7 +373,7 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 // of absence vs transient staging failure).
 func indexHas(res CheckResult, ts, arch string) bool {
 	for file := range res.Sums {
-		if v, fa, ok := ParseKernelRelease(file); ok && v == ts && fa == arch {
+		if v, fa, ok := updatecore.ParseKernelRelease(file); ok && v == ts && fa == arch {
 			return true
 		}
 	}
@@ -387,14 +384,14 @@ func indexHas(res CheckResult, ts, arch string) bool {
 // returns true on success; a failure fires a rate-limited
 // UpdateStagingSkipped (no annotation change, no cluster impact).
 func (f *Feature) stageOne(ctx context.Context, node *kube.Node, fc config.Config, res CheckResult, v string) bool {
-	artifact := kernelArtifactName(v, res.Arch)
+	artifact := updatecore.ArtifactFileName(v, res.Arch)
 	checksum, ok := res.Sums[artifact]
 	if !ok {
 		f.log.Warn("update: no verified checksum for version; not staging",
 			"version", v, "artifact", artifact)
 		return false
 	}
-	req := StageRequest{
+	req := updatecore.StageRequest{
 		Version:         v,
 		Arch:            res.Arch,
 		Checksum:        checksum,
@@ -402,7 +399,7 @@ func (f *Feature) stageOne(ctx context.Context, node *kube.Node, fc config.Confi
 		RepoBase:        res.URL,
 		Preserve:        fc.UpdatePreserve,
 		MaxPercentUsage: fc.UpdateMaxPercentUsage,
-		Running:         RunningVersion(node.Status.NodeInfo.KernelVersion),
+		Running:         updatecore.RunningVersion(node.Status.NodeInfo.KernelVersion),
 	}
 	if err := f.cfg.Store.Stage(ctx, req); err != nil {
 		f.log.Warn("update: staging skipped", "version", v, "err", err)

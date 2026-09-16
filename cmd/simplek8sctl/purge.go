@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // runPurge implements `simplek8sctl purge`: retention + bootloader
@@ -46,7 +46,7 @@ func runPurge(log *slog.Logger, args []string) int {
 	}
 	defer cleanup()
 	dir := store.KernelDir()
-	kernels, err := update.ListPartitionKernels(mnt, dir)
+	kernels, err := updatecore.ListPartitionKernels(mnt, dir)
 	if err != nil {
 		log.Error("listing staged kernels failed", "err", err)
 		return exitOperational
@@ -58,7 +58,7 @@ func runPurge(log *slog.Logger, args []string) int {
 	}
 	running := osRelease()
 	if dryRun {
-		deleted, err := update.PreviewPurge(log, mnt, dir, flavor, preserve, maxUsage, running, update.BootloaderAuto)
+		deleted, err := updatecore.PreviewPurge(log, mnt, dir, flavor, preserve, maxUsage, running, updatecore.BootloaderAuto)
 		if err != nil {
 			log.Error("purge preview failed", "err", err)
 			return exitOperational
@@ -66,12 +66,12 @@ func runPurge(log *slog.Logger, args []string) int {
 		fmt.Printf("would delete: %v\n", deleted)
 		return exitOK
 	}
-	deleted, err := update.PurgePartition(log, mnt, dir, flavor, preserve, maxUsage, running, update.BootloaderAuto)
+	deleted, err := updatecore.PurgePartition(log, mnt, dir, flavor, preserve, maxUsage, running, updatecore.BootloaderAuto)
 	if err != nil {
 		log.Error("purge failed", "err", err)
 		return exitOperational
 	}
-	after, err := update.ListPartitionVersions(mnt, dir)
+	after, err := updatecore.ListPartitionVersions(mnt, dir)
 	if err != nil {
 		log.Error("listing staged versions failed", "err", err)
 		return exitOperational

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // runCheck implements `simplek8sctl check`: fetch + verify the index,
@@ -46,7 +46,7 @@ func runCheck(log *slog.Logger, args []string) int {
 		log.Error("boot device discovery failed", "err", err)
 		return exitOperational
 	}
-	kernels, err := update.ListPartitionKernels(mnt, store.KernelDir())
+	kernels, err := updatecore.ListPartitionKernels(mnt, store.KernelDir())
 	cleanup()
 	unlock()
 	if err != nil {
@@ -60,8 +60,8 @@ func runCheck(log *slog.Logger, args []string) int {
 	}
 	stagedNewest := ""
 	for _, k := range kernels {
-		if ts, _, ok := update.ParseStoredKernel(k); ok {
-			if stagedNewest == "" || update.NewerTS(ts, stagedNewest) {
+		if ts, _, ok := updatecore.ParseStoredKernel(k); ok {
+			if stagedNewest == "" || updatecore.NewerTS(ts, stagedNewest) {
 				stagedNewest = ts
 			}
 		}
@@ -70,14 +70,14 @@ func runCheck(log *slog.Logger, args []string) int {
 	if code != exitOK {
 		return code
 	}
-	rel, ok := update.FilterIndexByFlavor(sums, flavor)
+	rel, ok := updatecore.FilterIndexByFlavor(sums, flavor)
 	if !ok {
 		log.Error("no indexed release for flavor", "flavor", flavor)
 		return exitOperational
 	}
 	running := osRelease()
 	verdict := "up-to-date"
-	if running == "" || update.NewerTS(rel.TS, running) {
+	if running == "" || updatecore.NewerTS(rel.TS, running) {
 		verdict = "update available " + rel.TS
 	}
 	fmt.Printf("flavor: %s\nrunning: %s\nstaged-newest: %s\nremote-newest: %s\nverdict: %s\n",
@@ -87,7 +87,7 @@ func runCheck(log *slog.Logger, args []string) int {
 		fmt.Printf("remote-ts:\n")
 		seen := map[string]bool{}
 		for file := range sums {
-			if ts, fa, ok := update.ParseKernelRelease(file); ok && fa == flavor && !seen[ts] {
+			if ts, fa, ok := updatecore.ParseKernelRelease(file); ok && fa == flavor && !seen[ts] {
 				seen[ts] = true
 				fmt.Printf("  %s\n", ts)
 			}

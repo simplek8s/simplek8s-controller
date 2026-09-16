@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // Staging orchestration (PLAN-M2 3.7). stagePartition runs on an
 // already-mounted partition root (the physical mount/discovery lives in
@@ -63,6 +63,12 @@ func versionFromStoredKernel(filename string) (string, bool) {
 // (the .efi image: kernel + initrd).
 func kernelStoredName(ts, arch string) string {
 	return "simplek8s." + ts + "." + arch + ".efi"
+}
+
+// ArtifactFileName is the compressed artifact filename in the repo
+// (zstd of the .efi image).
+func ArtifactFileName(ts, arch string) string {
+	return kernelArtifactName(ts, arch)
 }
 
 // kernelArtifactName is the compressed artifact filename in the repo

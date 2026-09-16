@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // Partition space stats (PLAN-M2 3.7 step 3/6). statfs on the mounted
 // partition; the "free" figure is the space available to an unprivileged

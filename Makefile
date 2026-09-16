@@ -14,12 +14,53 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.builtAt=$
 BUILDER ?= simplek8s-builder
 HOST_ARCH := $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 
-.PHONY: all build test vet fmt image deploy undeploy clean
+.PHONY: all build test vet fmt image deploy undeploy clean node-cli node-publish cli-no-kube
 
 all: vet test build
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller ./cmd/simplek8s-controller
+
+# simplek8sctl node CLI (PLAN-M6): static binaries for both arches.
+CLI ?= simplek8sctl
+
+node-cli: cli-keyring
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI)-linux-amd64 ./cmd/simplek8sctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI)-linux-arm64 ./cmd/simplek8sctl
+
+# The go:embed keyring copy (single source of truth: keys/, LFS).
+# Fails if the file is still an LFS pointer (no smudge) — an
+# embedded pointer would silently ship without verification.
+cli-keyring:
+	@if head -c 23 keys/simplek8s-pubring.gpg | grep -q '^version https://git-lfs'; then \
+		echo "keys/simplek8s-pubring.gpg is an LFS pointer (run: git lfs pull)" >&2; exit 1; \
+	fi
+	@cp keys/simplek8s-pubring.gpg cmd/simplek8sctl/pubring.gpg
+
+# No kube-coupled imports in the local-only CLI (PLAN-M6 reuse
+# boundary, enforced by `go list`). Depends on cli-keyring so the
+# embedded file exists; a `go list` load failure fails the check
+# instead of passing vacuously.
+cli-no-kube: cli-keyring
+	@deps=$$(go list -deps ./cmd/simplek8sctl) || { echo "go list failed" >&2; exit 1; }; \
+	echo "$$deps" | grep -E 'internal/(kube|engine)' && { echo "cmd/simplek8sctl imports kube-coupled packages" >&2; exit 1; } || true
+
+# Publish CLI binaries (PLAN-M6 D10 node-publish, ported from the
+# legacy simplek8s-update Makefile; recipe not yet run against the
+# live endpoint): upx + signed publish.json + upload.
+PUBLISH_URL ?= https://publisher.simplek8s.org/upload/simplek8sctl
+PUBLISH_FINGERPRINT ?= 33BAAC4BFB20C2327429730A9F16C69F2B9DD678
+PUBLISH_TAGS ?= dev
+
+node-publish: node-cli
+	@for arch in amd64 arm64; do \
+		bin="bin/$(CLI)-linux-$${arch}"; \
+		upx --best --lzma --no-progress -o "$${bin}.upx" "$${bin}"; \
+		sum=$$(sha256sum "$${bin}.upx" | cut -d" " -f1); \
+		echo -n "{\"filenames\":[\"$$(basename $${bin})\",\"$$(basename $${bin}).latest\"],\"checksum\":\"$${sum}\",\"tags\":[\"$(PUBLISH_TAGS)\"]}" > "$${bin}.publish.json"; \
+		gpg --quiet --local-user "$(PUBLISH_FINGERPRINT)!" --sign --detach-sign --armor --output "$${bin}.publish.json.signature" "$${bin}.publish.json"; \
+		curl -F "json=@$${bin}.publish.json" -F "signature=@$${bin}.publish.json.signature" -F "release=@$${bin}.upx" "$(PUBLISH_URL)"; \
+	done
 
 test:
 	go test ./...

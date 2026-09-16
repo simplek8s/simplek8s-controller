@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // flavorOf returns the node's resolved board flavor (PLAN-M5 §3.1),
@@ -25,7 +26,7 @@ func (f *Feature) flavorOf(ctx context.Context) (string, bool) {
 		f.log.Debug("update: flavor scan failed; retrying next cycle", "err", err)
 		return "", false
 	}
-	flavor, ok := ResolveFlavor(files)
+	flavor, ok := updatecore.ResolveFlavor(files)
 	if !ok {
 		// Empty/foreign-only: fail closed but do NOT cache — a later
 		// hand-staged file must heal without a pod restart (D2).
@@ -44,7 +45,7 @@ func (f *Feature) flavorOf(ctx context.Context) (string, bool) {
 	// Mixed-flavor sanity: more than one known flavor present.
 	seen := map[string]bool{}
 	for _, name := range files {
-		if _, fa, ok := ParseStoredKernel(name); ok && flavorSet[fa] {
+		if _, fa, ok := updatecore.ParseStoredKernel(name); ok && updatecore.IsKnownFlavor(fa) {
 			seen[fa] = true
 		}
 	}

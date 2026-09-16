@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // Boot-partition purge (PLAN-M2 3.7 step 6): keep the newest
 // `updates.preserve` versions, then enforce usage <=

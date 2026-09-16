@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 import (
 	"regexp"
@@ -54,6 +54,12 @@ func ParseStoredKernel(filename string) (ts, flavor string, ok bool) {
 		return "", "", false
 	}
 	return m[1], m[2], true
+}
+
+// IsKnownFlavor reports whether f is a shippable release flavor
+// (PLAN-M5 §3.1 closed set, incl. the ended legacy arm64 lineage).
+func IsKnownFlavor(f string) bool {
+	return flavorSet[f]
 }
 
 // ResolveFlavor infers the node's flavor from staged kernel

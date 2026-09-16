@@ -74,6 +74,11 @@ spec:
             - name: keyring
               mountPath: /etc/simplek8s/custom
               readOnly: true
+            # Shared updater lock dir (PLAN-M6 §3.6): host /run tmpfs
+            # subdir, same path both sides — the controller and the
+            # simplek8sctl CLI flock /run/simplek8s/update.lock.
+            - name: run-simplek8s
+              mountPath: /run/simplek8s
           # Liveness must not depend on API-server reachability (3.12).
           livenessProbe:
             httpGet:
@@ -90,3 +95,7 @@ spec:
           secret:
             secretName: simplek8s-controller-keyring
             optional: true
+        - name: run-simplek8s
+          hostPath:
+            path: /run/simplek8s
+            type: DirectoryOrCreate

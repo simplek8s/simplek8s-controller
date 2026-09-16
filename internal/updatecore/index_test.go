@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 import (
 	"crypto/sha256"

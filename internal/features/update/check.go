@@ -3,17 +3,10 @@ package update
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
-)
-
-// Index files inside the release repo (PLAN-M2 3.6).
-const (
-	IndexFile      = "SHA256SUMS"
-	IndexSignature = "SHA256SUMS.gpg"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // CheckResult is the outcome of one verified check for one node.
@@ -44,28 +37,28 @@ func (f *Feature) Check(ctx context.Context, node *kube.Node, repoURL, flavor st
 	}
 
 	base := strings.TrimSuffix(repoURL, "/")
-	indexBytes, err := httpGet(ctx, f.http, base+"/"+IndexFile)
+	indexBytes, err := updatecore.FetchBytes(ctx, f.http, base+"/"+updatecore.IndexFile)
 	if err != nil {
-		return res, fmt.Errorf("fetch %s: %w", IndexFile, err)
+		return res, fmt.Errorf("fetch %s: %w", updatecore.IndexFile, err)
 	}
-	sigBytes, err := httpGet(ctx, f.http, base+"/"+IndexSignature)
+	sigBytes, err := updatecore.FetchBytes(ctx, f.http, base+"/"+updatecore.IndexSignature)
 	if err != nil {
-		return res, fmt.Errorf("fetch %s: %w", IndexSignature, err)
+		return res, fmt.Errorf("fetch %s: %w", updatecore.IndexSignature, err)
 	}
 
-	keyringPath, err := ResolveKeyring(f.cfg.CustomKeyring, f.cfg.EmbeddedKeyring)
+	keyringPath, err := updatecore.ResolveKeyring(f.cfg.CustomKeyring, f.cfg.EmbeddedKeyring)
 	if err != nil {
 		return res, err
 	}
-	keyring, err := LoadKeyring(keyringPath)
+	keyring, err := updatecore.LoadKeyring(keyringPath)
 	if err != nil {
 		return res, err
 	}
-	if _, err := VerifyIndex(keyring, indexBytes, sigBytes); err != nil {
+	if _, err := updatecore.VerifyIndex(keyring, indexBytes, sigBytes); err != nil {
 		return res, err
 	}
 
-	sums, err := ParseIndex(indexBytes)
+	sums, err := updatecore.ParseIndex(indexBytes)
 	if err != nil {
 		return res, err
 	}
@@ -74,44 +67,20 @@ func (f *Feature) Check(ctx context.Context, node *kube.Node, repoURL, flavor st
 	res.Arch = arch
 	res.Sums = sums
 	for file := range sums {
-		ts, fileArch, isKernel := ParseKernelRelease(file)
+		ts, fileArch, isKernel := updatecore.ParseKernelRelease(file)
 		if !isKernel || fileArch != arch {
 			continue
 		}
-		if res.Latest == "" || NewerTS(ts, res.Latest) {
+		if res.Latest == "" || updatecore.NewerTS(ts, res.Latest) {
 			res.Latest = ts
 		}
 	}
 
-	res.Running = RunningVersion(node.Status.NodeInfo.KernelVersion)
+	res.Running = updatecore.RunningVersion(node.Status.NodeInfo.KernelVersion)
 	if res.Latest != "" {
-		res.Available = res.Running == "" || NewerTS(res.Latest, res.Running)
-		res.Artifact = kernelArtifactName(res.Latest, arch)
+		res.Available = res.Running == "" || updatecore.NewerTS(res.Latest, res.Running)
+		res.Artifact = updatecore.ArtifactFileName(res.Latest, arch)
 		res.Checksum = sums[res.Artifact]
 	}
 	return res, nil
 }
-
-// httpGet downloads one file with a bounded size (index + signature are
-// small; the bound guards against a hostile repo).
-func httpGet(ctx context.Context, c *http.Client, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxIndexBytes))
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
-const maxIndexBytes = 8 * 1024 * 1024

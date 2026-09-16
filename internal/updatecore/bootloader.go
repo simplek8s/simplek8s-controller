@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // Bootloader entry writers (PLAN-M2 3.7 step 5), ported from the
 // reference project's syslinux/rpi writers and extended for the

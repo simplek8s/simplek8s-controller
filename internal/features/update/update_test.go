@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func (c *clock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 type fakeStore struct {
 	mu      sync.Mutex
 	vers    []string
-	staged  []StageRequest
+	staged  []updatecore.StageRequest
 	err     error
 	flavors map[string]string
 	// defGoal records the last EnsureBootGoal target (the fake's
@@ -40,7 +41,7 @@ func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
 	return append([]string(nil), s.vers...), nil
 }
 
-func (s *fakeStore) Stage(ctx context.Context, req StageRequest) error {
+func (s *fakeStore) Stage(ctx context.Context, req updatecore.StageRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.staged = append(s.staged, req)
@@ -557,7 +558,7 @@ func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
 }
 
 // EnsureBootGoal records the goal as the fake DEFAULT when the version
-// is present, or ErrGoalAbsent (nothing written) when it is not. It
+// is present, or updatecore.ErrGoalAbsent (nothing written) when it is not. It
 // reports whether DEFAULT changed (the transition signal of decision
 // 34).
 func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) (bool, error) {
@@ -570,7 +571,7 @@ func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) (b
 			return changed, nil
 		}
 	}
-	return false, ErrGoalAbsent
+	return false, updatecore.ErrGoalAbsent
 }
 
 // Kernels lists staged basenames with flavor parts (default x86-64
@@ -587,7 +588,7 @@ func (s *fakeStore) Kernels(ctx context.Context) ([]string, error) {
 		if !ok {
 			flavor = "x86-64"
 		}
-		out = append(out, kernelStoredName(v, flavor))
+		out = append(out, updatecore.StoredKernelName(v, flavor))
 	}
 	return out, nil
 }

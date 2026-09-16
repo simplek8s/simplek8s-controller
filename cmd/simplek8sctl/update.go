@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // runUpdate implements `simplek8sctl update [<ts>]`: check + download +
@@ -61,12 +61,12 @@ func runUpdate(log *slog.Logger, args []string) int {
 	defer cleanup()
 	dir := store.KernelDir()
 
-	kernels, err := update.ListPartitionKernels(mnt, dir)
+	kernels, err := updatecore.ListPartitionKernels(mnt, dir)
 	if err != nil {
 		log.Error("listing staged kernels failed", "err", err)
 		return exitOperational
 	}
-	before, err := update.ListPartitionVersions(mnt, dir)
+	before, err := updatecore.ListPartitionVersions(mnt, dir)
 	if err != nil {
 		log.Error("listing staged versions failed", "err", err)
 		return exitOperational
@@ -82,17 +82,17 @@ func runUpdate(log *slog.Logger, args []string) int {
 	if code != exitOK {
 		return code
 	}
-	var rel update.Release
+	var rel updatecore.Release
 	if wantTS != "" {
 		var found bool
-		rel, found = update.LookupRelease(sums, wantTS, flavor)
+		rel, found = updatecore.LookupRelease(sums, wantTS, flavor)
 		if !found {
 			log.Error("ts not in verified index for flavor", "ts", wantTS, "flavor", flavor)
 			return exitOperational
 		}
 	} else {
 		var found bool
-		rel, found = update.FilterIndexByFlavor(sums, flavor)
+		rel, found = updatecore.FilterIndexByFlavor(sums, flavor)
 		if !found {
 			log.Error("no indexed release for flavor", "flavor", flavor)
 			return exitOperational
@@ -101,7 +101,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 
 	// Hash gate (PLAN-M6 auto-overwrite): staged bytes matching the
 	// verified .efi hash skip the download entirely.
-	stored := update.StoredKernelName(rel.TS, flavor)
+	stored := updatecore.StoredKernelName(rel.TS, flavor)
 	stagedPath := filepath.Join(mnt, dir, stored)
 	if st, serr := os.Stat(stagedPath); serr == nil && !st.IsDir() {
 		if rel.EfiHash != "" {
@@ -125,7 +125,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 	// Capacity pre-check before any download (D16): statfs must work
 	// and the partition must not be completely full; exact fit is
 	// enforced with purge-to-fit inside staging.
-	if _, free, _, err := update.PathInfo(mnt); err != nil {
+	if _, free, _, err := updatecore.PathInfo(mnt); err != nil {
 		log.Error("boot partition stat failed", "err", err)
 		return exitOperational
 	} else if free == 0 {
@@ -140,7 +140,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 	}
 	defer os.RemoveAll(work)
 
-	req := update.StageRequest{
+	req := updatecore.StageRequest{
 		Version:         rel.TS,
 		Arch:            flavor,
 		Checksum:        rel.Checksum,
@@ -149,12 +149,12 @@ func runUpdate(log *slog.Logger, args []string) int {
 		Preserve:        preserve,
 		MaxPercentUsage: maxUsage,
 		Running:         running,
-		Bootloader:      update.BootloaderAuto,
+		Bootloader:      updatecore.BootloaderAuto,
 		EfiChecksum:     rel.EfiHash,
 		NoRepoint:       !nextKernel,
 		DryRun:          dryRun,
 	}
-	if err := update.StagePartition(ctx, httpClient(), log, req, mnt, dir, work); err != nil {
+	if err := updatecore.StagePartition(ctx, httpClient(), log, req, mnt, dir, work); err != nil {
 		log.Error("staging failed", "err", err)
 		return exitOperational
 	}
@@ -162,13 +162,13 @@ func runUpdate(log *slog.Logger, args []string) int {
 		fmt.Printf("dry-run %s (no writes)\n", rel.TS)
 		return exitOK
 	}
-	after, err := update.ListPartitionVersions(mnt, dir)
+	after, err := updatecore.ListPartitionVersions(mnt, dir)
 	if err != nil {
 		log.Error("listing staged versions failed", "err", err)
 		return exitOperational
 	}
 	deleted, _ := versionsBeforeAfter(before, after)
-	def := update.GetBootloaderDefault(update.BootloaderAuto, mnt)
+	def := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
 	fmt.Printf("staged %s\ndefault: %s\npurged: %v\n", rel.TS, def, deleted)
 	return exitOK
 }
@@ -177,17 +177,17 @@ func runUpdate(log *slog.Logger, args []string) int {
 // session: with nextKernel the default must point at ts (re-point
 // when needed), else it is left untouched.
 func ensureBootGoal(log *slog.Logger, mnt, dir, flavor, ts string, nextKernel bool) int {
-	want := "/" + filepath.Join(dir, update.StoredKernelName(ts, flavor))
+	want := "/" + filepath.Join(dir, updatecore.StoredKernelName(ts, flavor))
 	if !nextKernel {
 		log.Info("leaving bootloader default untouched (--next-kernel=false)")
 		return exitOK
 	}
-	cur := update.GetBootloaderDefault(update.BootloaderAuto, mnt)
+	cur := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
 	if cur == want {
 		fmt.Printf("default: %s (unchanged)\n", cur)
 		return exitOK
 	}
-	if err := update.SetBootloaderDefault(update.BootloaderAuto, mnt, want, "/"); err != nil {
+	if err := updatecore.SetBootloaderDefault(updatecore.BootloaderAuto, mnt, want, "/"); err != nil {
 		log.Error("re-pointing bootloader default failed", "err", err)
 		return exitOperational
 	}

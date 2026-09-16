@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 	"time"
 
 	"github.com/simplek8s/simplek8s-controller/internal/config"
@@ -23,7 +24,7 @@ import (
 func (f *Feature) maybeEnqueue(ctx context.Context, node *kube.Node, fc config.Config, now time.Time) {
 	name := node.Metadata.Name
 	ui := nodestate.ParseUpdate(node.Metadata.Annotations)
-	running := RunningVersion(node.Status.NodeInfo.KernelVersion)
+	running := updatecore.RunningVersion(node.Status.NodeInfo.KernelVersion)
 	st := nodestate.Parse(node.Metadata.Annotations)
 
 	// Rules 1–3 (rule 4, file presence, is verified just below via the
@@ -58,7 +59,7 @@ func (f *Feature) maybeEnqueue(ctx context.Context, node *kube.Node, fc config.C
 
 	goal := ui.NextKernel
 	if _, err := f.cfg.Store.EnsureBootGoal(ctx, goal, arch); err != nil {
-		if !errors.Is(err, ErrGoalAbsent) {
+		if !errors.Is(err, updatecore.ErrGoalAbsent) {
 			f.log.Warn("update: boot goal ensure failed; not enqueueing", "version", goal, "err", err)
 		}
 		return

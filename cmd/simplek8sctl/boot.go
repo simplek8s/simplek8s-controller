@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // runBoot implements `simplek8sctl boot show|set <ts>`: inspect or
@@ -64,13 +64,13 @@ func runBootShow(log *slog.Logger) int {
 		return exitOperational
 	}
 	defer cleanup()
-	bt, err := update.DetectBootloader(mnt)
+	bt, err := updatecore.DetectBootloader(mnt)
 	if err != nil {
 		log.Error("bootloader detection failed", "err", err)
 		return exitOperational
 	}
-	def := update.GetBootloaderDefault(update.BootloaderAuto, mnt)
-	kernels, err := update.ListPartitionKernels(mnt, store.KernelDir())
+	def := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
+	kernels, err := updatecore.ListPartitionKernels(mnt, store.KernelDir())
 	if err != nil {
 		log.Error("listing staged kernels failed", "err", err)
 		return exitOperational
@@ -100,7 +100,7 @@ func runBootSet(log *slog.Logger, ts string, dryRun bool) int {
 		return exitOperational
 	}
 	defer cleanup()
-	kernels, err := update.ListPartitionKernels(mnt, store.KernelDir())
+	kernels, err := updatecore.ListPartitionKernels(mnt, store.KernelDir())
 	if err != nil {
 		log.Error("listing staged kernels failed", "err", err)
 		return exitOperational
@@ -110,12 +110,12 @@ func runBootSet(log *slog.Logger, ts string, dryRun bool) int {
 		log.Error("board flavor unresolvable (no staged flavor, no device-tree)")
 		return exitMisuse
 	}
-	want := "/" + filepath.Join(store.KernelDir(), update.StoredKernelName(ts, flavor))
+	want := "/" + filepath.Join(store.KernelDir(), updatecore.StoredKernelName(ts, flavor))
 	if st, serr := os.Stat(filepath.Join(mnt, want)); serr != nil || st.IsDir() {
 		log.Error("refusing boot set: kernel file absent from boot partition", "ts", ts)
 		return exitOperational
 	}
-	cur := update.GetBootloaderDefault(update.BootloaderAuto, mnt)
+	cur := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
 	if dryRun {
 		fmt.Printf("would set default: %s -> %s\n", cur, want)
 		return exitOK
@@ -124,7 +124,7 @@ func runBootSet(log *slog.Logger, ts string, dryRun bool) int {
 		fmt.Printf("default: %s (unchanged)\n", cur)
 		return exitOK
 	}
-	if err := update.SetBootloaderDefault(update.BootloaderAuto, mnt, want, "/"); err != nil {
+	if err := updatecore.SetBootloaderDefault(updatecore.BootloaderAuto, mnt, want, "/"); err != nil {
 		log.Error("re-pointing bootloader default failed", "err", err)
 		return exitOperational
 	}

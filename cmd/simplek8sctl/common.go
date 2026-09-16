@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // Default release channel (same default as the controller).
@@ -47,8 +47,8 @@ func requireRoot(log *slog.Logger) int {
 
 // openStore builds the physical store with CLI defaults (own
 // mountpoint dir under the shared /run/simplek8s).
-func openStore(log *slog.Logger) *update.PhysicalStore {
-	return update.NewPhysicalStore(update.PhysicalStoreConfig{
+func openStore(log *slog.Logger) *updatecore.PhysicalStore {
+	return updatecore.NewPhysicalStore(updatecore.PhysicalStoreConfig{
 		MountRoot: "/run/simplek8s/mnt",
 		Log:       log,
 	})
@@ -60,7 +60,7 @@ func osRelease() string {
 	if err != nil {
 		return ""
 	}
-	return update.RunningVersion(strings.TrimSpace(string(b)))
+	return updatecore.RunningVersion(strings.TrimSpace(string(b)))
 }
 
 // deviceTree reads the board model + compatible (either of the two
@@ -85,7 +85,7 @@ func readFirst(paths ...string) (string, error) {
 // (exit 2), never a guess.
 func detectFlavor(kernels []string) (string, bool) {
 	model, compatible := deviceTree()
-	return update.DetectArchAuto(kernels, model, compatible, runtime.GOARCH)
+	return updatecore.DetectArchAuto(kernels, model, compatible, runtime.GOARCH)
 }
 
 // httpClient is the artifact/index client (redirects + timeout).
@@ -97,7 +97,7 @@ func httpClient() *http.Client {
 // verification for --keyring /dev/null with a loud warning),
 // returning the verified filename -> sha256 map.
 func fetchIndex(ctx context.Context, log *slog.Logger, base, keyringPath string) (map[string]string, int) {
-	sums, err := update.FetchVerifiedIndex(ctx, httpClient(), log, base, keyringPath, embeddedPubring)
+	sums, err := updatecore.FetchVerifiedIndex(ctx, httpClient(), log, base, keyringPath, embeddedPubring)
 	if err != nil {
 		if keyringPath == "/dev/null" {
 			log.Warn("GPG verification skipped (--keyring /dev/null): transport integrity only")

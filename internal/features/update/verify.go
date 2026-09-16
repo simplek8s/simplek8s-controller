@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"fmt"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
 )
@@ -52,7 +53,7 @@ func (f *Feature) Run(ctx context.Context) {
 			name:    n.Metadata.Name,
 			st:      nodestate.Parse(n.Metadata.Annotations),
 			ui:      nodestate.ParseUpdate(n.Metadata.Annotations),
-			running: RunningVersion(n.Status.NodeInfo.KernelVersion),
+			running: updatecore.RunningVersion(n.Status.NodeInfo.KernelVersion),
 		}
 	}
 	f.verifyNodes(views)

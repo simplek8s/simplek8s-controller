@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // Artifact download + integrity (PLAN-M2 3.7 step 3). The kernel
 // artifact is streamed to a temp file in the destination directory while

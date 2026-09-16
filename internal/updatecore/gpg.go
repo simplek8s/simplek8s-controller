@@ -2,7 +2,7 @@
 // skip. Keyring resolution: optional custom keyring file (Secret
 // simplek8s-controller-keyring, for custom repos/keys) over the
 // embedded keyring baked into the image.
-package update
+package updatecore
 
 import (
 	"bytes"

@@ -17,6 +17,7 @@ import (
 	"github.com/simplek8s/simplek8s-controller/internal/engine"
 	"github.com/simplek8s/simplek8s-controller/internal/features/reboot"
 	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // Build information, injected at compile time via -ldflags (see Makefile
@@ -120,7 +121,7 @@ func main() {
 		NodeName:       nodeName,
 		EventNamespace: "default",
 		Features:       e.FeatureConfig,
-		Store:          update.NewPhysicalStore(update.PhysicalStoreConfig{Log: log}),
+		Store:          updatecore.NewPhysicalStore(updatecore.PhysicalStoreConfig{Log: log}),
 		// Leftover M2 plan-state cleanup (PLAN.md §3.4 decision 15):
 		// the leader deletes a stale simplek8s-update-plans
 		// ConfigMap once per leadership acquisition.

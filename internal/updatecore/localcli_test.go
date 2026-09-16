@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // Unit tests for the local-node CLI surface (PLAN-M6 §6.2): the pure
 // release/arch helpers, the staging knobs (NoRepoint/DryRun/hash

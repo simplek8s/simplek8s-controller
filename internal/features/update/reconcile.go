@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 
 	"github.com/simplek8s/simplek8s-controller/internal/kube"
 	"github.com/simplek8s/simplek8s-controller/internal/nodestate"
@@ -45,7 +46,7 @@ func (f *Feature) reconcileBootloader(ctx context.Context, node *kube.Node, boot
 	if freshUI.NextKernelPresent {
 		freshVal = freshUI.NextKernel
 	}
-	running := RunningVersion(fresh.Status.NodeInfo.KernelVersion)
+	running := updatecore.RunningVersion(fresh.Status.NodeInfo.KernelVersion)
 	arch, archOK := f.flavorOf(ctx)
 	if freshVal == "" {
 		// Absent: bootstrap owns anchoring; just record.
@@ -72,7 +73,7 @@ func (f *Feature) reconcileBootloader(ctx context.Context, node *kube.Node, boot
 	changed := known && freshVal != last
 	repointed, err := f.cfg.Store.EnsureBootGoal(ctx, freshVal, arch)
 	if err != nil {
-		if errors.Is(err, ErrGoalAbsent) {
+		if errors.Is(err, updatecore.ErrGoalAbsent) {
 			// Pin ahead of staging: the annotation leads, the
 			// file arrives later; staging completes it (§3.4).
 			f.setGoalKnown(freshVal)
@@ -125,12 +126,12 @@ func (f *Feature) safeState(ctx context.Context, running, flavor string) (target
 	set := make(map[string]bool, len(local))
 	var newest string
 	for _, name := range local {
-		ts, fa, ok := ParseStoredKernel(name)
+		ts, fa, ok := updatecore.ParseStoredKernel(name)
 		if !ok || fa != flavor {
 			continue
 		}
 		set[ts] = true
-		if newest == "" || NewerTS(ts, newest) {
+		if newest == "" || updatecore.NewerTS(ts, newest) {
 			newest = ts
 		}
 	}

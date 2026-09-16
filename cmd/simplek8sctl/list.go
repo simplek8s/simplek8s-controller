@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/simplek8s/simplek8s-controller/internal/features/update"
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 // runList implements `simplek8sctl list`: staged versions + running +
@@ -39,13 +39,13 @@ func runList(log *slog.Logger, args []string) int {
 		return exitOperational
 	}
 	defer cleanup()
-	versions, err := update.ListPartitionVersions(mnt, store.KernelDir())
+	versions, err := updatecore.ListPartitionVersions(mnt, store.KernelDir())
 	if err != nil {
 		log.Error("listing staged versions failed", "err", err)
 		return exitOperational
 	}
-	def := update.GetBootloaderDefault(update.BootloaderAuto, mnt)
-	bt, err := update.DetectBootloader(mnt)
+	def := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
+	bt, err := updatecore.DetectBootloader(mnt)
 	if err != nil {
 		log.Error("bootloader detection failed", "err", err)
 		return exitOperational

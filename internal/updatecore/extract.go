@@ -1,4 +1,4 @@
-package update
+package updatecore
 
 // zstd extraction (PLAN-M2 3.7 step 4). The release artifact
 // simplek8s.<ts>.<arch>.efi.zst is a single zstd stream; it is
