@@ -326,6 +326,48 @@ never across them.
 | C7 | `boot set` validation | `boot set <absent-ts>` | Refused (file-first); exit non-zero; default unchanged. |
 | C8 | Pre-cluster install | distro-fresh node, no kubelet, bootloader config present (not a wiped partition — empty `simplek8s/` fails verification by design, README bootstrap) | Full `update` works with only userspace + boot partition; a wiped partition stays `install` territory (§8). |
 
+### 7.1 Results (2026-09-16, x86-64 fleet)
+
+Binary `simplek8sctl-linux-amd64` (static, `build-simplek8sctl`),
+fleet cp1/cp2/cp3/wk1/wk2 (release `202609161303`, kernel
+`6.18.52-simplek8s-202609161303`, no kubelet anywhere). No node was
+rebooted during E2E (running `ts` untouched throughout).
+
+- C1 PASS (×5): stable newest `202508191449` correctly reported per
+  flavor, `up-to-date`, exit 0; mount audit on wk2 (grub.cfg sha256 +
+  file list before/after) identical → zero writes. Dev-channel
+  variant: newest `202609161935`, `update available 202609161935`.
+  rpi4/rpi5 flavors: not runnable (no ARM hardware).
+- C2 PASS: `update --dry-run --url dev` printed the exact plan
+  (61 MB download to scratch, would stage + re-point), exit 0,
+  partition untouched (same audit).
+- C3 PASS: `update --url dev --next-kernel 202609090435` → staged +
+  default re-pointed, running untouched, exit 0.
+- C4 PASS: `update --url dev --next-kernel=false 202609061935` →
+  staged, default unchanged, exit 0.
+- C5 PENDING: no rpi4/rpi5 hardware in this fleet.
+- C6 PASS: `purge --preserve 3` on 7 staged @79% → oldest deleted,
+  default + running protected, foreign file kept, 1 grub entry
+  pruned (`grub stale entries pruned entries=1`), usage back to 69%,
+  exit 0.
+- C7 PASS: `boot set 199901010000` refused (file-first), exit 1,
+  default unchanged.
+- C8 PASS: full `update --url dev 202609121031` on wk2 (no kubelet)
+  → staged + re-pointed, exit 0.
+- Cross-node spot: `update --next-kernel=false 202609121031` on cp1
+  → staged, default (already newest) unchanged.
+
+Findings folded back into the plan/code:
+
+- stdlib `flag` stops at the first positional: flags must precede
+  `<ts>` (`update --url dev <ts>`, `boot [--dry-run] set <ts>`);
+  usage strings fixed accordingly (code only).
+- `purge` deletes only while over the usage cap (`preserve` is the
+  keep-floor, not a count cap): on a roomy partition it is a
+  correct no-op. Same code path as the controller.
+- `--next-kernel=false` stages file-only (no grub menuentry until a
+  later re-point); `boot set` adds the missing entry.
+
 ## 8. Deferred
 
 - `install` subcommand (node provisioning from scratch) — reserved

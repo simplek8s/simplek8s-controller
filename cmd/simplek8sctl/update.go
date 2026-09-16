@@ -33,7 +33,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 		return exitMisuse
 	}
 	if fs.NArg() > 1 {
-		subcommandUsage(fs, "Usage: simplek8sctl update [<ts>] [flags]")
+		subcommandUsage(fs, "Usage: simplek8sctl update [flags] [<ts>] (flags before the ts)")
 		return exitMisuse
 	}
 	var wantTS string

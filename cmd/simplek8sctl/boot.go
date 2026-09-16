@@ -24,7 +24,7 @@ func runBoot(log *slog.Logger, args []string) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		subcommandUsage(fs, "Usage: simplek8sctl boot show|set <ts> [--dry-run]")
+		subcommandUsage(fs, "Usage: simplek8sctl boot [--dry-run] show|set <ts>")
 		return exitMisuse
 	}
 	switch rest[0] {
@@ -36,12 +36,12 @@ func runBoot(log *slog.Logger, args []string) int {
 		return runBootShow(log)
 	case "set":
 		if len(rest) != 2 || rest[1] == "" {
-			subcommandUsage(fs, "Usage: simplek8sctl boot set <ts> [--dry-run]")
+			subcommandUsage(fs, "Usage: simplek8sctl boot [--dry-run] set <ts>")
 			return exitMisuse
 		}
 		return runBootSet(log, rest[1], dryRun)
 	default:
-		subcommandUsage(fs, "Usage: simplek8sctl boot show|set <ts> [--dry-run]")
+		subcommandUsage(fs, "Usage: simplek8sctl boot [--dry-run] show|set <ts>")
 		return exitMisuse
 	}
 }
