@@ -22,8 +22,10 @@ Agreed scope for this iteration (2026-09-15 conversation):
   default to the staged version, using the controller's
   `next-kernel` vocabulary (`simplek8s.org/next-kernel`, the release
   `ts`).
-- `--checksign` defaults `true`; `false` (skip verification) is
-  explicitly allowed, power-user only.
+- Keyring selects trust: embedded by default; `--keyring <path>`
+  overrides; `--keyring /dev/null` skips GPG verification
+  (power-user only, loud warning — sha256 of downloads still
+  enforced).
 - Breaking changes allowed: legacy is reference only.
 - Reuse via two new pure helpers in `internal/features/update`
   (D8): `FilterIndexByFlavor` + `DetectArchAuto`. No behavior change
@@ -31,10 +33,10 @@ Agreed scope for this iteration (2026-09-15 conversation):
 - CLI contract (D9): human text on stdout, errors on stderr, exits
   `0` ok / `1` operational error / `2` misuse or unresolvable
   auto-detect; `check --verbose` subsumes legacy `search`.
-- Runtime (D11/D12/D16): `--arch auto` unresolvable is fail-closed
-  (exit 2); root + `flock` single-instance + guaranteed `umount`;
-  explicit `--bootloader`/`--bootdevice` contradicting detection
-  aborts; capacity pre-check runs before download.
+- Runtime (D11/D12/D16): unresolvable flavor auto-detection is
+  fail-closed (exit 2); root + `flock` single-instance + guaranteed
+  `umount`; bootloader is always auto-detected, no override;
+  capacity pre-check runs before download.
 - Build (D10/D13/D14/D17): `make node-cli` in this repo (static
   `amd64`/`arm64`, `git describe` stamping) + port of the legacy
   publish flow (upx + GPG sign + upload) as `node-publish`; keyring via `go:embed`
@@ -57,24 +59,26 @@ Agreed scope for this iteration (2026-09-15 conversation):
   `listPartitionVersions`), `purge.go`, `bootloader.go`,
   `bootstore.go` (`PhysicalStore`), `disk.go`, `versions.go`,
   plus the two new pure helpers (D8): `FilterIndexByFlavor(index,
-  flavor)` and `DetectArchAuto(staged, devtree, override)`.
+  flavor)` and `DetectArchAuto(staged, devtree)`.
   Forbidden: `update.go` (`RunLocal`, anchor, events),
   `check.go` (takes `*kube.Node`), `enqueue.go`, `verify.go`,
   `reconcile.go`, `migrate.go`, `flavor.go`'s engine wiring
   (the pure `ResolveFlavor` helper is allowed).
-- **Local-only, root + flock.** Must run as root on the node itself with
-  an exclusive `flock` (second instance exits 1): it
+- **Local-only, root + shared flock.** Must run as root on the node itself with
+  an exclusive non-blocking `flock` on `/run/simplek8s/update.lock`
+  (holder wins, other exits 1) — the same file the controller locks
+  via a `hostPath` mount (§3.6, D12): it
   mounts the boot partition (`PARTLABEL=boot` preferred, then
   `EFI`/`boot` fs labels — same enumeration + contents verification
   as PLAN.md §3.12), writes kernels under `simplek8s/`, re-points the
   bootloader, and guarantees `umount` (defer, no mounts left behind).
-  An explicit `--bootloader`/`--bootdevice` contradicting detection
-  aborts (fail-closed, D16). It never contacts the k8s API and never reads/writes
+  Flavor, boot device and bootloader are always auto-detected (no
+  overrides). It never contacts the k8s API and never reads/writes
   node annotations.
 - **Exit codes + output (D9).** Human text on stdout, diagnostics on
   stderr: `0` ok, `1` operational error (network, IO, GPG, mount),
-  `2` misuse or unresolvable auto-detect (`--arch auto` with no
-  staged flavor nor device-tree). `check --verbose` subsumes legacy
+  `2` misuse or unresolvable auto-detection (no staged flavor nor
+  device-tree). `check --verbose` subsumes legacy
   `search`.
 - **Static binary, shipped in the distro (D1/D10/D17).** `CGO_ENABLED=0`,
   `linux/amd64` + `linux/arm64` via `make node-cli` in this repo
@@ -98,11 +102,11 @@ Agreed scope for this iteration (2026-09-15 conversation):
 
 | Command | Effect |
 | --- | --- |
-| `check` | Fetch + verify index at `--url`; print newest `ts` for the node's flavor vs running (`uname -r` → `RunningVersion`) vs staged. Read-only (no mount write). |
-| `update [<ts>]` | `check` + download + verify + extract + `stagePartition` + purge (retention) + bootloader re-point iff `--next-kernel=true`. No arg = newest. Idempotent: already-staged `ts` is a no-op (log, exit 0). |
-| `list` | Local staged versions (`listPartitionVersions`) + running + current bootloader default. Read-only. |
-| `purge` | Retention-only (`--preserve`, `--max-percent-usage`) + bootloader prune in the same mounted session (grub + syslinux; rpi `config.txt` has a single `kernel=`, nothing to prune — PLAN.md §3.9). |
-| `boot [show\|set <ts>]` | Inspect / re-point the bootloader default without downloading. `set` refuses a `ts` whose file is absent (file-first, PLAN.md §3.10). |
+| `check` | Fetch + verify index at `--url`; print newest `ts` for the node's flavor vs running (`uname -r` → `RunningVersion`) vs staged. Read-only (no mount write). Prints: `flavor`, `running`, `staged-newest`, `remote-newest`, verdict (`up-to-date` \| `update available <ts>`); `--verbose` adds all remote `ts` of the flavor, all staged, keyring ID, URL used. |
+| `update [<ts>]` | `check` + download + verify + extract + `stagePartition` + purge (retention) + bootloader re-point iff `--next-kernel=true`. No arg = newest. Idempotent: already-staged `ts` is a no-op (log, exit 0). Prints plan, then result (`staged <ts>`, `default -> <ts>` \| `unchanged`, `purged [...]`). |
+| `list` | Local staged versions (`listPartitionVersions`) + running + current bootloader default. Read-only. Prints: `staged[]` (own flavor), `running`, `bootloader default`. |
+| `purge` | Retention-only (`--preserve`, `--max-percent-usage`) + bootloader prune in the same mounted session (grub + syslinux; rpi `config.txt` has a single `kernel=`, nothing to prune — PLAN.md §3.9). Prints: `deleted [...]`, `kept [...]` (running + default protected), `pruned entries`. Never prompts. |
+| `boot [show\|set <ts>]` | Inspect / re-point the bootloader default without downloading. `set` refuses a `ts` whose file is absent (file-first, PLAN.md §3.10). `show` prints `default` + known entries; `set` prints `default <old> -> <new>`. |
 
 Dropped from legacy (`cmd/.../cmds.go`): `selfupdate`, `download`
 (folded into `update`), `search` (folded into `check --verbose`).
@@ -114,45 +118,65 @@ write half is `boot set` / `update --next-kernel`.
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--url` | `https://dl.simplek8s.org/simplek8s/stable`, accepts `dev\|rolling\|stable\|<custom-URL>` (legacy `flags.go` short-expansion kept) | Same default as controller (`config.go:48`). |
-| `--keyring` | embedded via `go:embed` of `keys/simplek8s-pubring.gpg`, override path allowed | Legacy default `/usr/lib/systemd/import-pubring.gpg` (`flags.go:144`) is dropped — this enables TODO 5 (keyring leaves the distro). |
-| `--checksign` | `true`; `false` skips GPG (explicit) | Power-user escape; `false` warns loudly on stderr. |
-| `--arch` | `auto` (device-tree + partition scan; values `x86-64\|rpi4\|rpi5`; `arm64` accepted only as legacy alias for stale partitions — generic-`arm64` is unsupported per PLAN.md §4.4 D5, no hardware/image) | Replaces legacy `x86-64\|rpi4\|rpi5` filter (`flags.go:28`); resolution order: staged-filename flavor (`ResolveFlavor`, PLAN.md §3.12) first, device-tree fallback, explicit override last. |
-| `--bootdevice` | `auto` (`PARTLABEL=boot` first — GPT only, absent on MBR layouts like rpi — then by-label `EFI` → `boot`, then blkid scan, PLAN.md §3.12) | Override path for debug only. |
-| `--bootloader` | `auto` (`grub\|syslinux\|rpi`, detected by config presence: `grub/grub.cfg`, `syslinux/syslinux.cfg`, `config.txt`) | Legacy knew only `syslinux\|rpi` (`flags.go:198`); `grub` is new and mandatory (GRUB is the managed bootloader). |
+| `--keyring` | embedded via `go:embed` of `keys/simplek8s-pubring.gpg`; `--keyring <path>` overrides; `--keyring /dev/null` skips GPG verification (loud warning, sha256 still enforced) | Legacy default `/usr/lib/systemd/import-pubring.gpg` (`flags.go:144`) is dropped — this enables TODO 5 (keyring leaves the distro). |
 | `--next-kernel` | `true` | (D4) Legacy name `next-boot` (`flags.go:256`) and generic `set-default` both rejected: the flag means "make this `ts` the node's boot goal", i.e. the local equivalent of the `next-kernel` annotation. `--next-kernel=false` stages without re-pointing. |
 | `--preserve` | `3` | Aligns with controller (`config.go:49`), not legacy `5` (`flags.go:264`). |
 | `--max-percent-usage` | `75` | Same as controller (`config.go:50`) and legacy (`flags.go:277`). |
 | `--dry-run` | `false` | Kept from legacy; prints planned writes, touches nothing. |
-| `--overwrite` | `true` | Kept from legacy (`flags.go:360`). |
-| `--no-confirm` | `false` | Purge prompts unless set (legacy `flags.go:367`). |
+
+Overwrites are automatic, not a flag (legacy `--overwrite`
+dropped): the signed index carries both the `.efi.zst` and the bare
+`.efi` hashes (verified live against the PROD repo), so a staged
+file whose sha256 equals the index `.efi` hash needs no download at
+all (no-op); otherwise download → verify → extract → write, and
+the extracted bytes are additionally checked against the index
+`.efi` hash (decompression integrity beyond the zstd frame
+checksum). Same name with different bytes is replaced and warned —
+that should never happen on honest infra. If the index ever lacks
+the `.efi` entry, fallback is download → extract → byte-compare vs
+staged (skip the write when equal).
 
 Deliberately **removed**: `--distribution`, `--component`
 (single-distro/single-component now), `--output`,
 `--syslinux-config`, `--rpi-config`, `--ucode` (sane defaults +
 auto-detect; `--grub-config` exists with default `grub/grub.cfg`
-for symmetry but is hidden advanced), all short aliases.
+for symmetry but is hidden advanced), `--arch` (flavor is always
+auto-detected: staged filenames → device-tree, fail-closed),
+`--bootdevice` (boot device is always auto-enumerated + verified),
+`--bootloader` (bootloader is always auto-detected by config
+presence: `grub/grub.cfg`, `syslinux/syslinux.cfg`, `config.txt`),
+`--no-confirm` (`purge` never prompts; `--dry-run` previews),
+all short aliases.
 
-**Flag×command matrix (D14, CLOSED 2026-09-15).** Global:
-`--url`, `--keyring`, `--checksign`, `--arch`, `--dry-run`,
+**Flag×command matrix (D14, updated 2026-09-16).** Global:
+`--url`, `--keyring`, `--dry-run`,
 `--verbose` (`check` only, subsumes `search`). Scoped:
-`--bootdevice`/`--bootloader` (commands that mount),
 `--next-kernel` (`update` only), `--preserve`/`--max-percent-usage`
-(`update` + `purge`), `--overwrite` (`update`), `--no-confirm`
-(`purge`). No flag is silently ignored outside its commands.
+(`update` + `purge`). No flag is silently
+ignored outside its commands. Flavor, boot device and bootloader are
+always auto-detected (no `--arch`, `--bootdevice`, `--bootloader`);
+`purge` never prompts (no `--no-confirm`).
 
 ### 3.3 Check / stage flow (local equivalents, no kube)
 
 - `check`: `httpGet` index + `SHA256SUMS.gpg` → `VerifyIndex`
-  (skipped iff `--checksign=false`) → `ParseIndex` → `FilterIndexByFlavor`
+  (skipped iff `--keyring /dev/null`) → `ParseIndex` → `FilterIndexByFlavor`
   (extracted from the logic currently inline in `check.go`) → compare newest vs
   `RunningVersion(uname -r)` vs `listPartitionVersions`.
   Network failures are fatal to the command (exit 1), never
   silently ignored — there is no "next occurrence" here (unlike the
   controller's per-occurrence claim, PLAN.md §3.4). Unresolvable
-  `--arch auto` is exit 2 and performs no network I/O.
+  flavor auto-detection is exit 2 and performs no network I/O.
 - `update`: claim-free single pass — capacity pre-check
-  (`PathInfo`, `disk.go:13`, before any download, D16) → `downloadAndVerify` (sha256) →
-  `extractZstd` → `stagePartition` → retention purge →
+  (`PathInfo`, `disk.go:13`, before any download, D16) → fetch +
+  verify index (one fetch per run, shared with the `check` half) →
+  sha256(staged file, if present) vs index `.efi` hash: equal →
+  done, no download (report no-op exit 0); else `downloadAndVerify`
+  (.zst sha256) → `extractZstd` → extracted bytes vs index `.efi`
+  hash (decompression check) → write (replace + warn when a
+  same-name file differed; the core `stagePartition` skip at
+  `staging.go:119` is name-only, so the CLI gates before
+  delegating) → `stagePartition` → retention purge →
   bootloader re-point (`SetBootloaderDefault`, iff
   `--next-kernel`) → prune (iff purge deleted something) →
   temp-file + synchronous `copyOver` discipline (PLAN.md §3.9).
@@ -183,13 +207,26 @@ three writers (`setGrubDefault`, `setSyslinuxDefault`,
 and MOK-last invariant stay as in the controller.
 
 ### 3.5 Keyring + verification
-
 `ResolveKeyring(custom, embedded)` (`gpg.go:27`): `--keyring`
-override wins, else `go:embed` of `keys/simplek8s-pubring.gpg` (D13). `--checksign=false` bypasses
-`VerifyIndex` but keep sha256 `downloadAndVerify` (transport
+override wins, else `go:embed` of `keys/simplek8s-pubring.gpg` (D13). `--keyring /dev/null`
+bypasses `VerifyIndex` but keep sha256 `downloadAndVerify` (transport
 integrity without identity — stated in output). The distro file
 `/usr/lib/systemd/import-pubring.gpg` becomes removable once this
 ships (TODO 5).
+
+### 3.6 Shared lock (D12)
+
+Mutual exclusion between CLI runs and the controller's boot-partition
+sessions rides on one file: `/run/simplek8s/update.lock`, locked with
+non-blocking `flock`. The host path is the pod's own `/run` tmpfs
+(private per mount namespace), so the chart mounts only the dedicated
+subdir as `hostPath` (`/run/simplek8s`, `DirectoryOrCreate`) at the
+same path in the pod — not `/run` wholesale. Holder wins: a second
+CLI exits 1; the controller skips update work for the cycle
+(warn-log, retries next cycle — no Events, no annotation churn).
+Lock is FD-bound (dies with the process, nothing stale) and `/run`
+clears on reboot. Both sides hold it only around mounted sessions,
+never across them.
 
 ## 4. Decision log (M6, closed — numbers restart per era)
 
@@ -197,21 +234,22 @@ ships (TODO 5).
 | --- | --- | --- |
 | 1 | Static binary in the distro, no container (CLOSED 2026-09-15) | Local-only + pre-cluster + root mounts: container adds privilege plumbing for zero benefit. Legacy precedent (`-extldflags=-static`, `x86-64`+`arm64`). |
 | 2 | `grub` + `rpi` day 1, `syslinux` legacy-only (CLOSED 2026-09-15) | GRUB is the managed bootloader; rpi writer first proven live in PLAN.md §7.5 F2 — CLI must exercise both from day 1. systemd-boot stays rejected (PLAN.md §4.4). |
-| 3 | `--checksign=false` allowed (CLOSED 2026-09-15) | Escape hatch for air-gapped/custom repos; loud warning, never default. |
+| 3 | Skip-verification via `--keyring /dev/null` (CLOSED 2026-09-16, supersedes `--checksign`) | Escape hatch for air-gapped/custom repos; loud warning, never default; `--checksign` removed as redundant. |
 | 4 | Boot-goal flag named `--next-kernel` (CLOSED 2026-09-15) | Aligns with the annotation (`next-kernel` = target `ts`); `next-boot` (legacy) and `set-default` (grub jargon) rejected. |
 | 5 | Flag set §3.2; short aliases dropped (CLOSED 2026-09-15) | Kebab-case longs only; hidden `--grub-config` for symmetry. |
 | 6 | `selfupdate`/`download`/`search` dropped (CLOSED 2026-09-15) | Folded into `update`/`check --verbose`; CLI updates via distro releases, not self-replacement. |
 | 7 | `--preserve=3` to match controller (CLOSED 2026-09-15) | Legacy `5` vs controller `3`: one retention story. |
-| 8 | Two new pure helpers (CLOSED 2026-09-15) | `FilterIndexByFlavor` + `DetectArchAuto(staged, devtree, override)` in `internal/features/update`; no controller behavior change. |
+| 8 | Two new pure helpers (CLOSED 2026-09-15) | `FilterIndexByFlavor` + `DetectArchAuto(staged, devtree)` in `internal/features/update`; no controller behavior change. |
 | 9 | Human output + 0/1/2 exits (CLOSED 2026-09-15) | stdout human, stderr diagnostics; `0` ok / `1` operational / `2` misuse-unresolvable; `check --verbose` subsumes `search`. |
 | 10 | `make node-cli` + ported publish, `git describe` stamping (CLOSED 2026-09-15, renamed by D17) | Static `amd64`/`arm64` here; legacy upx+GPG-sign+upload flow ported as `node-publish`, version via `git describe` like the controller. |
-| 11 | `--arch auto` fail-closed exit 2 (CLOSED 2026-09-15) | No staged flavor nor device-tree → no network, no writes. |
-| 12 | Root + `flock` + guaranteed `umount` (CLOSED 2026-09-15) | Second instance exits 1; explicit-vs-detected mismatch aborts (see D16). |
-| 13 | Keyring `go:embed` + override (CLOSED 2026-09-15) | Embed `keys/simplek8s-pubring.gpg`; `--keyring` wins; `--checksign=false` skips only `VerifyIndex`. |
+| 11 | Flavor auto-detection fail-closed exit 2 (CLOSED 2026-09-16) | No staged flavor nor device-tree → no network, no writes; no `--arch` override exists. |
+| 12 | Shared lock `/run/simplek8s/update.lock` (CLOSED 2026-09-16) | Non-blocking `flock`; chart mounts only the dedicated subdir as `hostPath` (same path both sides); second CLI exits 1, controller skips the cycle. |
+| 13 | Keyring `go:embed` + override (CLOSED 2026-09-15) | Embed `keys/simplek8s-pubring.gpg`; `--keyring` wins; `--keyring /dev/null` skips only `VerifyIndex`. |
 | 14 | Minimal flag×command matrix (CLOSED 2026-09-15) | §3.2; no silently-ignored flags. |
 | 15 | E2E fleet confirmed (CLOSED 2026-09-15) | x86-64 + rpi4 + rpi5 + pre-cluster node; C1–C8 runnable as written. |
-| 16 | Explicit-vs-auto fail-closed + pre-download capacity check (CLOSED 2026-09-15) | Contradicting `--bootloader`/`--bootdevice` aborts; `PathInfo` check before download. |
+| 16 | Pre-download capacity check (CLOSED 2026-09-16) | `PathInfo` check before any download; no explicit flavor/device/bootloader flags remain to mismatch. |
 | 17 | Single local binary `simplek8sctl`, flat subcommands (CLOSED 2026-09-15) | `cmd/simplek8sctl` with `check\|update\|list\|purge\|boot`; `install` reserved (deferred, §8); `make node-cli` + `node-publish`; no compat symlink (clean break). `sk8sctl` rejected (cryptic, inconsistent). |
+| 18 | Flag cull: no `--arch`/`--bootdevice`/`--bootloader`/`--no-confirm`/`--checksign`/`--overwrite` (CLOSED 2026-09-16) | All detection auto (fail-closed); `purge` never prompts; skip-verification via `--keyring /dev/null`; overwrites automatic by index-`.efi`-hash compare (verified live: repo publishes `.efi` + `.efi.zst` hashes). Remaining flags: `url`, `keyring`, `next-kernel`, `preserve`, `max-percent-usage`, `dry-run`, `verbose` (check only). |
 
 ## 5. Behavior changes & migration
 
@@ -233,16 +271,17 @@ ships (TODO 5).
 
 | Module | Change |
 | --- | --- |
-| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), `uname -r` + device-tree helpers, root + `flock`, exit 0/1/2. No `internal/kube` import (enforced by a `go list` CI check). `Makefile`: `node-cli` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring) + ported `node-publish` (upx + GPG sign + upload). |
-| `internal/features/update` | No kube-coupled changes. Add two pure helpers: `FilterIndexByFlavor` (extracted from `check.go` inline logic) + `DetectArchAuto(staged, devtree, override)` (`ResolveFlavor` + device-tree fallback). No behavior change to the controller. |
+| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), `uname -r` + device-tree helpers (`/proc/device-tree/model`, `compatible`: `bcm2711`→`rpi4`, `bcm2712`→`rpi5`; partition scan = staged basenames via `ResolveFlavor` order), root + `flock`, exit 0/1/2. No `internal/kube` import (enforced by a `go list` CI check). `Makefile`: `node-cli` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring; aborts if the keyring file is still an LFS pointer) + ported `node-publish` (upx + GPG sign with fingerprint `33BAAC4BFB20C2327429730A9F16C69F2B9DD678` + upload to `https://publisher.simplek8s.org/upload/simplek8sctl`). |
+| `internal/features/update` | No kube-coupled changes. Add two pure helpers: `FilterIndexByFlavor` (extracted from `check.go` inline logic) + `DetectArchAuto(staged, devtree)` (`ResolveFlavor` + device-tree fallback). Plus the shared-lock acquisition (D12, §3.6) around boot-partition sessions: contention skips the cycle (warn-log, no Events). Otherwise no behavior change to the controller. |
+| `chart/` | One `hostPath` volume (`/run/simplek8s`, `DirectoryOrCreate`) mounted at the same path, carrying only `update.lock`. |
 | Legacy `/workspace/simplek8s-update` | Frozen reference; not modified. |
 
 ### 6.2 Unit test matrix
 
 - `FilterIndexByFlavor`: mixed index → own flavor only;
   `latest`-style files ignored.
-- `DetectArchAuto`: staged-first, device-tree fallback, explicit
-  override last; unresolvable → error (caller exits 2).
+- `DetectArchAuto`: staged-first, device-tree fallback, no
+  override; unresolvable → error (caller exits 2).
 - `ParseStoredKernel` / `versionFromStoredKernel` naming per
   flavor (`stored`/`artifact`).
 - Purge planning own-flavor only; foreign files survive.
@@ -251,8 +290,15 @@ ships (TODO 5).
   globals verbatim.
 - `boot set` refuses absent-`ts`; `update` with `--next-kernel=false`
   leaves default untouched; `--dry-run` writes nothing.
-- Keyring: custom override wins; `--checksign=false` skips
+- `update` hash rule: staged sha256 == index `.efi` hash → zero
+  artifact traffic (assert in test the `.zst` is never fetched);
+  staged != index → download → extract → extracted-vs-index check →
+  replace + warn (unit: all three cases incl. missing `.efi`
+  entry fallback).
+- Keyring: custom override wins; `--keyring /dev/null` skips
   `VerifyIndex` but still sha256-verifies downloads.
+- Shared lock (§3.6): second non-blocking holder fails (CLI exits
+  1, controller skips cycle); unit with two FDs on a temp file.
 - No-kube import test (CLI package graph contains no
   `internal/kube`/`internal/engine`).
 
@@ -292,7 +338,7 @@ ships (TODO 5).
 - **Wrong-flavor staging bricks with the wrong DTB** (PLAN.md §9): flavor
   pinned at detection, never re-derived mid-run; foreign files never
   written/purged/pruned.
-- **Silent `--checksign=false`**: always warn; never persist as
+- **Silent `--keyring /dev/null`**: always warn; never persist as
   default; document as break-glass only.
 - **CLI vs controller racing on one node**: last writer of the
   bootloader default wins; both writers use temp-file + sync
