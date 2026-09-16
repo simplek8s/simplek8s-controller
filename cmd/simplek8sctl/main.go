@@ -12,7 +12,7 @@ import (
 )
 
 // Build information, injected at compile time via -ldflags (see
-// Makefile node-cli). Defaults for plain `go run`/`go build`.
+// Makefile build-simplek8sctl). Defaults for plain `go run`/`go build`.
 var (
 	version = "dev"
 	commit  = "none"

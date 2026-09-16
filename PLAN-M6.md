@@ -37,9 +37,9 @@ Agreed scope for this iteration (2026-09-15 conversation):
   fail-closed (exit 2); root + `flock` single-instance + guaranteed
   `umount`; bootloader is always auto-detected, no override;
   capacity pre-check runs before download.
-- Build (D10/D13/D14/D17): `make node-cli` in this repo (static
+- Build (D10/D13/D14/D17): `make build-simplek8sctl` in this repo (static
   `amd64`/`arm64`, `git describe` stamping) + port of the legacy
-  publish flow (upx + GPG sign + upload) as `node-publish`; keyring via `go:embed`
+  publish flow (upx + GPG sign + upload) as `publish-simplek8sctl`; keyring via `go:embed`
   of `keys/simplek8s-pubring.gpg` with `--keyring` override;
   minimal flag×command matrix (§3.2). E2E fleet confirmed (D15).
 - Shape (D17): flat subcommands `simplek8sctl
@@ -81,9 +81,9 @@ Agreed scope for this iteration (2026-09-15 conversation):
   device-tree). `check --verbose` subsumes legacy
   `search`.
 - **Static binary, shipped in the distro (D1/D10/D17).** `CGO_ENABLED=0`,
-  `linux/amd64` + `linux/arm64` via `make node-cli` in this repo
+  `linux/amd64` + `linux/arm64` via `make build-simplek8sctl` in this repo
   (`git describe` stamping like the controller), plus a port of the
-  legacy publish flow (`node-publish`: upx + GPG sign + upload to the public channel),
+  legacy publish flow (`publish-simplek8sctl`: upx + GPG sign + upload to the public channel),
   released alongside the kernels
   (signed `SHA256SUMS.gpg` channel). No container image: a container
   would need privileged + host `/dev` + boot mounts just to replicate
@@ -240,14 +240,14 @@ never across them.
 | 7 | `--preserve=3` to match controller (CLOSED 2026-09-15) | Legacy `5` vs controller `3`: one retention story. |
 | 8 | Two new pure helpers (CLOSED 2026-09-15) | `FilterIndexByFlavor` + `DetectArchAuto(staged, model, compatible, goarch)` in `internal/updatecore`; no controller behavior change. |
 | 9 | Human output + 0/1/2 exits (CLOSED 2026-09-15) | stdout human, stderr diagnostics; `0` ok / `1` operational / `2` misuse-unresolvable; `check --verbose` subsumes `search`. |
-| 10 | `make node-cli` + ported publish, `git describe` stamping (CLOSED 2026-09-15, renamed by D17) | Static `amd64`/`arm64` here; legacy upx+GPG-sign+upload flow ported as `node-publish`, version via `git describe` like the controller. |
+| 10 | `make build-simplek8sctl` + ported publish, `git describe` stamping (CLOSED 2026-09-15, renamed by D17) | Static `amd64`/`arm64` here; legacy upx+GPG-sign+upload flow ported as `publish-simplek8sctl`, version via `git describe` like the controller. |
 | 11 | Flavor auto-detection fail-closed exit 2 (CLOSED 2026-09-16) | No staged flavor nor device-tree → no network, no writes; no `--arch` override exists. |
 | 12 | Shared lock `/run/simplek8s/update.lock` (CLOSED 2026-09-16) | Non-blocking `flock`; chart mounts only the dedicated subdir as `hostPath` (same path both sides); second CLI exits 1, controller skips the cycle. |
 | 13 | Keyring `go:embed` + override (CLOSED 2026-09-15) | Embed `keys/simplek8s-pubring.gpg`; `--keyring` wins; `--keyring /dev/null` skips only `VerifyIndex`. |
 | 14 | Minimal flag×command matrix (CLOSED 2026-09-15) | §3.2; no silently-ignored flags. |
 | 15 | E2E fleet confirmed (CLOSED 2026-09-15) | x86-64 + rpi4 + rpi5 + pre-cluster node; C1–C8 runnable as written. |
 | 16 | Pre-download capacity check (CLOSED 2026-09-16) | `PathInfo` check before any download; no explicit flavor/device/bootloader flags remain to mismatch. |
-| 17 | Single local binary `simplek8sctl`, flat subcommands (CLOSED 2026-09-15) | `cmd/simplek8sctl` with `check\|update\|list\|purge\|boot`; `install` reserved (deferred, §8); `make node-cli` + `node-publish`; no compat symlink (clean break). `sk8sctl` rejected (cryptic, inconsistent). |
+| 17 | Single local binary `simplek8sctl`, flat subcommands (CLOSED 2026-09-15) | `cmd/simplek8sctl` with `check\|update\|list\|purge\|boot`; `install` reserved (deferred, §8); `make build-simplek8sctl` + `publish-simplek8sctl`; no compat symlink (clean break). `sk8sctl` rejected (cryptic, inconsistent). |
 | 18 | Flag cull: no `--arch`/`--bootdevice`/`--bootloader`/`--no-confirm`/`--checksign`/`--overwrite` (CLOSED 2026-09-16) | All detection auto (fail-closed); `purge` never prompts; skip-verification via `--keyring /dev/null`; overwrites automatic by index-`.efi`-hash compare (verified live: repo publishes `.efi` + `.efi.zst` hashes). Remaining flags: `url`, `keyring`, `next-kernel`, `preserve`, `max-percent-usage`, `dry-run`, `verbose` (check only). |
 | 19 | K8s-agnostic core split into `internal/updatecore` (CLOSED 2026-09-16) | `make cli-no-kube` proved the transitive `internal/kube` import through `internal/features/update`; the pure machinery moved to a kube-free package (doc.go invariant), wiring imports it. CLI links only `updatecore` (zero `k8s.io` in dep graph). No behavior change (full suite green). |
 
@@ -271,7 +271,7 @@ never across them.
 
 | Module | Change |
 | --- | --- |
-| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), osrelease + device-tree helpers (`/sys/firmware/devicetree/base/model`, `compatible`: `bcm2711`→`rpi4`, `bcm2712`→`rpi5`; partition scan = staged basenames via `ResolveFlavor` order; `amd64` build arch implies `x86-64`), root + shared/exclusive `flock` (reads shared, writes exclusive), exit 0/1/2. Links only `internal/updatecore` (no `internal/kube` in dep graph, enforced by `make cli-no-kube`). `Makefile`: `node-cli` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring copied from `keys/`; aborts if the keyring file is still an LFS pointer) + ported `node-publish` (upx + GPG sign with fingerprint `33BAAC4BFB20C2327429730A9F16C69F2B9DD678` + upload to `https://publisher.simplek8s.org/upload/simplek8sctl`). |
+| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), osrelease + device-tree helpers (`/sys/firmware/devicetree/base/model`, `compatible`: `bcm2711`→`rpi4`, `bcm2712`→`rpi5`; partition scan = staged basenames via `ResolveFlavor` order; `amd64` build arch implies `x86-64`), root + shared/exclusive `flock` (reads shared, writes exclusive), exit 0/1/2. Links only `internal/updatecore` (no `internal/kube` in dep graph, enforced by `make cli-no-kube`). `Makefile`: `build-simplek8sctl` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring copied from `keys/`; aborts if the keyring file is still an LFS pointer) + ported `publish-simplek8sctl` (upx + GPG sign with fingerprint `33BAAC4BFB20C2327429730A9F16C69F2B9DD678` + upload to `https://publisher.simplek8s.org/upload/simplek8sctl`). |
 | `internal/updatecore` (new) | K8s-agnostic core split out of `internal/features/update` (D19): `index/fetch`, `gpg`, `download`, `extract`, `staging` (+ `NoRepoint`/`DryRun`/`EfiChecksum` knobs, `StagePartition`/`PurgePartition`/`PreviewPurge` exports), `bootloader`, `bootstore` (`PhysicalStore`, `MountedBoot`, lock), `disk`, `versions`, `localcli` (`FilterIndexByFlavor`, `LookupRelease`, `DetectArchAuto`, `StoredKernelName`, `FetchVerifiedIndex`, `LoadKeyringBytes`, `LockFile`). No `internal/kube` in dep graph (see `doc.go`). |
 | `internal/features/update` | Cluster wiring only (`update.go`, `check.go`, `enqueue.go`, `verify.go`, `reconcile.go`, `migrate.go`): qualifies moved identifiers via `updatecore`, plus the shared-lock acquisition (D12, §3.6) on `Stage`/`EnsureBootGoal` (contention → `ErrBootBusy` → existing skip paths). Otherwise no behavior change to the controller (full suite green). |
 | `chart/` | One `hostPath` volume (`/run/simplek8s`, `DirectoryOrCreate`) mounted at the same path, carrying only `update.lock`. |
@@ -310,8 +310,8 @@ never across them.
 | Phase | Content |
 | --- | --- |
 | 1 | `cmd/simplek8sctl` skeleton + `check`/`list` (read-only) + unit matrix (no writes) + `go list` no-kube check. |
-| 2 | `update`/`purge`/`boot` writes + prune + `go:embed` keyring + root/`flock`/`umount`; static `linux/amd64,arm64` builds via `node-cli`. |
-| 3 | Live E2E (§7) on x86-64 (grub + syslinux-legacy) and rpi4/rpi5 (rpi, fleet confirmed D15); ported `node-publish` dry-run; distro keyring removal (TODO 5) after. |
+| 2 | `update`/`purge`/`boot` writes + prune + `go:embed` keyring + root/`flock`/`umount`; static `linux/amd64,arm64` builds via `build-simplek8sctl`. |
+| 3 | Live E2E (§7) on x86-64 (grub + syslinux-legacy) and rpi4/rpi5 (rpi, fleet confirmed D15); ported `publish-simplek8sctl` dry-run; distro keyring removal (TODO 5) after. |
 
 ## 7. E2E (live, own-node)
 

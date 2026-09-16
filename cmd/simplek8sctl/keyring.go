@@ -10,7 +10,7 @@ import (
 // `--keyring /dev/null` skips verification.
 //
 // The bytes come from keys/simplek8s-pubring.gpg (single source of
-// truth, also ADDed by the Dockerfile); `make node-cli` copies it to
+// truth, also ADDed by the Dockerfile); `make build-simplek8sctl` copies it to
 // pubring.gpg next to this file before building (go:embed cannot
 // reach outside the package dir, and refuses symlinks). The copy is
 // gitignored — never commit it.
