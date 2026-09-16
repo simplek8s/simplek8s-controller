@@ -8,6 +8,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,6 +30,18 @@ type StageRequest struct {
 	MaxPercentUsage int    // updates.max-percent-usage
 	Running         string // running ts (never deleted)
 	Bootloader      BootloaderType
+	// EfiChecksum is the verified index hash of the bare .efi
+	// (PLAN-M6 auto-overwrite). Empty keeps the historical
+	// name-only idempotency; set, a same-name file with different
+	// bytes is replaced (warned) instead of skipped.
+	EfiChecksum string
+	// NoRepoint stages without re-pointing the bootloader default
+	// (PLAN-M6 `update --next-kernel=false`). Default false keeps
+	// the controller behavior (always re-point).
+	NoRepoint bool
+	// DryRun prints the plan (download to scratch for exact sizing)
+	// and touches nothing on the partition.
+	DryRun bool
 }
 
 // storedKernelRe matches a decompressed kernel name on the partition:
@@ -115,10 +128,21 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 	stored := kernelStoredName(req.Version, req.Arch)
 	storedPath := filepath.Join(partRoot, dir, stored)
 
-	// 1. idempotency: already staged -> nothing to do.
+	// 1. idempotency: already staged -> nothing to do. With an
+	// EfiChecksum (CLI path) the gate is hash-based: same bytes
+	// skip, same name with different bytes fall through to a warned
+	// replace. Without it the historical name-only skip stands
+	// (controller path, unchanged).
 	if fileExists(storedPath) {
-		log.Debug("update: kernel already staged, skipping", "version", req.Version, "stored", stored)
-		return nil
+		if req.EfiChecksum == "" {
+			log.Debug("update: kernel already staged, skipping", "version", req.Version, "stored", stored)
+			return nil
+		}
+		if sum, serr := sha256File(storedPath); serr == nil && strings.EqualFold(sum, req.EfiChecksum) {
+			log.Debug("update: kernel already staged (hash-verified), skipping", "version", req.Version, "stored", stored)
+			return nil
+		}
+		log.Warn("update: staged file differs from verified hash; replacing", "version", req.Version, "stored", stored)
 	}
 	log.Debug("update: staging release", "version", req.Version, "stored", stored)
 
@@ -155,6 +179,26 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 	}
 	log.Debug("update: kernel extracted", "version", req.Version, "stored", stored, "bytes", extSize)
 
+	// 3b. decompression check (CLI path): the extracted bytes must
+	// match the verified bare-.efi hash — integrity beyond the zstd
+	// frame checksum. Skipped without EfiChecksum (controller path).
+	if req.EfiChecksum != "" {
+		sum, serr := sha256File(extPath)
+		if serr != nil {
+			return serr
+		}
+		if !strings.EqualFold(sum, req.EfiChecksum) {
+			os.Remove(extPath)
+			return fmt.Errorf("extracted %s mismatch vs verified hash", stored)
+		}
+	}
+
+	// 3c. dry run: exact plan, zero partition writes (the download +
+	// extract above went to scratch, off-partition).
+	if req.DryRun {
+		return stageDryRun(log, req, partRoot, dir, stored, extSize)
+	}
+
 	protected := protectedSet(req, partRoot)
 
 	// Track purge deletions for the bootloader prune below (§3.9).
@@ -169,7 +213,7 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 
 	// 4. capacity pre-check: make room for the new kernel by purging the
 	// oldest unprotected versions.
-	total, free, _, err := PathInfo(partRoot)
+	_, free, _, err := PathInfo(partRoot)
 	if err != nil {
 		return err
 	}
@@ -201,35 +245,63 @@ func stagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 
 	// 6. point the bootloader default at the new kernel. The path is rooted
 	// at the boot-partition mount point (leading "/"), matching the
-	// reference syslinux/rpi layout.
-	if err := SetBootloaderDefault(req.Bootloader, partRoot, "/"+filepath.Join(dir, stored), "/"); err != nil {
+	// reference syslinux/rpi layout. NoRepoint (CLI
+	// `--next-kernel=false`) stages the file and stops here.
+	if req.NoRepoint {
+		log.Debug("update: leaving bootloader default untouched", "version", req.Version, "stored", stored)
+	} else if err := SetBootloaderDefault(req.Bootloader, partRoot, "/"+filepath.Join(dir, stored), "/"); err != nil {
 		return fmt.Errorf("bootloader: %w", err)
+	} else {
+		log.Debug("update: bootloader default updated", "version", req.Version, "target", "/"+filepath.Join(dir, stored))
 	}
-	log.Debug("update: bootloader default updated", "version", req.Version, "target", "/"+filepath.Join(dir, stored))
 
 	// 7. retention purge: keep the newest `preserve`, enforce the usage cap.
-	_, free, _, err = PathInfo(partRoot)
-	if err != nil {
-		return err
-	}
-	entries, lerr := listKernels(partRoot, dir)
-	if lerr != nil {
-		return lerr
-	}
-	target := targetFreeFromPercent(total, req.MaxPercentUsage)
-	if err := purge(planPurge(ownFlavorEntries(entries, req.Arch), protected, req.Preserve, free, target)); err != nil {
-		return err
-	}
-
 	// 8. bootloader stale-entry prune (PLAN.md §3.9): only when a purge
 	// deleted at least one kernel, in this same mounted session, after
 	// the staging work. Grub and syslinux-legacy partitions prune
 	// their own config; rpi has nothing to prune. A prune failure
 	// never fails staging (Warn + retry on the next purge-triggered
 	// session).
-	if len(purged) > 0 {
-		pruneGrubFile(partRoot, dir, req.Arch, log)
-		pruneSyslinuxFile(partRoot, dir, req.Arch, log)
+	if _, err := purgeAndPrune(log, partRoot, dir, req.Arch, req.Preserve, req.MaxPercentUsage, protected); err != nil {
+		return err
+	}
+	return nil
+}
+
+// stageDryRun reports the exact staging plan without touching the
+// partition (PLAN-M6 `--dry-run`): the artifact was already
+// downloaded + extracted to scratch, so sizes and purge previews are
+// exact. Read-only on the partition (statfs + listings).
+func stageDryRun(log Logger, req StageRequest, partRoot, dir, stored string, extSize int64) error {
+	total, free, _, err := PathInfo(partRoot)
+	if err != nil {
+		return err
+	}
+	entries, lerr := listKernels(partRoot, dir)
+	if lerr != nil {
+		if errors.Is(lerr, os.ErrNotExist) {
+			entries = nil // fresh partition: nothing staged yet
+		} else {
+			return lerr
+		}
+	}
+	protected := protectedSet(req, partRoot)
+	own := ownFlavorEntries(entries, req.Arch)
+	room := planPurge(own, protected, 0, free, uint64(extSize))
+	retention := planPurge(own, protected, req.Preserve, free, targetFreeFromPercent(total, req.MaxPercentUsage))
+	if req.NoRepoint {
+		log.Info("update: dry-run: would stage without re-pointing default", "stored", stored, "bytes", extSize)
+	} else {
+		log.Info("update: dry-run: would stage and re-point default", "stored", stored, "bytes", extSize)
+	}
+	if len(room) > 0 {
+		log.Info("update: dry-run: would purge for room", "delete", room)
+	}
+	if len(retention) > 0 {
+		log.Info("update: dry-run: would purge for retention", "delete", retention)
+	}
+	if len(room) > 0 || len(retention) > 0 {
+		log.Info("update: dry-run: would prune bootloader entries", "flavor", req.Arch)
 	}
 	return nil
 }

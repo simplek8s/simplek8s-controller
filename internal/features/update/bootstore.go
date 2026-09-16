@@ -40,6 +40,10 @@ type PhysicalStoreConfig struct {
 	HTTPClient *http.Client
 	// Log.
 	Log Logger
+	// LockPath is the shared exclusion lock file (PLAN-M6 §3.6,
+	// default DefaultLockPath: host /run tmpfs, hostPath-mounted
+	// into the pod at the same path).
+	LockPath string
 
 	// Injectable seams (nil => real).
 	Mount   func(device, target, fstype string) error
@@ -67,6 +71,7 @@ type PhysicalStore struct {
 	mountFn   func(device, target, fstype string) error
 	unmountFn func(target string) error
 	blkid     func(args ...string) (string, error)
+	lockPath  string
 
 	// Verified boot device cache (PLAN-M5 §3.6): topology does not
 	// change under a running pod, so the device is resolved once and
@@ -108,6 +113,9 @@ func NewPhysicalStore(cfg PhysicalStoreConfig) *PhysicalStore {
 	if cfg.Blkid == nil {
 		cfg.Blkid = realBlkid
 	}
+	if cfg.LockPath == "" {
+		cfg.LockPath = DefaultLockPath
+	}
 	return &PhysicalStore{
 		devRoot:   cfg.DevRoot,
 		mountRoot: cfg.MountRoot,
@@ -119,7 +127,20 @@ func NewPhysicalStore(cfg PhysicalStoreConfig) *PhysicalStore {
 		mountFn:   cfg.Mount,
 		unmountFn: cfg.Unmount,
 		blkid:     cfg.Blkid,
+		lockPath:  cfg.LockPath,
 	}
+}
+
+// MountedBoot resolves the verified boot device and mounts it,
+// retrying once from a fresh enumeration on mount failure (exported
+// for the CLI's single-session flows; the caller owns cleanup).
+func (s *PhysicalStore) MountedBoot(ctx context.Context) (string, func(), error) {
+	return s.mountedBoot(ctx)
+}
+
+// KernelDir returns the partition subdir holding stored kernels.
+func (s *PhysicalStore) KernelDir() string {
+	return s.kernelDir
 }
 
 // Versions lists the release ts present on this node's boot partition.
@@ -151,8 +172,15 @@ func (s *PhysicalStore) Kernels(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-// Stage stages one release onto this node's boot partition.
+// Stage stages one release onto this node's boot partition,
+// holding the shared exclusion lock (PLAN-M6 §3.6): contention skips
+// with ErrBootBusy (the caller's error path already rate-limits).
 func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
+	unlock, err := s.LockExcl()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	mnt, cleanup, err := s.mountedBoot(ctx)
 	if err != nil {
 		return err
@@ -171,7 +199,13 @@ func (s *PhysicalStore) Stage(ctx context.Context, req StageRequest) error {
 // (PLAN.md §3.4 ordering invariant, §3.7). A matching DEFAULT is a
 // no-op (compare only, still a mount). O_SYNC writers make the
 // re-point durable before return. It reports whether it re-pointed.
+// Like Stage it holds the shared exclusion lock (PLAN-M6 §3.6).
 func (s *PhysicalStore) EnsureBootGoal(ctx context.Context, version, arch string) (bool, error) {
+	unlock, err := s.LockExcl()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	mnt, cleanup, err := s.mountedBoot(ctx)
 	if err != nil {
 		return false, err

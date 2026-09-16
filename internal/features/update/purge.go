@@ -7,6 +7,7 @@ package update
 // files on the mounted partition.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -99,4 +100,35 @@ func targetFreeFromPercent(total uint64, maxPercent int) uint64 {
 		return 0
 	}
 	return total * uint64(100-maxPercent) / 100
+}
+
+// purgeAndPrune applies retention (`preserve`, usage cap) plus the
+// bootloader stale-entry prune on the mounted partition (PLAN.md
+// §3.9: prune only when a purge deleted something, same session;
+// grub + syslinux prune their own config, rpi has nothing to prune).
+// It reports the deleted basenames, oldest first. A missing kernel
+// dir (fresh partition) is a no-op success.
+func purgeAndPrune(log Logger, partRoot, dir, flavor string, preserve, maxPercent int, protected map[string]bool) ([]string, error) {
+	total, free, _, err := PathInfo(partRoot)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := listKernels(partRoot, dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Debug("update: no kernel dir; nothing to purge", "dir", dir)
+			return nil, nil
+		}
+		return nil, err
+	}
+	target := targetFreeFromPercent(total, maxPercent)
+	deleted := planPurge(ownFlavorEntries(entries, flavor), protected, preserve, free, target)
+	if err := applyPurge(partRoot, dir, deleted); err != nil {
+		return nil, err
+	}
+	if len(deleted) > 0 {
+		pruneGrubFile(partRoot, dir, flavor, log)
+		pruneSyslinuxFile(partRoot, dir, flavor, log)
+	}
+	return deleted, nil
 }
