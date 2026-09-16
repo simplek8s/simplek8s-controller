@@ -151,12 +151,9 @@ func StagePartition(ctx context.Context, c *http.Client, log Logger, req StageRe
 	return stagePartition(ctx, c, log, req, partRoot, dir, workDir)
 }
 
-// PurgePartition applies retention (`preserve`, `maxPercentUsage`
-// cap) plus bootloader prune on the already-mounted partition,
-// protecting the running version and the bootloader default (PLAN.md
-// §3.9 belt-and-braces). It reports the deleted basenames, oldest
-// first. A missing kernel dir (fresh partition) is a no-op success.
-func PurgePartition(log Logger, partRoot, dir, flavor string, preserve, maxPercent int, running string, bootloader BootloaderType) ([]string, error) {
+// purgeProtected is the no-delete set for purge flows: the running
+// version plus the bootloader default (PLAN.md §3.9 belt-and-braces).
+func purgeProtected(running string, bootloader BootloaderType, partRoot string) map[string]bool {
 	protected := make(map[string]bool)
 	if running != "" {
 		protected[running] = true
@@ -166,7 +163,35 @@ func PurgePartition(log Logger, partRoot, dir, flavor string, preserve, maxPerce
 			protected[ts] = true
 		}
 	}
-	return purgeAndPrune(log, partRoot, dir, flavor, preserve, maxPercent, protected)
+	return protected
+}
+
+// PurgePartition applies retention (`preserve`, `maxPercentUsage`
+// cap) plus bootloader prune on the already-mounted partition,
+// protecting the running version and the bootloader default (PLAN.md
+// §3.9 belt-and-braces). It reports the deleted basenames, oldest
+// first. A missing kernel dir (fresh partition) is a no-op success.
+func PurgePartition(log Logger, partRoot, dir, flavor string, preserve, maxPercent int, running string, bootloader BootloaderType) ([]string, error) {
+	return purgeAndPrune(log, partRoot, dir, flavor, preserve, maxPercent, purgeProtected(running, bootloader, partRoot))
+}
+
+// PreviewPurge plans retention without writing anything (PLAN-M6
+// `purge --dry-run`): same protected set and planning as
+// PurgePartition, apply + prune skipped. It reports the basenames
+// that would be deleted, oldest first.
+func PreviewPurge(log Logger, partRoot, dir, flavor string, preserve, maxPercent int, running string, bootloader BootloaderType) ([]string, error) {
+	total, free, _, err := PathInfo(partRoot)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := listKernels(partRoot, dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return planPurge(ownFlavorEntries(entries, flavor), purgeProtected(running, bootloader, partRoot), preserve, free, targetFreeFromPercent(total, maxPercent)), nil
 }
 
 // DefaultLockPath is the shared exclusion lock (PLAN-M6 §3.6): one
@@ -217,6 +242,43 @@ func (s *PhysicalStore) LockShared() (func(), error) {
 // (controller Stage/EnsureBootGoal, CLI update/purge/boot set).
 func (s *PhysicalStore) LockExcl() (func(), error) {
 	return LockFile(s.lockPath, true)
+}
+
+// FetchVerifiedIndex fetches the release index plus its detached
+// signature and verifies the signature (PLAN-M6 check/update
+// prelude), returning the verified filename -> sha256 map. With
+// keyringPath "/dev/null" verification is skipped (break-glass;
+// sha256 of artifacts is still enforced downstream) — any other
+// keyringPath overrides the embedded keyring.
+func FetchVerifiedIndex(ctx context.Context, c *http.Client, log Logger, baseURL, keyringPath string, embedded []byte) (map[string]string, error) {
+	if c == nil {
+		c = &http.Client{}
+	}
+	base := strings.TrimSuffix(baseURL, "/")
+	indexBytes, err := httpGet(ctx, c, base+"/"+IndexFile)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", IndexFile, err)
+	}
+	sigBytes, err := httpGet(ctx, c, base+"/"+IndexSignature)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", IndexSignature, err)
+	}
+	if keyringPath != "/dev/null" {
+		var el openpgp.EntityList
+		if keyringPath != "" {
+			if el, err = LoadKeyring(keyringPath); err != nil {
+				return nil, err
+			}
+		} else {
+			if el, err = LoadKeyringBytes(embedded); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := VerifyIndex(el, indexBytes, sigBytes); err != nil {
+			return nil, err
+		}
+	}
+	return ParseIndex(indexBytes)
 }
 
 // sha256File returns the hex sha256 of a file's bytes.
