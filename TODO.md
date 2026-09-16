@@ -1,23 +1,11 @@
 # TODO — deferred backlog
 
 Cross-cutting items deliberately left out of the current plans
-(M1 reboots, M2 updates and M3 windows all shipped — see PLAN.md).
+(M1 reboots, M2 updates, M3 windows, M5 flavors and M6 node CLI all
+shipped — see PLAN.md).
 Closed items leave this file (history in git log); what remains is
 open work, each ready to be picked up as its own plan; nothing here
 is blocking.
-
-## 2. `simplek8s-update` CLI
-
-Successor of the legacy `simplek8s-update` project:
-
-- Reuses `internal/features/update` from this repo (k8s-agnostic core,
-  M2 §3.16, in git) — check, GPG/sha verification, staging, purge,
-  bootloader writers.
-- Owns the power-user knobs the controller deliberately lacks: `--url`,
-  `--keyring`, `--checksign` (skip verification, explicitly).
-- Updates a single node without a cluster (or a fleet via a loop),
-  e.g. for pre-cluster installs and for out-of-band maintenance.
-- Once it exists, the keyring can leave the distro (item 5).
 
 ## 3. Pod split (security hardening)
 

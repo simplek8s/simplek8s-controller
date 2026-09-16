@@ -26,12 +26,13 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.2 | Shipped baseline (M1 reboots, M2 updates) |
 > | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 1.4 | Shipped plan (M5: board flavors, boot-device verification) |
+> | 1.5 | Shipped plan (M6: local-node admin CLI) |
 > | 2 | Constraints |
-> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) |
-> | 4 | Decision log (per era; §4.4 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 (numbers restart per era) |
+> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) · 3.13 local-node admin CLI (M6) |
+> | 4 | Decision log (per era; §4.5 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 · 4.5 M6 (numbers restart per era) |
 > | 5 | Behavior changes & migration |
 > | 6 | Implementation — 6.1 modules · 6.2 unit test matrix · 6.3 phases |
-> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) |
+> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) · 7.6 node CLI (C1–C8 PASS) |
 > | 8 | Deferred |
 > | 9 | Risks & safety notes |
 
@@ -45,6 +46,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
 | M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
 | M5 | Board flavors for updates + boot-device verification | Shipped 2026-09-16 (F1–F5 5/5 PASS, 8 decisions, §7.5) |
+| M6 | Local-node admin CLI (`simplek8sctl`) | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 19 decisions, §7.6) |
 
 ### 1.2 Shipped baseline
 
@@ -137,6 +139,26 @@ then `EFI`/`boot` labels; each candidate mounted and checked for
 closed), cached per pod lifetime. Full historical design in git
 (`git show <M5-commit>:PLAN-M5.md`); shipped behavior in §3.12,
 decisions in §4.4, E2E in §7.5.
+
+### 1.5 Shipped plan (was PLAN-M6)
+
+The fifth feature: the local-node admin CLI `simplek8sctl`,
+successor of the legacy `simplek8s-update` project, rebuilt against
+the k8s-agnostic update core. It manages its own node only — no
+controller, no cluster access, no node annotations, no API — for
+pre-cluster installs and out-of-band maintenance (or a fleet via an
+operator loop). Five flat subcommands (`check`, `update`, `list`,
+`purge`, `boot`; `install` reserved), stdlib `flag` + `log/slog`,
+exit codes 0/1/2, root-only. The CLI links only the extracted pure
+core (`internal/updatecore`, no `internal/kube` in its dep graph),
+ships as a static `amd64`/`arm64` binary in the distro (published to
+the `simplek8sctl/` dev/rolling/stable channels), and verifies the
+release index against an embedded keyring (`--keyring` override,
+`--keyring /dev/null` break-glass skips GPG). A CLI-staged kernel is
+adopted by the controller through the normal `next-kernel`
+comparison once annotated. Full historical design in git
+(`git show <M6-commit>:PLAN-M6.md`); shipped behavior in §3.13,
+decisions in §4.5, E2E in §7.6.
 
 ## 2. Constraints
 
@@ -895,6 +917,46 @@ from the staged filenames on the boot partition.
 - The update state machine (§3.4) is unchanged; only *which files* each
   node considers its own changed. x86-64 behavior is byte-identical.
 
+### 3.13 Local-node admin CLI (M6)
+
+`cmd/simplek8sctl` (flat `check|update|list|purge|boot`, `install`
+reserved for a later spec): `check` prints flavor/running/staged/
+remote-newest + verdict (`--verbose` lists all remote `ts` of the
+flavor); `update [<ts>]` (newest default) does check + verified
+download + extract + stage + retention + re-point iff
+`--next-kernel` (default true); `list` prints staged + running +
+bootloader default; `purge` applies retention + prune and never
+prompts (`--dry-run` previews); `boot show|set` inspects/re-points
+without downloading (`set` refuses absent files). `version` prints
+the embedded build stamps without needing root.
+
+- **Flags.** Only `url` (channel `dev|rolling|stable` or custom URL,
+  default stable), `keyring`, `next-kernel` (`update`), `preserve` /
+  `max-percent-usage` (`update` + `purge`), `dry-run` (write
+  commands), `verbose` (`check`). Everything auto-detects (flavor
+  from staged names → device-tree → `amd64` build arch; boot device
+  enumerate-then-verify; bootloader by config presence); overwrites
+  are automatic by verified-hash compare (a staged file matching
+  the index `.efi` hash skips the download entirely).
+- **Reuse.** The CLI links only `internal/updatecore` (split out of
+  `internal/features/update` when `make cli-no-kube` proved the
+  transitive `internal/kube` import; `doc.go` records the no-kube
+  invariant): pure `FilterIndexByFlavor` / `LookupRelease` /
+  `DetectArchAuto`, `FetchVerifiedIndex`, keyring loaders,
+  `MountedBoot` sessions, `StagePartition` (`NoRepoint`/`DryRun`/
+  `EfiChecksum` knobs), `PurgePartition`/`PreviewPurge`, and the
+  shared `flock` (`/run/simplek8s/update.lock`, reads shared,
+  writes exclusive; the chart mounts only that subdir as `hostPath`
+  so the controller honors the same lock, skipping its cycle on
+  contention).
+- **Build/publish.** `make build` compiles everything static for
+  `amd64`+`arm64` (like the distro ships); artifacts are named
+  `name.<ts>.x86-64|arm64` (no OS infix, version + date).
+  `make publish-simplek8sctl` (upx + GPG-signed `publish.json` +
+  upload, multi-channel `PUBLISH_TAGS`) releases to the
+  `simplek8sctl/` channels. The `go:embed`ded keyring is copied
+  from `keys/` at build time (`make` aborts on an LFS pointer).
+
 ## 4. Decision log (per era; §4.4 latest)
 
 Numbers restart per era; unqualified references in this document are
@@ -1138,6 +1200,30 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 7 | Out-of-flavor pins follow normal W12 rules (no special case) | With no migration, a `ts` absent from your flavor's index is simply not verifiable: path-2 corrects exactly like a never-existed `ts`. No extra event, no extra code path. |
 | 8 | systemd-boot not adopted (REJECTED 2026-09-16) | systemd-boot is UEFI-only and SimpleK8s must keep booting on BIOS machines. GRUB (+ syslinux legacy, + rpi `config.txt`) stays the managed set. |
 
+### 4.5 Node CLI era (M6)
+
+| # | Decision | Rationale |
+| --- | --- | --- |
+| 1 | Static binary in the distro, no container | Local-only + pre-cluster + root mounts: container adds privilege plumbing for zero benefit. |
+| 2 | `grub` + `rpi` day 1, `syslinux` legacy-only | GRUB is the managed bootloader; rpi writer proven live, CLI exercises both from day 1. |
+| 3 | Skip-verification via `--keyring /dev/null` | Escape hatch for air-gapped/custom repos; loud warning, never default; `--checksign` dropped as redundant. |
+| 4 | Boot-goal flag `--next-kernel` | Aligns with the annotation vocabulary; legacy `next-boot` and generic `set-default` rejected. |
+| 5 | Kebab-case flag set, no short aliases | Longs only; hidden `--grub-config` for symmetry. |
+| 6 | `selfupdate`/`download`/`search` dropped | Folded into `update`/`check --verbose`; CLI updates via distro releases. |
+| 7 | `--preserve=3` matches controller | One retention story (legacy `5` dropped). |
+| 8 | Two pure helpers (`FilterIndexByFlavor`, `DetectArchAuto`) | Extracted inline logic as tested pure surface, no controller behavior change. |
+| 9 | Human output + exits 0/1/2 | stdout human, stderr diagnostics; `check --verbose` subsumes `search`. |
+| 10 | `make build-simplek8sctl` + ported publish, `git describe` stamping | Static `amd64`/`arm64`; legacy upx+GPG-sign+upload flow ported as `publish-simplek8sctl`. |
+| 11 | Flavor auto-detection fail-closed, exit 2 | No staged flavor nor device-tree → no network, no writes; no override flag. |
+| 12 | Shared lock `/run/simplek8s/update.lock` | Non-blocking `flock`; chart mounts only the dedicated subdir as `hostPath`; second CLI exits 1, controller skips the cycle. |
+| 13 | Keyring `go:embed` + override | Embed `keys/simplek8s-pubring.gpg` (copy at build, LFS-guarded); `--keyring` wins; `/dev/null` skips only `VerifyIndex`. |
+| 14 | Minimal flag×command matrix | No silently-ignored flags; `dry-run` on write commands only. |
+| 15 | E2E on the x86-64 + rpi fleet | Own-node cases C1–C8 live; rpi4 on drained PROD node, node left identical. |
+| 16 | Pre-download capacity check | `PathInfo` before any download; exact fit still enforced with purge-to-fit. |
+| 17 | Single binary `simplek8sctl`, flat subcommands, no symlink | `install` reserved (deferred); legacy frozen as reference; `sk8sctl` and bare `simplek8s` rejected as names. |
+| 18 | Flag cull (no `arch`/`bootdevice`/`bootloader`/`no-confirm`/`checksign`/`overwrite`) | All detection auto; `purge` never prompts; skip via keyring; overwrites automatic by index-`.efi`-hash compare. |
+| 19 | K8s-agnostic core split into `internal/updatecore` | `make cli-no-kube` proved the transitive `internal/kube` import; pure machinery moved, wiring imports it; zero `k8s.io` in the CLI graph. |
+
 ## 5. Behavior changes & migration
 
 - **Updates keep working after an M3 rollout** (D6): absent
@@ -1226,6 +1312,13 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
   Pins need no migration (bare `ts`, resolved per node); no new
   annotation, no RBAC, no ConfigMap change. On ARM only rpi4/rpi5 are
   supported (M5 D5); `arm64` strings remain as legacy compat.
+- **Node CLI arrives alongside the controller** (M6, §3.13): the legacy
+  `simplek8s-update` stays usable until v2 ships but gets no
+  flag-compat promise (aliases, filters, keyring default and the six
+  culled flags all change); nodes need no migration (CLI writes the
+  same files + bootloader default, adopted via `next-kernel`, §7.6).
+  Distro change (TODO 5): once v2 ships with the embedded keyring, the
+  distro file `/usr/lib/systemd/import-pubring.gpg` can be removed.
 
 ## 6. Implementation
 
@@ -1676,6 +1769,23 @@ Live on PROD rpi4-node (rpi4, F1–F3) and rpi5-node (rpi5, F4, after drain appr
 | F4 | PASS 2026-09-11 (PROD rpi5-node, drained) | rpi5 on rpi5-node | same as F2–F3 after a rpi5-node drain | flavor `rpi5`, `202609090435.rpi5` staged + `config.txt` re-pointed (F2, no reboot), then auto-enqueue → reboot → running 6.18.50-`202609090435`, `completed`, quiescent. |
 | F5 | PASS 2026-09-16 (libvirt scratch, clean x86-64 image + decoy `boot`-labeled vfat, three runs) | Decoy-label drill | `PhysicalStore` lab harness against the guest's disks | (A) candidates `[by-partlabel/boot, by-label/boot]` → winner `by-partlabel/boot → /dev/vda1`, version listed end-to-end; decoy `/dev/vdb` enumerated, verify-mounted, skipped, left empty. (N) `simplek8s/` renamed away online (root on tmpfs, no reboot) → `no verifying boot device among 2 candidate(s)`, fail-closed, zero mounts left. (H) dir restored → resolves again with no reboot (no negative caching). Scratch domain + images removed afterwards. |
 
+### 7.6 Node CLI campaign (C1–C8 PASS)
+
+`simplek8sctl` static binary on a 5-VM x86-64 fleet (plus a drained PROD rpi4 node for the ARM cases, left identical, and one VM rebuilt with an August syslinux release). No node rebooted except the deliberate boot-into-staged round trip.
+
+| # | Result (live) | Case | Expect |
+| --- | --- | --- | --- |
+| C1 | PASS ×5 + dev variant + rpi4 | `check` per flavor | Newest remote `ts` per flavor, exit 0, mount audit identical (zero writes); dev reports `update available`; rpi4 auto-detected on PROD node. |
+| C2 | PASS | `update --dry-run` | Exact plan (61 MB download to scratch), partition untouched. |
+| C3 | PASS | `update <ts> --next-kernel` (grub) | Staged + default re-pointed, running untouched, no reboot. |
+| C4 | PASS | `update --next-kernel=false` | Staged, default unchanged. |
+| C5 | PASS (drained PROD rpi4) | rpi update | Staged without re-point, `boot set` moved `config.txt` both ways, default restored, purged file re-staged hash-verified; files + config + default byte-identical afterwards. |
+| C6 | PASS (grub + syslinux) | `purge --preserve 3` + prune | Cap-triggered only (`preserve` is the keep-floor): oldest deleted, default + running protected, foreign kept, 1 stale entry pruned per family. |
+| C7 | PASS | `boot set` validation | Absent `ts` refused (file-first), exit 1, default unchanged. |
+| C8 | PASS | Pre-cluster install | Full `update` with only userspace + boot partition, no kubelet. |
+| + | PASS | Boot-into-staged round trip | `boot set` + reboot → running the staged kernel (~15 s each way), hostname + keys intact, back to newest. |
+| + | PASS | Controller adoption (§5) | CLI-staged file + `next-kernel` annotation → controller re-points default in <20 s, no reboot (syslinux on stock image, grub on `m6-e2e` ctr-distributed image since `:latest` predates GRUB support); annotation removed → re-anchors to running. |
+
 ## 8. Deferred
 
 - TODO item 10 (leader-centralized check + distribution) is untouched by
@@ -1695,8 +1805,9 @@ Live on PROD rpi4-node (rpi4, F1–F3) and rpi5-node (rpi5, F4, after drain appr
   unsupported — no hardware, no image, no live proof needed (M5 D5);
   `arm64` strings remain as legacy compat only. The full `go test
   ./...` suite passes natively on `linux/arm64`.
-- TODO items 2 (CLI), 4 (rollback helper), 5 (keyring), 7 (reboot-log
-  observability) are untouched by this plan and stay deferred.
+- TODO items 4 (rollback helper), 5 (keyring), 7 (reboot-log
+  observability) are untouched by this plan and stay deferred; TODO 2
+  (node CLI) is closed by M6 (§3.13, §7.6).
 
 ## 9. Risks & safety notes
 
