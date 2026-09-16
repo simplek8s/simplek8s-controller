@@ -356,6 +356,15 @@ rebooted during E2E (running `ts` untouched throughout).
   → staged + re-pointed, exit 0.
 - Cross-node spot: `update --next-kernel=false 202609121031` on cp1
   → staged, default (already newest) unchanged.
+- syslinux-legacy fleet (wk1 recreated with August release
+  `202608291203`, 2026-09-16): `list` detects `syslinux`, `check
+  --url dev` reports newest, `boot set <absent>` refused exit 1,
+  `update --next-kernel=false` stages file-only (DEFAULT unchanged),
+  `update` re-points (DEFAULT moved, LABEL added, rest verbatim),
+  `purge --preserve 3` over cap deleted oldest non-protected,
+  default + running protected, foreign file kept, 1 syslinux LABEL
+  pruned (`syslinux stale entries pruned entries=1`); default
+  restored to running. No reboots.
 
 Findings folded back into the plan/code:
 
