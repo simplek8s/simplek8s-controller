@@ -4,6 +4,7 @@ TAG ?= latest
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILT   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+TS      := $(shell date -u +%Y%m%d%H%M)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.builtAt=$(BUILT)
 
 # Multi-arch image (PLAN.md §3.11): buildx validates linux/amd64 +
@@ -23,15 +24,15 @@ all: vet test build
 build: build-simplek8s-controller build-simplek8sctl
 
 build-simplek8s-controller:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller-linux-amd64 ./cmd/simplek8s-controller
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller-linux-arm64 ./cmd/simplek8s-controller
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller-$(VERSION)-$(TS)-amd64 ./cmd/simplek8s-controller
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller-$(VERSION)-$(TS)-arm64 ./cmd/simplek8s-controller
 
 # simplek8sctl node CLI (PLAN-M6): static binaries for both arches.
 CLI ?= simplek8sctl
 
 build-simplek8sctl: cli-keyring
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI)-linux-amd64 ./cmd/simplek8sctl
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI)-linux-arm64 ./cmd/simplek8sctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI)-$(VERSION)-$(TS)-amd64 ./cmd/simplek8sctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI)-$(VERSION)-$(TS)-arm64 ./cmd/simplek8sctl
 
 # The go:embed keyring copy (single source of truth: keys/, LFS).
 # Fails if the file is still an LFS pointer (no smudge) — an
@@ -59,7 +60,7 @@ PUBLISH_TAGS ?= dev
 
 publish-simplek8sctl: build-simplek8sctl
 	@for arch in amd64 arm64; do \
-		bin="bin/$(CLI)-linux-$${arch}"; \
+		bin="bin/$(CLI)-$(VERSION)-$(TS)-$${arch}"; \
 		upx --best --lzma --no-progress -o "$${bin}.upx" "$${bin}"; \
 		sum=$$(sha256sum "$${bin}.upx" | cut -d" " -f1); \
 		echo -n "{\"filenames\":[\"$$(basename $${bin})\",\"$$(basename $${bin}).latest\"],\"checksum\":\"$${sum}\",\"tags\":[\"$(PUBLISH_TAGS)\"]}" > "$${bin}.publish.json"; \
