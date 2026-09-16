@@ -56,15 +56,19 @@ cli-no-kube: cli-keyring
 # live endpoint): upx + signed publish.json + upload.
 PUBLISH_URL ?= https://publisher.simplek8s.org/upload/simplek8sctl
 PUBLISH_FINGERPRINT ?= 33BAAC4BFB20C2327429730A9F16C69F2B9DD678
+# Space-separated channels; all three at once:
+#   make publish-simplek8sctl PUBLISH_TAGS="dev rolling stable"
 PUBLISH_TAGS ?= dev
+SPACE := $() $()
+COMMA := ,
 
 publish-simplek8sctl: build-simplek8sctl
 	@for arch in x86-64 arm64; do \
-		bin=$$(ls -t bin/$(CLI).*$${arch} 2>/dev/null | head -1); \
+		bin=$$(ls -t bin/$(CLI).[0-9]*.$${arch} 2>/dev/null | head -1); \
 		test -n "$$bin" || { echo "no artifact for $${arch} (run: make build-simplek8sctl)" >&2; exit 1; }; \
 		upx --best --lzma --no-progress -o "$${bin}.upx" "$${bin}"; \
 		sum=$$(sha256sum "$${bin}.upx" | cut -d" " -f1); \
-		echo -n "{\"filenames\":[\"$$(basename $${bin})\",\"$(CLI).latest.$${arch}\"],\"checksum\":\"$${sum}\",\"tags\":[\"$(PUBLISH_TAGS)\"]}" > "$${bin}.publish.json"; \
+		echo -n "{\"filenames\":[\"$$(basename $${bin})\",\"$(CLI).latest.$${arch}\"],\"checksum\":\"$${sum}\",\"tags\":[\"$(subst ${SPACE},"${COMMA}",${PUBLISH_TAGS})\"]}" > "$${bin}.publish.json"; \
 		gpg --quiet --local-user "$(PUBLISH_FINGERPRINT)!" --sign --detach-sign --armor --output "$${bin}.publish.json.signature" "$${bin}.publish.json"; \
 		curl -F "json=@$${bin}.publish.json" -F "signature=@$${bin}.publish.json.signature" -F "release=@$${bin}.upx" "$(PUBLISH_URL)"; \
 	done
