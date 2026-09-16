@@ -63,8 +63,11 @@ PUBLISH_TAGS ?= dev
 SPACE := $() $()
 COMMA := ,
 # Normalize separators (commas -> spaces, collapse runs) so every
-# element becomes exactly one tag.
-PUBLISH_TAG_LIST = $(subst ${SPACE},"${COMMA}",$(strip $(subst ${COMMA},${SPACE},${PUBLISH_TAGS})))
+# element becomes exactly one tag. NOTE: the join MUST inject
+# backslash-escaped quotes (\"${COMMA}\"): make splices the value
+# into the recipe textually and the shell would strip bare quotes,
+# collapsing ["dev","rolling"] into ["dev,rolling"].
+PUBLISH_TAG_LIST = $(subst ${SPACE},\"${COMMA}\",$(strip $(subst ${COMMA},${SPACE},${PUBLISH_TAGS})))
 
 publish-simplek8sctl: build-simplek8sctl
 	@for arch in x86-64 arm64; do \
