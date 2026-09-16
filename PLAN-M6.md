@@ -346,6 +346,16 @@ rebooted during E2E (running `ts` untouched throughout).
 - C4 PASS: `update --url dev --next-kernel=false 202609061935` →
   staged, default unchanged, exit 0.
 - C5 PENDING: no rpi4/rpi5 hardware in this fleet.
+- C5 + C1-rpi PASS on a drained PROD rpi4 node (dev channel,
+  2026-09-16, no reboot): `check --url dev` auto-detected `rpi4`
+  with correct newest/verdict, exit 0; `update --next-kernel=false`
+  staged an uncached older `ts` (its own retention purged the
+  oldest as designed); `boot set` moved `config.txt` both ways
+  (writer proven); default restored and the purged file re-staged
+  hash-verified, leaving files + `config.txt` (sha) + default
+  byte-identical to baseline, running untouched, no mounts left.
+  Boot-partition `dd` snapshot taken beforehand as rollback (kept
+  on the node until confirmed).
 - C6 PASS: `purge --preserve 3` on 7 staged @79% → oldest deleted,
   default + running protected, foreign file kept, 1 grub entry
   pruned (`grub stale entries pruned entries=1`), usage back to 69%,
