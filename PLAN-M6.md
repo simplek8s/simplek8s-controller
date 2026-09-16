@@ -316,7 +316,7 @@ never across them.
 | --- | --- |
 | 1 | `cmd/simplek8sctl` skeleton + `check`/`list` (read-only) + unit matrix (no writes) + `go list` no-kube check. |
 | 2 | `update`/`purge`/`boot` writes + prune + `go:embed` keyring + root/`flock`/`umount`; static `linux/amd64,arm64` builds via `build-simplek8sctl`. |
-| 3 | Live E2E (§7) on x86-64 (grub + syslinux-legacy) and rpi4/rpi5 (rpi, fleet confirmed D15); ported `publish-simplek8sctl` dry-run; distro keyring removal (TODO 5) after. |
+| 3 | Live E2E (§7) on x86-64 (grub + syslinux-legacy) and rpi4/rpi5 (rpi, fleet confirmed D15); `publish-simplek8sctl` validated live 2026-09-16 (`simplek8sctl.<ts>` + `.latest` per arch on dev/rolling/stable); distro keyring removal (TODO 5) after. |
 
 ## 7. E2E (live, own-node)
 
