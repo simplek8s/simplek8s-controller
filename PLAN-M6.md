@@ -333,7 +333,7 @@ never across them.
 
 ### 7.1 Results (2026-09-16, x86-64 fleet)
 
-Binary `simplek8sctl-linux-amd64` (static, `build-simplek8sctl`),
+Binary `simplek8sctl.<ts>.x86-64` (static, `build-simplek8sctl`),
 fleet cp1/cp2/cp3/wk1/wk2 (release `202609161303`, kernel
 `6.18.52-simplek8s-202609161303`, no kubelet anywhere). No node was
 rebooted during E2E (running `ts` untouched throughout).

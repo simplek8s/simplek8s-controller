@@ -35,6 +35,9 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	var code int
 	switch cmd {
+	case "version", "-version", "--version":
+		fmt.Printf("simplek8sctl %s (%s, built %s)\n", version, commit, builtAt)
+		return
 	case "check":
 		code = runCheck(log, args)
 	case "update":
@@ -67,8 +70,9 @@ Commands (flat; install reserved):
   purge            retention + bootloader prune (never prompts)
   boot show        bootloader type + default + staged entries (read-only)
   boot set <ts>    re-point the bootloader default (file must exist)
+  version          print embedded build info (no root needed)
 
-Exits: 0 ok, 1 operational error, 2 misuse. Root required.
+Exits: 0 ok, 1 operational error, 2 misuse. Root required (except version).
 `, version, commit)
 }
 
