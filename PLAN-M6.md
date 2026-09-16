@@ -27,7 +27,7 @@ Agreed scope for this iteration (2026-09-15 conversation):
   (power-user only, loud warning — sha256 of downloads still
   enforced).
 - Breaking changes allowed: legacy is reference only.
-- Reuse via two new pure helpers in `internal/features/update`
+- Reuse via two new pure helpers in `internal/updatecore`
   (D8): `FilterIndexByFlavor` + `DetectArchAuto`. No behavior change
   to the controller.
 - CLI contract (D9): human text on stdout, errors on stderr, exits
@@ -53,17 +53,17 @@ Agreed scope for this iteration (2026-09-15 conversation):
   `dbus`/`systemd` client libs. `flag` + `log/slog` like
   `cmd/simplek8s-controller/main.go`; the only non-stdlib deps are
   the repo's existing two (`go-crypto`, `klauspost/compress`).
-- **Reuse boundary.** The CLI may import only the k8s-agnostic core
-  of `internal/features/update`: `index.go`, `gpg.go`, `download.go`,
-  `extract.go` (zst only), `staging.go` (`stagePartition`,
-  `listPartitionVersions`), `purge.go`, `bootloader.go`,
-  `bootstore.go` (`PhysicalStore`), `disk.go`, `versions.go`,
-  plus the two new pure helpers (D8): `FilterIndexByFlavor(index,
-  flavor)` and `DetectArchAuto(staged, devtree)`.
-  Forbidden: `update.go` (`RunLocal`, anchor, events),
-  `check.go` (takes `*kube.Node`), `enqueue.go`, `verify.go`,
-  `reconcile.go`, `migrate.go`, `flavor.go`'s engine wiring
-  (the pure `ResolveFlavor` helper is allowed).
+- **Reuse boundary.** The CLI links only `internal/updatecore`
+  (the k8s-agnostic core, no `internal/kube` in its dep graph —
+  enforced by `make cli-no-kube`): `index.go`, `gpg.go`,
+  `download.go`, `extract.go` (zst only), `staging.go`, `purge.go`,
+  `bootloader.go`, `bootstore.go` (`PhysicalStore`), `disk.go`,
+  `versions.go`, `localcli.go`, plus the two new pure helpers (D8):
+  `FilterIndexByFlavor(sums, flavor)` and
+  `DetectArchAuto(staged, model, compatible, goarch)`.
+  `internal/features/update` (cluster wiring: `update.go`, `check.go`,
+  `enqueue.go`, `verify.go`, `reconcile.go`, `migrate.go`) is never
+  imported by the CLI.
 - **Local-only, root + shared flock.** Must run as root on the node itself with
   an exclusive non-blocking `flock` on `/run/simplek8s/update.lock`
   (holder wins, other exits 1) — the same file the controller locks
@@ -149,11 +149,10 @@ presence: `grub/grub.cfg`, `syslinux/syslinux.cfg`, `config.txt`),
 all short aliases.
 
 **Flag×command matrix (D14, updated 2026-09-16).** Global:
-`--url`, `--keyring`, `--dry-run`,
-`--verbose` (`check` only, subsumes `search`). Scoped:
+`--url`, `--keyring`, `--verbose` (`check` only, subsumes `search`). Scoped:
 `--next-kernel` (`update` only), `--preserve`/`--max-percent-usage`
-(`update` + `purge`). No flag is silently
-ignored outside its commands. Flavor, boot device and bootloader are
+(`update` + `purge`), `--dry-run` (`update` + `purge` + `boot set`).
+No flag is silently ignored outside its commands. Flavor, boot device and bootloader are
 always auto-detected (no `--arch`, `--bootdevice`, `--bootloader`);
 `purge` never prompts (no `--no-confirm`).
 
@@ -239,7 +238,7 @@ never across them.
 | 5 | Flag set §3.2; short aliases dropped (CLOSED 2026-09-15) | Kebab-case longs only; hidden `--grub-config` for symmetry. |
 | 6 | `selfupdate`/`download`/`search` dropped (CLOSED 2026-09-15) | Folded into `update`/`check --verbose`; CLI updates via distro releases, not self-replacement. |
 | 7 | `--preserve=3` to match controller (CLOSED 2026-09-15) | Legacy `5` vs controller `3`: one retention story. |
-| 8 | Two new pure helpers (CLOSED 2026-09-15) | `FilterIndexByFlavor` + `DetectArchAuto(staged, devtree)` in `internal/features/update`; no controller behavior change. |
+| 8 | Two new pure helpers (CLOSED 2026-09-15) | `FilterIndexByFlavor` + `DetectArchAuto(staged, model, compatible, goarch)` in `internal/updatecore`; no controller behavior change. |
 | 9 | Human output + 0/1/2 exits (CLOSED 2026-09-15) | stdout human, stderr diagnostics; `0` ok / `1` operational / `2` misuse-unresolvable; `check --verbose` subsumes `search`. |
 | 10 | `make node-cli` + ported publish, `git describe` stamping (CLOSED 2026-09-15, renamed by D17) | Static `amd64`/`arm64` here; legacy upx+GPG-sign+upload flow ported as `node-publish`, version via `git describe` like the controller. |
 | 11 | Flavor auto-detection fail-closed exit 2 (CLOSED 2026-09-16) | No staged flavor nor device-tree → no network, no writes; no `--arch` override exists. |
@@ -250,6 +249,7 @@ never across them.
 | 16 | Pre-download capacity check (CLOSED 2026-09-16) | `PathInfo` check before any download; no explicit flavor/device/bootloader flags remain to mismatch. |
 | 17 | Single local binary `simplek8sctl`, flat subcommands (CLOSED 2026-09-15) | `cmd/simplek8sctl` with `check\|update\|list\|purge\|boot`; `install` reserved (deferred, §8); `make node-cli` + `node-publish`; no compat symlink (clean break). `sk8sctl` rejected (cryptic, inconsistent). |
 | 18 | Flag cull: no `--arch`/`--bootdevice`/`--bootloader`/`--no-confirm`/`--checksign`/`--overwrite` (CLOSED 2026-09-16) | All detection auto (fail-closed); `purge` never prompts; skip-verification via `--keyring /dev/null`; overwrites automatic by index-`.efi`-hash compare (verified live: repo publishes `.efi` + `.efi.zst` hashes). Remaining flags: `url`, `keyring`, `next-kernel`, `preserve`, `max-percent-usage`, `dry-run`, `verbose` (check only). |
+| 19 | K8s-agnostic core split into `internal/updatecore` (CLOSED 2026-09-16) | `make cli-no-kube` proved the transitive `internal/kube` import through `internal/features/update`; the pure machinery moved to a kube-free package (doc.go invariant), wiring imports it. CLI links only `updatecore` (zero `k8s.io` in dep graph). No behavior change (full suite green). |
 
 ## 5. Behavior changes & migration
 
@@ -271,8 +271,9 @@ never across them.
 
 | Module | Change |
 | --- | --- |
-| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), `uname -r` + device-tree helpers (`/proc/device-tree/model`, `compatible`: `bcm2711`→`rpi4`, `bcm2712`→`rpi5`; partition scan = staged basenames via `ResolveFlavor` order), root + `flock`, exit 0/1/2. No `internal/kube` import (enforced by a `go list` CI check). `Makefile`: `node-cli` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring; aborts if the keyring file is still an LFS pointer) + ported `node-publish` (upx + GPG sign with fingerprint `33BAAC4BFB20C2327429730A9F16C69F2B9DD678` + upload to `https://publisher.simplek8s.org/upload/simplek8sctl`). |
-| `internal/features/update` | No kube-coupled changes. Add two pure helpers: `FilterIndexByFlavor` (extracted from `check.go` inline logic) + `DetectArchAuto(staged, devtree)` (`ResolveFlavor` + device-tree fallback). Plus the shared-lock acquisition (D12, §3.6) around boot-partition sessions: contention skips the cycle (warn-log, no Events). Otherwise no behavior change to the controller. |
+| `cmd/simplek8sctl` (new) | `main.go` (`flag`+`slog`), flat `check/update/list/purge/boot` subcommands (`install` reserved), osrelease + device-tree helpers (`/sys/firmware/devicetree/base/model`, `compatible`: `bcm2711`→`rpi4`, `bcm2712`→`rpi5`; partition scan = staged basenames via `ResolveFlavor` order; `amd64` build arch implies `x86-64`), root + shared/exclusive `flock` (reads shared, writes exclusive), exit 0/1/2. Links only `internal/updatecore` (no `internal/kube` in dep graph, enforced by `make cli-no-kube`). `Makefile`: `node-cli` (static `amd64`/`arm64`, `git describe` stamping, `go:embed` keyring copied from `keys/`; aborts if the keyring file is still an LFS pointer) + ported `node-publish` (upx + GPG sign with fingerprint `33BAAC4BFB20C2327429730A9F16C69F2B9DD678` + upload to `https://publisher.simplek8s.org/upload/simplek8sctl`). |
+| `internal/updatecore` (new) | K8s-agnostic core split out of `internal/features/update` (D19): `index/fetch`, `gpg`, `download`, `extract`, `staging` (+ `NoRepoint`/`DryRun`/`EfiChecksum` knobs, `StagePartition`/`PurgePartition`/`PreviewPurge` exports), `bootloader`, `bootstore` (`PhysicalStore`, `MountedBoot`, lock), `disk`, `versions`, `localcli` (`FilterIndexByFlavor`, `LookupRelease`, `DetectArchAuto`, `StoredKernelName`, `FetchVerifiedIndex`, `LoadKeyringBytes`, `LockFile`). No `internal/kube` in dep graph (see `doc.go`). |
+| `internal/features/update` | Cluster wiring only (`update.go`, `check.go`, `enqueue.go`, `verify.go`, `reconcile.go`, `migrate.go`): qualifies moved identifiers via `updatecore`, plus the shared-lock acquisition (D12, §3.6) on `Stage`/`EnsureBootGoal` (contention → `ErrBootBusy` → existing skip paths). Otherwise no behavior change to the controller (full suite green). |
 | `chart/` | One `hostPath` volume (`/run/simplek8s`, `DirectoryOrCreate`) mounted at the same path, carrying only `update.lock`. |
 | Legacy `/workspace/simplek8s-update` | Frozen reference; not modified. |
 
@@ -280,8 +281,10 @@ never across them.
 
 - `FilterIndexByFlavor`: mixed index → own flavor only;
   `latest`-style files ignored.
-- `DetectArchAuto`: staged-first, device-tree fallback, no
-  override; unresolvable → error (caller exits 2).
+- `DetectArchAuto`: staged-first, device-tree (`model` substring
+  or `compatible` bcm2711/bcm2712) fallback, `amd64` build arch
+  implies `x86-64`, bare `arm64` unresolvable; unresolvable → error
+  (caller exits 2).
 - `ParseStoredKernel` / `versionFromStoredKernel` naming per
   flavor (`stored`/`artifact`).
 - Purge planning own-flavor only; foreign files survive.
@@ -372,7 +375,7 @@ into `PLAN.md` removing `PLAN-M5.md`, `d1a9cf7` gofmt). Reviewed
   bootstrap stays `install` territory (§8, README procedure, F5 H).
 - Revalidate further M5 work with:
 
-      git diff 49e7dde..HEAD -- internal/features/update cmd/ keys/ Makefile Dockerfile
+      git diff 49e7dde..HEAD -- internal/features/update internal/updatecore cmd/ keys/ Makefile Dockerfile chart/
 
   Any change to that boundary (signatures, `check.go`,
   `flavor.go`, writers, `staging`/`purge`/`disk`/`gpg`/`bootstore`)
