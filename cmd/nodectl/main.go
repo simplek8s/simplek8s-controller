@@ -65,11 +65,10 @@ Usage: nodectl <command> [flags]
 
 Commands:
   check            newest indexed release vs running vs staged (read-only)
-  update [<ts>]     stage a release + retention + bootloader re-point
+  update [<ts>]    stage a release + retention + bootloader re-point
   list             staged versions + running + bootloader default (read-only)
   purge            retention + bootloader prune (never prompts)
-  boot show        bootloader type + default + staged entries (read-only)
-  boot set <ts>    re-point the bootloader default (file must exist)
+  boot [<ts>]      show the bootloader default, or re-point it at a staged release
   version          print embedded build info (no root needed)
 
 Exits: 0 ok, 1 operational error, 2 misuse. Root required (except version).
