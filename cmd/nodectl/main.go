@@ -59,11 +59,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `nodectl %s (%s) — local-node admin (see PLAN.md §3.13)
+	fmt.Fprintf(os.Stderr, `nodectl %s (%s) — local-node admin
 
 Usage: nodectl <command> [flags]
 
-Commands (flat; install reserved):
+Commands:
   check            newest indexed release vs running vs staged (read-only)
   update [<ts>]     stage a release + retention + bootloader re-point
   list             staged versions + running + bootloader default (read-only)
