@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -109,6 +110,19 @@ func fetchIndex(ctx context.Context, log *slog.Logger, base, keyringPath string)
 		log.Warn("GPG verification skipped (--keyring /dev/null): transport integrity only")
 	}
 	return sums, exitOK
+}
+
+// defDisplay renders a bootloader default for operators: the release
+// ts when it parses as a staged kernel name, else the raw value — a
+// foreign or undetectable default is worth seeing verbatim.
+func defDisplay(def string) string {
+	if ts, _, ok := updatecore.ParseStoredKernel(filepath.Base(def)); ok {
+		return ts
+	}
+	if def == "" {
+		return "(unknown)"
+	}
+	return def
 }
 
 // versionsBeforeAfter diffs staged ts lists (for purge/update reporting).

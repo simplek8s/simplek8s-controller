@@ -172,7 +172,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 	}
 	deleted, _ := versionsBeforeAfter(before, after)
 	def := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
-	fmt.Printf("staged %s\ndefault: %s\npurged: %v\n", rel.TS, def, deleted)
+	fmt.Printf("staged %s\ndefault: %s\npurged: %v\n", rel.TS, defDisplay(def), deleted)
 	return exitOK
 }
 
@@ -187,13 +187,13 @@ func ensureBootGoal(log *slog.Logger, mnt, dir, flavor, ts string, nextKernel bo
 	}
 	cur := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
 	if cur == want {
-		fmt.Printf("default: %s (unchanged)\n", cur)
+		fmt.Printf("default: %s (unchanged)\n", defDisplay(cur))
 		return exitOK
 	}
 	if err := updatecore.SetBootloaderDefault(updatecore.BootloaderAuto, mnt, want, "/"); err != nil {
 		log.Error("re-pointing bootloader default failed", "err", err)
 		return exitOperational
 	}
-	fmt.Printf("default: %s -> %s\n", cur, want)
+	fmt.Printf("default: %s -> %s\n", defDisplay(cur), defDisplay(want))
 	return exitOK
 }

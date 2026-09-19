@@ -54,7 +54,7 @@ func runList(log *slog.Logger, args []string) int {
 		log.Error("bootloader detection failed", "err", err)
 		return exitOperational
 	}
-	fmt.Printf("running: %s\nbootloader: %s\ndefault: %s\nstaged:\n", osRelease(), bt, def)
+	fmt.Printf("running: %s\nbootloader: %s\ndefault: %s\nstaged:\n", osRelease(), bt, defDisplay(def))
 	for _, v := range versions {
 		fmt.Printf("  %s\n", v)
 	}

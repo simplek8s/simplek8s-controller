@@ -65,7 +65,7 @@ func runBootShow(log *slog.Logger) int {
 		log.Error("listing staged kernels failed", "err", err)
 		return exitOperational
 	}
-	fmt.Printf("bootloader: %s\ndefault: %s\nstaged:\n", bt, def)
+	fmt.Printf("bootloader: %s\ndefault: %s\nstaged:\n", bt, defDisplay(def))
 	for _, k := range kernels {
 		fmt.Printf("  %s\n", k)
 	}
@@ -107,17 +107,17 @@ func runBootSet(log *slog.Logger, ts string, dryRun bool) int {
 	}
 	cur := updatecore.GetBootloaderDefault(updatecore.BootloaderAuto, mnt)
 	if dryRun {
-		fmt.Printf("would set default: %s -> %s\n", cur, want)
+		fmt.Printf("would set default: %s -> %s\n", defDisplay(cur), defDisplay(want))
 		return exitOK
 	}
 	if cur == want {
-		fmt.Printf("default: %s (unchanged)\n", cur)
+		fmt.Printf("default: %s (unchanged)\n", defDisplay(cur))
 		return exitOK
 	}
 	if err := updatecore.SetBootloaderDefault(updatecore.BootloaderAuto, mnt, want, "/"); err != nil {
 		log.Error("re-pointing bootloader default failed", "err", err)
 		return exitOperational
 	}
-	fmt.Printf("default: %s -> %s\n", cur, want)
+	fmt.Printf("default: %s -> %s\n", defDisplay(cur), defDisplay(want))
 	return exitOK
 }

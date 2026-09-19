@@ -75,6 +75,20 @@ func LookupRelease(sums map[string]string, ts, flavor string) (Release, bool) {
 	}, true
 }
 
+// CheckVerdict renders the operator verdict for a check: the newest
+// indexed ts against what runs and what is staged. A staged newest
+// equal to the remote newest means the update is already downloaded —
+// what remains is the reboot, not another update.
+func CheckVerdict(latest, running, staged string) string {
+	if latest == "" || (running != "" && !NewerTS(latest, running)) {
+		return "up-to-date"
+	}
+	if staged == latest {
+		return "reboot to apply " + latest
+	}
+	return "update available " + latest
+}
+
 // DetectArchAuto resolves the node's board flavor without k8s
 // (PLAN-M6 D8/D11): staged filenames first (ResolveFlavor), then the
 // device-tree (`model`/`compatible` contents), then the build arch —

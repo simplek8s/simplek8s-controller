@@ -79,12 +79,8 @@ func runCheck(log *slog.Logger, args []string) int {
 		return exitOperational
 	}
 	running := osRelease()
-	verdict := "up-to-date"
-	if running == "" || updatecore.NewerTS(rel.TS, running) {
-		verdict = "update available " + rel.TS
-	}
 	fmt.Printf("flavor: %s\nrunning: %s\nstaged-newest: %s\nremote-newest: %s\nverdict: %s\n",
-		flavor, running, stagedNewest, rel.TS, verdict)
+		flavor, running, stagedNewest, rel.TS, updatecore.CheckVerdict(rel.TS, running, stagedNewest))
 	if verbose {
 		fmt.Printf("url: %s\nartifact: %s\n", base, rel.Artifact)
 		fmt.Printf("remote-ts:\n")

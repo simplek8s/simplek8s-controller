@@ -16,6 +16,25 @@ import (
 	"testing"
 )
 
+func TestCheckVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		latest, running, staged, want string
+	}{
+		{"", "202608241828", "202608241828", "up-to-date"},
+		{"202609161935", "202609161935", "202609161935", "up-to-date"},
+		{"202608241828", "202609161935", "202609161935", "up-to-date"},
+		{"202609161935", "202608241828", "202609161935", "reboot to apply 202609161935"},
+		{"202609161935", "202608241828", "202609121031", "update available 202609161935"},
+		{"202609161935", "", "", "update available 202609161935"},
+		{"202609161935", "202608241828", "", "update available 202609161935"},
+	} {
+		if got := CheckVerdict(tc.latest, tc.running, tc.staged); got != tc.want {
+			t.Errorf("CheckVerdict(%q,%q,%q) = %q, want %q",
+				tc.latest, tc.running, tc.staged, got, tc.want)
+		}
+	}
+}
+
 func TestFilterIndexByFlavor(t *testing.T) {
 	sums := map[string]string{
 		"simplek8s.202601010000.x86-64.efi.zst": "aa",
