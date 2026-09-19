@@ -15,11 +15,15 @@ import (
 func runList(log *slog.Logger, args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprintf(os.Stderr, "Usage: nodectl list\n") }
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
 		return exitMisuse
 	}
 	if fs.NArg() != 0 {
-		subcommandUsage(fs, "Usage: nodectl list")
+		fmt.Fprintf(os.Stderr, "Usage: nodectl list\n")
 		return exitMisuse
 	}
 	if code := requireRoot(log); code != exitOK {

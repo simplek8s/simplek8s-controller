@@ -22,6 +22,9 @@ func runPurge(log *slog.Logger, args []string) int {
 	fs.IntVar(&maxUsage, "max-percent-usage", 75, "boot partition usage cap percent")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be deleted; touch nothing")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
 		return exitMisuse
 	}
 	if fs.NArg() != 0 {

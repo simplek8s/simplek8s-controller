@@ -21,6 +21,9 @@ func runBoot(log *slog.Logger, args []string) int {
 	var dryRun bool
 	fs.BoolVar(&dryRun, "dry-run", false, "print what setting would do; touch nothing")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
 		return exitMisuse
 	}
 	if fs.NArg() > 1 {

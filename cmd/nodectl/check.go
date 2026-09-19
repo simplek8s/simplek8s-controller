@@ -22,6 +22,9 @@ func runCheck(log *slog.Logger, args []string) int {
 	fs.StringVar(&keyring, "keyring", "", "custom keyring path (default: embedded; /dev/null skips GPG verification)")
 	fs.BoolVar(&verbose, "verbose", false, "list all remote ts of the flavor + all staged + keyring/URL")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
 		return exitMisuse
 	}
 	if fs.NArg() != 0 {
