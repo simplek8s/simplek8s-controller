@@ -46,7 +46,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
 | M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
 | M5 | Board flavors for updates + boot-device verification | Shipped 2026-09-16 (F1–F5 5/5 PASS, 8 decisions, §7.5) |
-| M6 | Local-node admin CLI (`nodectl`) | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 20 decisions, §7.6) |
+| M6 | Local-node admin CLI (`nodectl`) | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 21 decisions, §7.6) |
 
 ### 1.2 Shipped baseline
 
@@ -928,8 +928,9 @@ flavor); `update [<ts>]` (newest default) does check + verified
 download + extract + stage + retention + re-point iff
 `--next-kernel` (default true); `list` prints staged + running +
 bootloader default; `purge` applies retention + prune and never
-prompts (`--dry-run` previews); `boot show|set` inspects/re-points
-without downloading (`set` refuses absent files). `version` prints
+prompts (`--dry-run` previews); `boot [<ts>]` inspects the default
+with no args and re-points it at a staged `ts` otherwise (absent
+files refused). `version` prints
 the embedded build stamps without needing root.
 
 - **Flags.** Only `url` (channel `dev|rolling|stable` or custom URL,
@@ -1224,6 +1225,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 16 | Pre-download capacity check | `PathInfo` before any download; exact fit still enforced with purge-to-fit. |
 | 17 | Single binary `nodectl`, flat subcommands, no symlink | `install` reserved (deferred); legacy frozen as reference; `sk8sctl` and bare `simplek8s` rejected as names. |
 | 20 | Renamed `simplek8sctl` → `nodectl` (binary), publish as `simplek8s-nodectl` | Distro binary is short (`nodectl`); release channel keeps the project prefix. First published release stays under `simplek8sctl/`. |
+| 21 | `boot [<ts>]` positional (show by default, set with arg) | Same optional-positional shape as `update [<ts>]`; `--set` flag form rejected as noise. |
 | 18 | Flag cull (no `arch`/`bootdevice`/`bootloader`/`no-confirm`/`checksign`/`overwrite`) | All detection auto; `purge` never prompts; skip via keyring; overwrites automatic by index-`.efi`-hash compare. |
 | 19 | K8s-agnostic core split into `internal/updatecore` | `make cli-no-kube` proved the transitive `internal/kube` import; pure machinery moved, wiring imports it; zero `k8s.io` in the CLI graph. |
 

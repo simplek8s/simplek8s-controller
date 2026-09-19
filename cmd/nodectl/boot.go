@@ -11,39 +11,26 @@ import (
 	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
-// runBoot implements `nodectl boot show|set <ts>`: inspect or
-// re-point the bootloader default without downloading. `set` refuses
-// a ts whose file is absent (file-first, PLAN.md §3.10).
+// runBoot implements `nodectl boot [<ts>]`: inspect the bootloader
+// default (no args, no downloads), or re-point it at the staged
+// release ts. Setting refuses a ts whose file is absent (file-first,
+// PLAN.md §3.10).
 func runBoot(log *slog.Logger, args []string) int {
 	fs := flag.NewFlagSet("boot", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var dryRun bool
-	fs.BoolVar(&dryRun, "dry-run", false, "print what set would do; touch nothing")
+	fs.BoolVar(&dryRun, "dry-run", false, "print what setting would do; touch nothing")
 	if err := fs.Parse(args); err != nil {
 		return exitMisuse
 	}
-	rest := fs.Args()
-	if len(rest) == 0 {
-		subcommandUsage(fs, "Usage: nodectl boot [--dry-run] show|set <ts>")
+	if fs.NArg() > 1 {
+		subcommandUsage(fs, "Usage: nodectl boot [--dry-run] [<ts>]")
 		return exitMisuse
 	}
-	switch rest[0] {
-	case "show":
-		if len(rest) != 1 {
-			subcommandUsage(fs, "Usage: nodectl boot show")
-			return exitMisuse
-		}
+	if fs.NArg() == 0 {
 		return runBootShow(log)
-	case "set":
-		if len(rest) != 2 || rest[1] == "" {
-			subcommandUsage(fs, "Usage: nodectl boot [--dry-run] set <ts>")
-			return exitMisuse
-		}
-		return runBootSet(log, rest[1], dryRun)
-	default:
-		subcommandUsage(fs, "Usage: nodectl boot [--dry-run] show|set <ts>")
-		return exitMisuse
 	}
+	return runBootSet(log, fs.Arg(0), dryRun)
 }
 
 func runBootShow(log *slog.Logger) int {
