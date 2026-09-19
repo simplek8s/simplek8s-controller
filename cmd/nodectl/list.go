@@ -10,7 +10,7 @@ import (
 	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
-// runList implements `simplek8sctl list`: staged versions + running +
+// runList implements `nodectl list`: staged versions + running +
 // current bootloader default. Read-only; shared lock only.
 func runList(log *slog.Logger, args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
@@ -19,7 +19,7 @@ func runList(log *slog.Logger, args []string) int {
 		return exitMisuse
 	}
 	if fs.NArg() != 0 {
-		subcommandUsage(fs, "Usage: simplek8sctl list")
+		subcommandUsage(fs, "Usage: nodectl list")
 		return exitMisuse
 	}
 	if code := requireRoot(log); code != exitOK {

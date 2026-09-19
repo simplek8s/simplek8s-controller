@@ -5,7 +5,7 @@
 //
 // Invariant: this package MUST NOT import internal/kube,
 // internal/engine (or any cluster-coupled package) — neither
-// directly nor transitively. cmd/simplek8sctl links only this
+// directly nor transitively. cmd/nodectl links only this
 // package (+ stdlib and the module's two base deps), so the node
 // binary stays cluster-free by construction. The cluster wiring
 // (Feature, Check against *kube.Node, enqueue, reconcile, migrate)

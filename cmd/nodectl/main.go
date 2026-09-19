@@ -1,4 +1,4 @@
-// Command simplek8sctl manages the local node only (PLAN-M6): no
+// Command nodectl manages the local node only (PLAN-M6): no
 // controller, no cluster access, no node annotations. Flat
 // subcommands, stdlib flag + log/slog, exits 0 ok / 1 operational
 // error / 2 misuse. Must run as root on the node itself.
@@ -12,7 +12,7 @@ import (
 )
 
 // Build information, injected at compile time via -ldflags (see
-// Makefile build-simplek8sctl). Defaults for plain `go run`/`go build`.
+// Makefile build-nodectl). Defaults for plain `go run`/`go build`.
 var (
 	version = "dev"
 	commit  = "none"
@@ -36,7 +36,7 @@ func main() {
 	var code int
 	switch cmd {
 	case "version", "-version", "--version":
-		fmt.Printf("simplek8sctl %s (%s, built %s)\n", version, commit, builtAt)
+		fmt.Printf("nodectl %s (%s, built %s)\n", version, commit, builtAt)
 		return
 	case "check":
 		code = runCheck(log, args)
@@ -59,9 +59,9 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `simplek8sctl %s (%s) — local-node admin (PLAN-M6)
+	fmt.Fprintf(os.Stderr, `nodectl %s (%s) — local-node admin (see PLAN.md §3.13)
 
-Usage: simplek8sctl <command> [flags]
+Usage: nodectl <command> [flags]
 
 Commands (flat; install reserved):
   check            newest indexed release vs running vs staged (read-only)

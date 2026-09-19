@@ -9,9 +9,9 @@ vendor/
 coverage.out
 *.test
 
-# simplek8sctl embedded keyring copy (build-time from keys/, see
-# cmd/simplek8sctl/keyring.go; never commit the copy)
-/cmd/simplek8sctl/pubring.gpg
+# nodectl embedded keyring copy (build-time from keys/, see
+# cmd/nodectl/keyring.go; never commit the copy)
+/cmd/nodectl/pubring.gpg
 
 # IDE / SO
 .idea/

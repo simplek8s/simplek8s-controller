@@ -13,7 +13,7 @@ import (
 	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
-// runUpdate implements `simplek8sctl update [<ts>]`: check + download +
+// runUpdate implements `nodectl update [<ts>]`: check + download +
 // verify + extract + stage + retention + bootloader re-point (iff
 // --next-kernel). No arg stages newest. Exclusive lock.
 func runUpdate(log *slog.Logger, args []string) int {
@@ -33,7 +33,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 		return exitMisuse
 	}
 	if fs.NArg() > 1 {
-		subcommandUsage(fs, "Usage: simplek8sctl update [flags] [<ts>] (flags before the ts)")
+		subcommandUsage(fs, "Usage: nodectl update [flags] [<ts>] (flags before the ts)")
 		return exitMisuse
 	}
 	var wantTS string
@@ -133,7 +133,7 @@ func runUpdate(log *slog.Logger, args []string) int {
 		return exitOperational
 	}
 
-	work, err := os.MkdirTemp("", "simplek8sctl-stage-")
+	work, err := os.MkdirTemp("", "nodectl-stage-")
 	if err != nil {
 		log.Error("scratch dir failed", "err", err)
 		return exitOperational

@@ -1,7 +1,7 @@
 package updatecore
 
 // Local-node CLI surface (PLAN-M6): the k8s-agnostic operations the
-// `simplek8sctl` binary needs, exported for `cmd/simplek8sctl`. The
+// `nodectl` binary needs, exported for `cmd/nodectl`. The
 // controller paths are untouched — every new StageRequest knob
 // defaults to the historical behavior, and the extracted purge helper
 // preserves the staging sequence byte-for-byte.

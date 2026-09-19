@@ -10,7 +10,7 @@ import (
 	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
-// runPurge implements `simplek8sctl purge`: retention + bootloader
+// runPurge implements `nodectl purge`: retention + bootloader
 // prune in one mounted session. It never prompts (PLAN-M6 D18);
 // `--dry-run` previews. Exclusive lock.
 func runPurge(log *slog.Logger, args []string) int {
@@ -25,7 +25,7 @@ func runPurge(log *slog.Logger, args []string) int {
 		return exitMisuse
 	}
 	if fs.NArg() != 0 {
-		subcommandUsage(fs, "Usage: simplek8sctl purge [flags]")
+		subcommandUsage(fs, "Usage: nodectl purge [flags]")
 		return exitMisuse
 	}
 	if code := requireRoot(log); code != exitOK {

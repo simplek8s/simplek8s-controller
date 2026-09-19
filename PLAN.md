@@ -46,7 +46,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M2 | Distro updates (signed check, staging, `next-kernel`) | Implemented; E2E campaign in progress (§7.3) |
 | M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
 | M5 | Board flavors for updates + boot-device verification | Shipped 2026-09-16 (F1–F5 5/5 PASS, 8 decisions, §7.5) |
-| M6 | Local-node admin CLI (`simplek8sctl`) | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 19 decisions, §7.6) |
+| M6 | Local-node admin CLI (`nodectl`) | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 20 decisions, §7.6) |
 
 ### 1.2 Shipped baseline
 
@@ -142,8 +142,9 @@ decisions in §4.4, E2E in §7.5.
 
 ### 1.5 Shipped plan (was PLAN-M6)
 
-The fifth feature: the local-node admin CLI `simplek8sctl`,
-successor of the legacy `simplek8s-update` project, rebuilt against
+The fifth feature: the local-node admin CLI `nodectl`
+(successor of the legacy `simplek8s-update` project, first shipped as
+`simplek8sctl` and renamed before 1.0), rebuilt against
 the k8s-agnostic update core. It manages its own node only — no
 controller, no cluster access, no node annotations, no API — for
 pre-cluster installs and out-of-band maintenance (or a fleet via an
@@ -152,7 +153,8 @@ operator loop). Five flat subcommands (`check`, `update`, `list`,
 exit codes 0/1/2, root-only. The CLI links only the extracted pure
 core (`internal/updatecore`, no `internal/kube` in its dep graph),
 ships as a static `amd64`/`arm64` binary in the distro (published to
-the `simplek8sctl/` dev/rolling/stable channels), and verifies the
+the `simplek8s-nodectl/` dev/rolling/stable channels; the first
+release went out under the old `simplek8sctl/` name), and verifies the
 release index against an embedded keyring (`--keyring` override,
 `--keyring /dev/null` break-glass skips GPG). A CLI-staged kernel is
 adopted by the controller through the normal `next-kernel`
@@ -919,7 +921,7 @@ from the staged filenames on the boot partition.
 
 ### 3.13 Local-node admin CLI (M6)
 
-`cmd/simplek8sctl` (flat `check|update|list|purge|boot`, `install`
+`cmd/nodectl` (flat `check|update|list|purge|boot`, `install`
 reserved for a later spec): `check` prints flavor/running/staged/
 remote-newest + verdict (`--verbose` lists all remote `ts` of the
 flavor); `update [<ts>]` (newest default) does check + verified
@@ -952,9 +954,9 @@ the embedded build stamps without needing root.
 - **Build/publish.** `make build` compiles everything static for
   `amd64`+`arm64` (like the distro ships); artifacts are named
   `name.<ts>.x86-64|arm64` (no OS infix, version + date).
-  `make publish-simplek8sctl` (upx + GPG-signed `publish.json` +
+  `make publish-nodectl` (upx + GPG-signed `publish.json` +
   upload, multi-channel `PUBLISH_TAGS`) releases to the
-  `simplek8sctl/` channels. The `go:embed`ded keyring is copied
+  `simplek8s-nodectl/` channels. The `go:embed`ded keyring is copied
   from `keys/` at build time (`make` aborts on an LFS pointer).
 
 ## 4. Decision log (per era; §4.4 latest)
@@ -1213,14 +1215,15 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 7 | `--preserve=3` matches controller | One retention story (legacy `5` dropped). |
 | 8 | Two pure helpers (`FilterIndexByFlavor`, `DetectArchAuto`) | Extracted inline logic as tested pure surface, no controller behavior change. |
 | 9 | Human output + exits 0/1/2 | stdout human, stderr diagnostics; `check --verbose` subsumes `search`. |
-| 10 | `make build-simplek8sctl` + ported publish, `git describe` stamping | Static `amd64`/`arm64`; legacy upx+GPG-sign+upload flow ported as `publish-simplek8sctl`. |
+| 10 | `make build-nodectl` + ported publish, `git describe` stamping | Static `amd64`/`arm64`; legacy upx+GPG-sign+upload flow ported as `publish-nodectl`. |
 | 11 | Flavor auto-detection fail-closed, exit 2 | No staged flavor nor device-tree → no network, no writes; no override flag. |
 | 12 | Shared lock `/run/simplek8s/update.lock` | Non-blocking `flock`; chart mounts only the dedicated subdir as `hostPath`; second CLI exits 1, controller skips the cycle. |
 | 13 | Keyring `go:embed` + override | Embed `keys/simplek8s-pubring.gpg` (copy at build, LFS-guarded); `--keyring` wins; `/dev/null` skips only `VerifyIndex`. |
 | 14 | Minimal flag×command matrix | No silently-ignored flags; `dry-run` on write commands only. |
 | 15 | E2E on the x86-64 + rpi fleet | Own-node cases C1–C8 live; rpi4 on drained PROD node, node left identical. |
 | 16 | Pre-download capacity check | `PathInfo` before any download; exact fit still enforced with purge-to-fit. |
-| 17 | Single binary `simplek8sctl`, flat subcommands, no symlink | `install` reserved (deferred); legacy frozen as reference; `sk8sctl` and bare `simplek8s` rejected as names. |
+| 17 | Single binary `nodectl`, flat subcommands, no symlink | `install` reserved (deferred); legacy frozen as reference; `sk8sctl` and bare `simplek8s` rejected as names. |
+| 20 | Renamed `simplek8sctl` → `nodectl` (binary), publish as `simplek8s-nodectl` | Distro binary is short (`nodectl`); release channel keeps the project prefix. First published release stays under `simplek8sctl/`. |
 | 18 | Flag cull (no `arch`/`bootdevice`/`bootloader`/`no-confirm`/`checksign`/`overwrite`) | All detection auto; `purge` never prompts; skip via keyring; overwrites automatic by index-`.efi`-hash compare. |
 | 19 | K8s-agnostic core split into `internal/updatecore` | `make cli-no-kube` proved the transitive `internal/kube` import; pure machinery moved, wiring imports it; zero `k8s.io` in the CLI graph. |
 
@@ -1771,7 +1774,7 @@ Live on PROD rpi4-node (rpi4, F1–F3) and rpi5-node (rpi5, F4, after drain appr
 
 ### 7.6 Node CLI campaign (C1–C8 PASS)
 
-`simplek8sctl` static binary on a 5-VM x86-64 fleet (plus a drained PROD rpi4 node for the ARM cases, left identical, and one VM rebuilt with an August syslinux release). No node rebooted except the deliberate boot-into-staged round trip.
+`nodectl` static binary on a 5-VM x86-64 fleet (plus a drained PROD rpi4 node for the ARM cases, left identical, and one VM rebuilt with an August syslinux release). No node rebooted except the deliberate boot-into-staged round trip.
 
 | # | Result (live) | Case | Expect |
 | --- | --- | --- | --- |

@@ -10,7 +10,7 @@ import (
 	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
-// runCheck implements `simplek8sctl check`: fetch + verify the index,
+// runCheck implements `nodectl check`: fetch + verify the index,
 // report newest indexed ts for the node's flavor vs running vs staged.
 // Read-only (no mount writes); shared lock only.
 func runCheck(log *slog.Logger, args []string) int {
@@ -25,7 +25,7 @@ func runCheck(log *slog.Logger, args []string) int {
 		return exitMisuse
 	}
 	if fs.NArg() != 0 {
-		subcommandUsage(fs, "Usage: simplek8sctl check [--url URL] [--keyring PATH] [--verbose]")
+		subcommandUsage(fs, "Usage: nodectl check [--url URL] [--keyring PATH] [--verbose]")
 		return exitMisuse
 	}
 	if code := requireRoot(log); code != exitOK {
