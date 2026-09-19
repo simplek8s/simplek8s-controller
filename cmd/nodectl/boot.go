@@ -67,7 +67,7 @@ func runBootShow(log *slog.Logger) int {
 	}
 	fmt.Printf("bootloader: %s\ndefault: %s\nstaged:\n", bt, defDisplay(def))
 	for _, k := range kernels {
-		fmt.Printf("  %s\n", k)
+		fmt.Printf("  %s\n", tsDisplay(k))
 	}
 	return exitOK
 }

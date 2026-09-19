@@ -112,17 +112,23 @@ func fetchIndex(ctx context.Context, log *slog.Logger, base, keyringPath string)
 	return sums, exitOK
 }
 
+// tsDisplay renders a staged kernel name for operators: the release
+// ts when recognized, else the raw name.
+func tsDisplay(name string) string {
+	if ts, _, ok := updatecore.ParseStoredKernel(filepath.Base(name)); ok {
+		return ts
+	}
+	return name
+}
+
 // defDisplay renders a bootloader default for operators: the release
 // ts when it parses as a staged kernel name, else the raw value — a
 // foreign or undetectable default is worth seeing verbatim.
 func defDisplay(def string) string {
-	if ts, _, ok := updatecore.ParseStoredKernel(filepath.Base(def)); ok {
-		return ts
-	}
 	if def == "" {
 		return "(unknown)"
 	}
-	return def
+	return tsDisplay(def)
 }
 
 // versionsBeforeAfter diffs staged ts lists (for purge/update reporting).
