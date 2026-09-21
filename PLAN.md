@@ -27,8 +27,8 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 1.4 | Shipped plan (M5: board flavors, boot-device verification) |
 > | 1.5 | Shipped plan (M6: local-node admin CLI) |
-| 1.6 | Shipped (M7: nodectl selfupdate) |
-| 1.7 | Planned (M8: nodectl install) |
+> | 1.6 | Shipped (M7: nodectl selfupdate) |
+> | 1.7 | Planned (M8: nodectl install) |
 > | 2 | Constraints |
 > | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) · 3.13 local-node admin CLI (M6) · 3.14 nodectl selfupdate (M7) · 3.15 nodectl install (M8, planned) |
 > | 4 | Decision log (per era; §4.7 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 · 4.5 M6 · 4.6 M7 · 4.7 M8 (planned, numbers restart per era) |
@@ -1898,7 +1898,7 @@ verify no longer false-cancels. Unit/integration tested; E2E re-run pending.
 Live on the 5-node test cluster (cp1, wk1, wk2 driven; cp2/cp3 converged unattended) with builds `f3b329a` (W1–W13) and `b1c6da5` (W13 re-validation post-D34). Cluster left quiescent on a calm ConfigMap (`stage`, `updates=["@every 12h"]`, `reboots=[]`).
 
 | # | Result (2026-09-11 live) | Case | Trigger | Expect |
-| --- | --- | --- | --- |
+| --- | --- | --- | --- | --- |
 | W1 | PASS 2026-09-11 — default-empty windows: 422 `NoWindowsConfigured` per node (unknown node → 422, not 404); `force:true` admitted and executed (requested→rebooting→completed ~25 s). | Empty `reboots.windows` | non-forced `POST /reboots` | 422 `NoWindowsConfigured` per node; `{"force":true}` executes immediately. |
 | W2 | PASS 2026-09-11 — `@every 2m`/30 s: held `requested` + `QueueHeldWindow` while closed; admitted exactly at window open (12:10:01); with 10 s grace the close landed mid-reboot → still `completed` (in-flight never interrupted). | `reboots.windows: '["@every 2m"]'` | POST while closed → open | stays `requested` + `QueueHeldWindow` while closed; admitted on open; an in-flight reboot is not interrupted by close. |
 | W3 | PASS 2026-09-11 — explicit `[]`: no claims, no events (2.5 min); `@every 2m`: claims stepped exactly per occurrence (12:16→12:18→12:20→12:22); pod deleted mid-opening → claim holds, no re-fetch; `@daily` closed → nothing for 3 min. Absent→default (`@every 12h`) verified via unit + code (12 h not waited live). | `updates.windows` master switch + per-occurrence check | explicit `[]` vs default (absent) vs short campaign window; several occurrences; delete the local pod mid-opening | explicit `[]` → no check activity (no index fetches); absent → the default `@every 12h` applies (verified via config snapshot/log); short window → exactly one index fetch per occurrence (next occurrence → next fetch); pod restart mid-opening → **no** re-fetch, `update-last-check` holds; nothing while closed. |
