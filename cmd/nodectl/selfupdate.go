@@ -55,9 +55,12 @@ const (
 	// explicit subcommand keeps the 5min client.
 	autoSelfTimeout = 30 * time.Second
 
-	// reexecEnv carries the pre-update sha256 across the
-	// syscall.Exec handoff so the NEW binary emits the report.
-	reexecEnv = "NODECTL_REEXEC_FROM"
+	// reexecFromEnv/reexecToEnv carry the handoff report across
+	// the syscall.Exec: the display of the replaced release (TS,
+	// full-sha fallback only when no TS can be shown) and the
+	// installed TS, so the NEW binary emits it with no network.
+	reexecFromEnv = "NODECTL_REEXEC_FROM"
+	reexecToEnv   = "NODECTL_REEXEC_TO"
 
 	// maxCLIBinaryBytes caps the selfupdate download (the
 	// published upx-packed binary is single-digit MB; kernel
@@ -105,13 +108,8 @@ func runSelfupdate(log *slog.Logger, args []string) int {
 	// Handoff landing (M7 D9): the previous binary just installed
 	// this one and exec'd it — no network, report from the NEW
 	// binary, then done.
-	if from := os.Getenv(reexecEnv); from != "" {
-		own, err := ownBinarySHA()
-		if err != nil {
-			log.Error("reading own binary failed", "err", err)
-			return exitOperational
-		}
-		fmt.Printf("updated %s -> %s\n", from, own)
+	if from := os.Getenv(reexecFromEnv); from != "" {
+		fmt.Printf("updated %s -> %s\n", from, os.Getenv(reexecToEnv))
 		return exitOK
 	}
 	if code := requireRoot(log); code != exitOK {
@@ -147,12 +145,12 @@ func runSelfupdate(log *slog.Logger, args []string) int {
 		return exitOperational
 	}
 	if sum == own {
-		fmt.Printf("already current (%s)\n", own)
+		fmt.Printf("already current (%s)\n", ts)
 		refreshSelfState(log)
 		return exitOK
 	}
 	if dryRun {
-		fmt.Printf("would update %s -> %s (%s)\n", own, ts, file)
+		fmt.Printf("would update %s -> %s\n", displayRelease(sums, arch, own), ts)
 		return exitOK
 	}
 	if err := downloadAndInstall(ctx, httpClient(), base, file, sum, exe); err != nil {
@@ -161,7 +159,7 @@ func runSelfupdate(log *slog.Logger, args []string) int {
 		return exitOperational
 	}
 	refreshSelfState(log)
-	handoffExec(log, exe, own)
+	handoffExec(log, exe, displayRelease(sums, arch, own), ts)
 	return exitOK // unreachable after a successful exec
 }
 
@@ -238,7 +236,7 @@ func autoSelfupdateAttempt(log *slog.Logger) error {
 		return err
 	}
 	refreshSelfState(log)
-	return syscall.Exec(exe, os.Args, append(os.Environ(), reexecEnv+"="+own))
+	return syscall.Exec(exe, os.Args, os.Environ())
 }
 
 // ownBinaryPath resolves the running binary's path (symlinks
@@ -324,10 +322,26 @@ func downloadAndInstall(ctx context.Context, client *http.Client, base, file, wa
 // (M7 D9). The state timestamp is already written, so the new
 // process never re-triggers; an exec failure degrades to exit 0 —
 // the binary is installed either way.
-func handoffExec(log *slog.Logger, exe, oldSHA string) {
-	if err := syscall.Exec(exe, os.Args, append(os.Environ(), reexecEnv+"="+oldSHA)); err != nil {
+func handoffExec(log *slog.Logger, exe, from, to string) {
+	env := append(os.Environ(), reexecFromEnv+"="+from, reexecToEnv+"="+to)
+	if err := syscall.Exec(exe, os.Args, env); err != nil {
 		log.Warn("handing off to the updated binary failed (binary is installed)", "err", err)
 	}
+}
+
+// displayRelease renders a binary for operator output: the indexed
+// TS when sha matches a same-arch entry, else the full sha —
+// fallback only, when no TS can be shown (e.g. hand-built binary).
+func displayRelease(sums map[string]string, arch, sha string) string {
+	for file, sum := range sums {
+		if sum != sha {
+			continue
+		}
+		if ts, fa, ok := updatecore.ParseNodectlRelease(file); ok && fa == arch {
+			return ts
+		}
+	}
+	return sha
 }
 
 // readSelfState returns the last attempt timestamp. ok=false covers

@@ -133,3 +133,22 @@ func TestAutoCheckCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestDisplayRelease(t *testing.T) {
+	sums := map[string]string{
+		"nodectl.202602020000.x86-64": "bb",
+		"nodectl.202603030000.arm64":  "cc",
+	}
+	if got := displayRelease(sums, "x86-64", "bb"); got != "202602020000" {
+		t.Errorf("indexed sha displays as %q, want ts", got)
+	}
+	// Same sha under another arch must not match.
+	if got := displayRelease(sums, "arm64", "bb"); got == "202602020000" {
+		t.Errorf("cross-arch sha displays as %q, want fallback", got)
+	}
+	// Unknown sha falls back to the full hash.
+	full := "a71f7946a841a4fbd843b6f55a8967bf2c032cc678ce14f1a5aa9cdb9aca3e92"
+	if got := displayRelease(sums, "x86-64", full); got != full {
+		t.Errorf("unknown sha displays as %q, want full sha", got)
+	}
+}

@@ -999,16 +999,17 @@ ts-named file is then downloaded, hash-verified, `chmod +x`, and
 atomically `rename`d over the resolved `/proc/self/exe` path.
 Whenever new bytes were installed — explicit or auto path — the
 process hands execution to them via `syscall.Exec` with the
-original argv plus `NODECTL_REEXEC_FROM=<old-sha>` in the
+original argv plus `NODECTL_REEXEC_FROM=<old-ts-or-sha>` and
+`NODECTL_REEXEC_TO=<new-ts>` in the
 environment (the state timestamp is written before the exec, so the
 new process never re-triggers; an exec failure degrades to exit 0
 with a stderr warning — the binary is installed either way). The
 success report is emitted by the NEW binary: an explicit
-`selfupdate` carrying the var prints `updated <old> -> <self-sha>`;
+`selfupdate` carrying the var prints `updated <old-ts-or-sha> -> <new-ts>`;
 without the var and already current it prints
-`already current (<sha256>)`.
+`already current (<ts>)`.
 Root required (like every command but `version`). `--dry-run`
-reports only and never hands off. The distro ships the published
+reports only (`would update <ts-or-sha> -> <ts>`) and never hands off. The distro ships the published
 artifact as-is
 (downloaded from the channel at image build time, upx-packed —
 upx binaries self-extract on exec), so the running bytes are
