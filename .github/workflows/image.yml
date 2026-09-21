@@ -25,11 +25,19 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # lfs:true is load-bearing: make cli-keyring copies
+      # keys/simplek8s-pubring.gpg (Git-LFS tracked) to the
+      # gitignored cmd/nodectl/pubring.gpg that go:embed needs.
+      # Without it go vet fails with "pattern pubring.gpg:
+      # no matching files found".
       - uses: actions/checkout@v7
+        with:
+          lfs: true
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+      - run: make cli-keyring
       - run: go vet ./...
       - run: go test ./... -count=1
 
