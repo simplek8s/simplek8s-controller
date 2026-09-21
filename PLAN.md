@@ -27,14 +27,14 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 1.4 | Shipped plan (M5: board flavors, boot-device verification) |
 > | 1.5 | Shipped plan (M6: local-node admin CLI) |
-| 1.6 | Planned (M7: nodectl selfupdate) |
+| 1.6 | Shipped (M7: nodectl selfupdate) |
 | 1.7 | Planned (M8: nodectl install) |
 > | 2 | Constraints |
-> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) · 3.13 local-node admin CLI (M6) · 3.14 nodectl selfupdate (M7, planned) · 3.15 nodectl install (M8, planned) |
-> | 4 | Decision log (per era; §4.7 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 · 4.5 M6 · 4.6 M7 (planned) · 4.7 M8 (planned, numbers restart per era) |
+> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) · 3.13 local-node admin CLI (M6) · 3.14 nodectl selfupdate (M7) · 3.15 nodectl install (M8, planned) |
+> | 4 | Decision log (per era; §4.7 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 · 4.5 M6 · 4.6 M7 · 4.7 M8 (planned, numbers restart per era) |
 > | 5 | Behavior changes & migration |
 > | 6 | Implementation — 6.1 modules · 6.2 unit test matrix · 6.3 phases |
-> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) · 7.6 node CLI (C1–C8 PASS) · 7.7 selfupdate (M7, planned) · 7.8 install (M8, planned) |
+> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) · 7.6 node CLI (C1–C8 PASS) · 7.7 selfupdate (M7, S1–S6 PASS) · 7.8 install (M8, planned) |
 > | 8 | Deferred |
 > | 9 | Risks & safety notes |
 
@@ -49,6 +49,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M3 | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions) |
 | M5 | Board flavors for updates + boot-device verification | Shipped 2026-09-16 (F1–F5 5/5 PASS, 8 decisions, §7.5) |
 | M6 | Local-node admin CLI (`nodectl`) | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 21 decisions, §7.6) |
+| M7 | `nodectl selfupdate` + daily auto-check | Shipped 2026-09-21 (S1–S6 PASS live x86-64 + rpi4 + fake channel, 12 decisions, §7.7) |
 
 ### 1.2 Shipped baseline
 
@@ -164,13 +165,14 @@ comparison once annotated. Full historical design in git
 (`git show <M6-commit>:PLAN-M6.md`); shipped behavior in §3.13,
 decisions in §4.5, E2E in §7.6.
 
-### 1.6 Planned (M7: nodectl selfupdate)
+### 1.6 Shipped (M7: nodectl selfupdate)
 
 The sixth feature: the `selfupdate` subcommand reserved by the M6
 design (reopens M6 D6, which had folded it into `update` — the CLI
 still updates kernels via distro releases, but the CLI binary itself
-needs its own channel). Design in §3.14, decisions in §4.6, E2E in
-§7.7. Not implemented yet.
+needs its own channel). Shipped 2026-09-21 (S1–S6 PASS live x86-64
++ rpi4 + fake channel, 12 decisions).
+Design in §3.14, decisions in §4.6, E2E in §7.7.
 
 ### 1.7 Planned (M8: nodectl install)
 
@@ -977,7 +979,7 @@ the embedded build stamps without needing root.
   `simplek8s-nodectl/` channels. The `go:embed`ded keyring is copied
   from `keys/` at build time (`make` aborts on an LFS pointer).
 
-### 3.14 nodectl selfupdate (M7, planned)
+### 3.14 nodectl selfupdate (M7, shipped 2026-09-21)
 
 A new flat subcommand on `cmd/nodectl` (same human-output +
 exits 0/1/2 discipline as §3.13).
@@ -1010,7 +1012,7 @@ without the var and already current it prints
 `already current (<ts>)`.
 Root required (like every command but `version`). `--dry-run`
 reports only (`would update <ts-or-sha> -> <ts>`) and never hands off. The distro ships the published
-artifact as-is
+artifact as-is at `/usr/local/bin/nodectl`
 (downloaded from the channel at image build time, upx-packed —
 upx binaries self-extract on exec), so the running bytes are
 identical to the indexed ones and the daily check is silent when
@@ -1354,7 +1356,7 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 18 | Flag cull (no `arch`/`bootdevice`/`bootloader`/`no-confirm`/`checksign`/`overwrite`) | All detection auto; `purge` never prompts; skip via keyring; overwrites automatic by index-`.efi`-hash compare. |
 | 19 | K8s-agnostic core split into `internal/updatecore` | `make cli-no-kube` proved the transitive `internal/kube` import; pure machinery moved, wiring imports it; zero `k8s.io` in the CLI graph. |
 
-### 4.6 Node CLI selfupdate era (M7, planned)
+### 4.6 Node CLI selfupdate era (M7, shipped 2026-09-21)
 
 | # | Decision | Rationale |
 | --- | --- | --- |
@@ -1944,15 +1946,25 @@ Live on PROD rpi4-node (rpi4, F1–F3) and rpi5-node (rpi5, F4, after drain appr
 | + | PASS | Boot-into-staged round trip | `boot set` + reboot → running the staged kernel (~15 s each way), hostname + keys intact, back to newest. |
 | + | PASS | Controller adoption (§5) | CLI-staged file + `next-kernel` annotation → controller re-points default in <20 s, no reboot (syslinux on stock image, grub on `m6-e2e` ctr-distributed image since `:latest` predates GRUB support); annotation removed → re-anchors to running. |
 
-### 7.7 selfupdate campaign (M7, planned)
+### 7.7 selfupdate campaign (M7, S1–S6 PASS)
 
 Same fleet as §7.6 (5 x86-64 VMs + drained PROD rpi4, left identical).
-Live fleet not run yet; S1/S2/S4/S6 plus checksum-mismatch and
+S1/S2/S3/S4/S6 PASS live on the 5 x86-64 VMs 2026-09-21 (825→832,
+real GPG, handoff proven by `version`, re-run `already current
+(<ts>)`, auto silent with state written; wk1 covers legacy
+syslinux): S1/S2/S4/S6 plus checksum-mismatch and
 dry-run-suppression were verified locally against a fake channel
 (GPG-valid via throwaway key, throwaway embedded keyring in the
-test binary only): already-current, update + exec handoff
-(`version` proves the new binary runs), silent auto (stdout empty,
-state written), auto-install + exec, mismatch → exit 1 untouched.
+test binary only). rpi4 PROD (drained, left identical — only
+/usr/local/bin/nodectl + state added): S1 (`already current
+(202609210832)`, real GPG, arm64 mapping) + S4 (silent `list`,
+rpi bootloader) PASS 2026-09-21, read-only otherwise (pending
+`next-kernel` left to the controller). S5 covered by the wrong-key refusal on the fake channel (same
+`VerifyIndex`-error branch: exit 1, binary untouched — accepted
+2026-09-21). The 825→832 mixed-generation `updated <sha> -> `
+cosmetic wart is accepted as documented one-time behavior
+(2026-09-21): steady-state handoffs always carry both vars, no
+hardening.
 
 | # | Case | Expect |
 | --- | --- | --- |
