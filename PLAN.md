@@ -27,12 +27,14 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 > | 1.3 | Shipped plan (M3: windows, update reboot loop, boot-partition hygiene) |
 > | 1.4 | Shipped plan (M5: board flavors, boot-device verification) |
 > | 1.5 | Shipped plan (M6: local-node admin CLI) |
+| 1.6 | Planned (M7: nodectl selfupdate) |
+| 1.7 | Planned (M8: nodectl install) |
 > | 2 | Constraints |
-> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) · 3.13 local-node admin CLI (M6) |
-> | 4 | Decision log (per era; §4.5 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 · 4.5 M6 (numbers restart per era) |
+> | 3 | Design — 3.1 window model · 3.2 config keys · 3.3 cron parser · 3.4 updates rework · 3.5 reboots window gate · 3.6 writer discipline · 3.7 change-triggered reconciliation · 3.8 observability · 3.9 bootloader prune (grub + syslinux legacy) · 3.10 `next-kernel` validation · 3.11 multi-platform build · 3.12 board flavors + device verification (M5) · 3.13 local-node admin CLI (M6) · 3.14 nodectl selfupdate (M7, planned) · 3.15 nodectl install (M8, planned) |
+> | 4 | Decision log (per era; §4.7 latest) — 4.1 M1 · 4.2 M2 · 4.3 M3 · 4.4 M5 · 4.5 M6 · 4.6 M7 (planned) · 4.7 M8 (planned, numbers restart per era) |
 > | 5 | Behavior changes & migration |
 > | 6 | Implementation — 6.1 modules · 6.2 unit test matrix · 6.3 phases |
-> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) · 7.6 node CLI (C1–C8 PASS) |
+> | 7 | E2E — 7.1 conventions · 7.2 reboots · 7.3 updates · 7.4 windows (W1–W17, 17/17 PASS) · 7.5 board flavors (F1–F5, 5/5 PASS) · 7.6 node CLI (C1–C8 PASS) · 7.7 selfupdate (M7, planned) · 7.8 install (M8, planned) |
 > | 8 | Deferred |
 > | 9 | Risks & safety notes |
 
@@ -161,6 +163,21 @@ adopted by the controller through the normal `next-kernel`
 comparison once annotated. Full historical design in git
 (`git show <M6-commit>:PLAN-M6.md`); shipped behavior in §3.13,
 decisions in §4.5, E2E in §7.6.
+
+### 1.6 Planned (M7: nodectl selfupdate)
+
+The sixth feature: the `selfupdate` subcommand reserved by the M6
+design (reopens M6 D6, which had folded it into `update` — the CLI
+still updates kernels via distro releases, but the CLI binary itself
+needs its own channel). Design in §3.14, decisions in §4.6, E2E in
+§7.7. Not implemented yet.
+
+### 1.7 Planned (M8: nodectl install)
+
+The seventh feature: the `install` subcommand reserved in M6 D17 —
+distro install onto a whole-disk device from the release `.IMG`.
+Design in §3.15, decisions in §4.7, E2E in §7.8. Not implemented yet;
+explicitly after M7.
 
 ## 2. Constraints
 
@@ -960,7 +977,114 @@ the embedded build stamps without needing root.
   `simplek8s-nodectl/` channels. The `go:embed`ded keyring is copied
   from `keys/` at build time (`make` aborts on an LFS pointer).
 
-## 4. Decision log (per era; §4.4 latest)
+### 3.14 nodectl selfupdate (M7, planned)
+
+A new flat subcommand on `cmd/nodectl` (same human-output +
+exits 0/1/2 discipline as §3.13).
+
+**`selfupdate`.** `nodectl selfupdate [--url] [--keyring] [--dry-run]`
+updates the CLI binary itself from the `simplek8s-nodectl/` channels
+(same `--url` channel vocabulary as `update`, default stable; same
+keyring discipline — embedded default, `--keyring` override,
+`/dev/null` break-glass with loud warning). It works exactly like a
+kernel check: fetch the channel's GPG-signed `SHA256SUMS` with the
+existing `updatecore.FetchVerifiedIndex` (no new verifier — the
+publisher verifies the uploaded `publish.json`, discards it, and
+serves a plain signed `SHA256SUMS` over the stored binaries). Arch
+uses the same mapping as kernel artifacts (`runtime.GOARCH` to the
+channel infix, shared helper — no new vocabulary); `latest` is the
+newest `TS` for that arch computed from the verified index, with the
+same selection rule as kernels (not the publisher alias); the
+ts-named file is then downloaded, hash-verified, `chmod +x`, and
+atomically `rename`d over the resolved `/proc/self/exe` path.
+Whenever new bytes were installed — explicit or auto path — the
+process hands execution to them via `syscall.Exec` with the
+original argv plus `NODECTL_REEXEC_FROM=<old-sha>` in the
+environment (the state timestamp is written before the exec, so the
+new process never re-triggers; an exec failure degrades to exit 0
+with a stderr warning — the binary is installed either way). The
+success report is emitted by the NEW binary: an explicit
+`selfupdate` carrying the var prints `updated <old> -> <self-sha>`;
+without the var and already current it prints
+`already current (<sha256>)`.
+Root required (like every command but `version`). `--dry-run`
+reports only and never hands off. The distro ships the published
+artifact as-is
+(downloaded from the channel at image build time, upx-packed —
+upx binaries self-extract on exec), so the running bytes are
+identical to the indexed ones and the daily check is silent when
+current; a locally rebuilt binary would never checksum-match
+(`ldflags` embed version/commit/date) and is not shipped.
+
+- **Daily auto-check.** Every invocation except `version`/`help` and
+  `selfupdate` itself — and only when running as root (a non-root
+  invocation could never install the binary; attempting the network
+  check first would only add noise before the root error) — reads
+  `/run/simplek8s/nodectl-selfcheck`, which holds a UTC RFC3339
+  timestamp of the last attempt (missing or corrupt counts as
+  absent: check now, mirroring the `update-last-check` rule; the
+  directory is created as needed, same `MkdirAll` pattern as the
+  lock — if it cannot be created the check is skipped silently).
+  Older than 24h triggers a best-effort selfupdate attempt under a
+  short client timeout (tens of seconds — a stalled network must
+  never hold the real subcommand hostage; the 5min client stays for
+  explicit runs), always with default channel and keyring (stable +
+  embedded — the pending subcommand's flags are not parsed yet;
+  other channels need an explicit run), and suppressed entirely
+  when any argv token is the `dry-run` flag (either dash form, with
+  or without `=value` — dry means dry). The attempt
+  never alters the subcommand's exit code and
+  never touches its stdout — fully silent on success, warning on
+  stderr only on failure (an auto-path update still hands off via
+  `syscall.Exec`, so the pending subcommand runs on the new binary,
+  silently). The timestamp is rewritten after each attempt, explicit
+  `selfupdate` runs included (throttles offline nodes too). Opt-out: `NODECTL_NO_SELFUPDATE=1`. State lives
+  in `/run` (tmpfs) by decision: semantics are "first command after
+  each boot + 24h uptime throttle", and no new persistent directory
+  is needed. `selfupdate` — explicit or auto — never takes the
+  `/run/simplek8s/update.lock`: it touches neither the boot
+  partition nor the bootloader, only the binary plus the state file
+  (the latter under its own `flock`), so it must neither contend
+  with controller/CLI sessions nor be blocked by them.
+
+### 3.15 nodectl install (M8, planned)
+
+A new flat subcommand on `cmd/nodectl` (same discipline as §3.13),
+implemented natively in Go (new `cmd/nodectl/install.go`; single
+static binary, M6 D1/D17). The untested `simplek8s-install` shell
+script in simplek8s-buildroot `ce48471` is superseded by this design,
+not ported: the source is the release `.IMG`, not the boot media.
+
+**`install`.** `nodectl install [--url] [--yes] [--config FILE]
+[<ts>] <device>` installs the distro onto the whole-disk block
+device `<device>` (e.g. `/dev/vda`). Root required; takes the
+exclusive `/run/simplek8s/update.lock`.
+
+- **Source.** The distro `.IMG` from the release channel (`--url`:
+  `stable|rolling|dev` or full URL, default stable; same keyring
+  discipline). No `<ts>` → latest IMG; `<ts>` → that version. The IMG
+  is resolved through the GPG-verified index, exactly like `update`
+  resolves kernels — one trust path. No `--source` (no boot-media
+  auto-detect), no `--kernel` (the kernel is the IMG's), no
+  `--efi-size` (512MiB ESP, the IMG's constant).
+- **Write.** Dump the verified IMG onto the device, then create the
+  `/var` partition (ext4, label `var`) in the remaining space and
+  leave a `simplek8s.yaml` mounting it (minimal mounts-only default,
+  or `--config FILE`). The IMG already carries both bootloaders, so
+  BIOS + UEFI are always installed — no `--no-bios`.
+- **Users.** The minimal yaml provisions no users: user/network setup
+  stays with the first-boot wizard (`simplek8s-wizard`, port 5443).
+  No generated root password (shown-once secrets are lost on
+  scrollback and conflict with the wizard flow); an explicit
+  opt-in password flag may be added later if the wizard-less case
+  appears.
+- **Safety.** Whole-disk validation (`/sys/block/<base>`, symlinks
+  resolved, partitions rejected), refuse when any `TARGET*` is
+  mounted (`/proc/mounts`), then a 10s cancellable countdown (`Enter`
+  / Ctrl-C aborts untouched; non-tty requires `--yes`). `--yes` is
+  long-only (kebab, no shorts — M6 D5).
+
+## 4. Decision log (per era; §4.7 latest)
 
 Numbers restart per era; unqualified references in this document are
 to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
@@ -1228,6 +1352,34 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 21 | `boot [<ts>]` positional (show by default, set with arg) | Same optional-positional shape as `update [<ts>]`; `--set` flag form rejected as noise. |
 | 18 | Flag cull (no `arch`/`bootdevice`/`bootloader`/`no-confirm`/`checksign`/`overwrite`) | All detection auto; `purge` never prompts; skip via keyring; overwrites automatic by index-`.efi`-hash compare. |
 | 19 | K8s-agnostic core split into `internal/updatecore` | `make cli-no-kube` proved the transitive `internal/kube` import; pure machinery moved, wiring imports it; zero `k8s.io` in the CLI graph. |
+
+### 4.6 Node CLI selfupdate era (M7, planned)
+
+| # | Decision | Rationale |
+| --- | --- | --- |
+| 1 | `selfupdate` newness = `latest` checksum vs running binary sha256 | No `ts` ordering; the publish channel's `latest` pointer is the source of truth (confirmed 2026-09-21). |
+| 2 | Reuse `FetchVerifiedIndex` — no new verifier | The publisher verifies the uploaded `publish.json`, discards it, and serves a plain signed `SHA256SUMS`; selfupdate is exactly a kernel-style check (corrected 2026-09-21). |
+| 3 | Auto-check state in `/run/simplek8s/nodectl-selfcheck` | Fits the existing `/run/simplek8s/` runtime dir (mnt root + lock); tmpfs semantics — first command after each boot + 24h uptime throttle, no new persistent directory (confirmed 2026-09-21). |
+| 4 | Auto-check best-effort, never alters the subcommand exit | A stale CLI must not break node admin; warn on stderr only; `NODECTL_NO_SELFUPDATE=1` opts out; skipped for `version`/`help`/`selfupdate`. |
+| 5 | Distro ships the published artifact as-is | Downloaded from the channel at image build time (upx-packed, self-extracting); running bytes equal indexed bytes, daily check silent when current. A local rebuild would never match (`ldflags` date stamping) — never shipped (decided 2026-09-21). |
+| 6 | `latest` = newest `TS` computed from the index, same rule as kernels | Publisher alias exists but is not trusted/needed; arch mapping shared with kernel artifacts, no new vocabulary (decided 2026-09-21). |
+| 7 | State = UTC RFC3339 content, corrupt → absent | Robust against FS timestamp quirks; mirrors the `update-last-check` corrupt rule; explicit runs refresh it too (decided 2026-09-21). |
+| 8 | Auto-check skipped when non-root | Only root can install the binary; avoids network noise before the root error (decided 2026-09-21). |
+| 9 | `syscall.Exec` handoff with `NODECTL_REEXEC_FROM` | An update always passes execution to the new binary (report emitted by it); timestamp-first ordering prevents loops; exec failure degrades to exit 0 (decided 2026-09-21). |
+| 10 | Short client timeout for the auto path | A stalled network must never hold the real subcommand hostage; explicit runs keep the 5min client (decided 2026-09-21). |
+| 11 | Auto path uses defaults; pending `dry-run` suppresses it | No flag parsing before dispatch (stable + embedded keyring; other channels need explicit runs); dry means dry (decided 2026-09-21). |
+| 12 | `selfupdate` ignores the update lock | Touches only binary + state file (own `flock`); never contends with nor blocked by boot-partition sessions (decided 2026-09-21). |
+
+### 4.7 Node CLI install era (M8, planned)
+
+| # | Decision | Rationale |
+| --- | --- | --- |
+| 1 | Source = release `.IMG` (latest default, `<ts>` optional) | Simpler than boot-media auto-detect; one artifact, one trust path — the verified index (decided 2026-09-21). |
+| 2 | `ce48471` shell prototype superseded, not ported | Its boot-media logic dies with the IMG source; Go-native single static binary still stands (M6 D1/D17). |
+| 3 | Always BIOS + UEFI, no `--no-bios` | The IMG already carries both; one fewer flag, one fewer untested combination (decided 2026-09-21). |
+| 4 | No `--kernel` / `--source` / `--efi-size` | The kernel is the IMG's; ESP is the IMG's 512MiB constant; channel selection is `--url` (`stable\|rolling\|dev` or full URL). |
+| 5 | Minimal mounts-only yaml; no generated root password | Users stay with the first-boot wizard (port 5443); shown-once secrets are lost on scrollback and conflict with that flow. |
+| 6 | `--yes` long-only, 10s cancellable countdown, non-tty requires `--yes` | Kebab-case no-shorts discipline (M6 D5); destructive runs stay guarded non-interactively. |
 
 ## 5. Behavior changes & migration
 
@@ -1790,6 +1942,38 @@ Live on PROD rpi4-node (rpi4, F1–F3) and rpi5-node (rpi5, F4, after drain appr
 | C8 | PASS | Pre-cluster install | Full `update` with only userspace + boot partition, no kubelet. |
 | + | PASS | Boot-into-staged round trip | `boot set` + reboot → running the staged kernel (~15 s each way), hostname + keys intact, back to newest. |
 | + | PASS | Controller adoption (§5) | CLI-staged file + `next-kernel` annotation → controller re-points default in <20 s, no reboot (syslinux on stock image, grub on `m6-e2e` ctr-distributed image since `:latest` predates GRUB support); annotation removed → re-anchors to running. |
+
+### 7.7 selfupdate campaign (M7, planned)
+
+Same fleet as §7.6 (5 x86-64 VMs + drained PROD rpi4, left identical).
+Live fleet not run yet; S1/S2/S4/S6 plus checksum-mismatch and
+dry-run-suppression were verified locally against a fake channel
+(GPG-valid via throwaway key, throwaway embedded keyring in the
+test binary only): already-current, update + exec handoff
+(`version` proves the new binary runs), silent auto (stdout empty,
+state written), auto-install + exec, mismatch → exit 1 untouched.
+
+| # | Case | Expect |
+| --- | --- | --- |
+| S1 | `selfupdate` on current `latest` | Already-current, no download, exit 0. |
+| S2 | `selfupdate` with newer `latest` published on `dev` | Download + hash-verify + atomic replace, re-run reports current. |
+| S3 | `selfupdate --dry-run` | Plan only, binary untouched. |
+| S4 | Auto-check throttle | First command after boot checks; second within 24h does not; `NODECTL_NO_SELFUPDATE=1` skips; offline failure warns only, subcommand exit unchanged. |
+| S5 | Tampered `SHA256SUMS` signature | Refused, exit 1, binary untouched. |
+| S6 | Handoff after update | After S2, `nodectl version` reports the new stamps (execution passed to the new binary); no update loop on re-run. |
+
+### 7.8 install campaign (M8, planned)
+
+Same fleet as §7.6. Not run yet.
+
+| # | Case | Expect |
+| --- | --- | --- |
+| I1 | `install /dev/vda` (latest stable IMG) | Verified IMG dumped, `/var` created in the remaining space, mounts-only yaml written; countdown cancellable via Enter/Ctrl-C with zero writes. |
+| I2 | `install <ts> /dev/vda` + `--url dev` | Pinned IMG version installed; channel override honored. |
+| I3 | Boot the installed disk on UEFI+SecureBoot and on BIOS | Both boot unassisted (MOK enroll on first Secure Boot). |
+| I4 | `install` on rpi4 (+ rpi5 when hardware exists) | Node boots, `/var` mounted from the created partition per the installed yaml. |
+| I5 | `--config FILE` override | Custom yaml installed verbatim instead of the minimal one. |
+| I6 | Partition-as-target, mounted-target, non-tty without `--yes` | All refused before any write (exit 2, 1, 2 respectively). |
 
 ## 8. Deferred
 

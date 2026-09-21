@@ -34,6 +34,9 @@ func main() {
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	var code int
+	if autoCheckCommand(cmd) {
+		maybeAutoSelfupdate(log, args)
+	}
 	switch cmd {
 	case "version", "-version", "--version":
 		fmt.Printf("nodectl %s (%s, built %s)\n", version, commit, builtAt)
@@ -48,6 +51,8 @@ func main() {
 		code = runPurge(log, args)
 	case "boot":
 		code = runBoot(log, args)
+	case "selfupdate":
+		code = runSelfupdate(log, args)
 	case "-h", "-help", "--help", "help":
 		usage()
 	default:
@@ -69,6 +74,7 @@ Commands:
   list             staged versions + running + bootloader default (read-only)
   purge            retention + bootloader prune (never prompts)
   boot [<ts>]      show the bootloader default, or re-point it at a staged release
+  selfupdate       check the nodectl channel + install latest (auto-checked daily)
   version          print embedded build info (no root needed)
 
 Exits: 0 ok, 1 operational error, 2 misuse. Root required (except version).

@@ -91,7 +91,14 @@ func detectFlavor(kernels []string) (string, bool) {
 
 // httpClient is the artifact/index client (redirects + timeout).
 func httpClient() *http.Client {
-	return &http.Client{Timeout: 5 * time.Minute}
+	return httpClientWithTimeout(5 * time.Minute)
+}
+
+// httpClientWithTimeout is the artifact/index client with a custom
+// timeout: the auto selfupdate path uses a short one so a stalled
+// network never holds the real subcommand hostage (M7 D10).
+func httpClientWithTimeout(d time.Duration) *http.Client {
+	return &http.Client{Timeout: d}
 }
 
 // fetchIndex fetches + GPG-verifies the release index (or skips
