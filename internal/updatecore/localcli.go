@@ -100,6 +100,19 @@ func DetectArchAuto(staged []string, model, compatible, goarch string) (string, 
 	if f, ok := ResolveFlavor(staged); ok {
 		return f, true
 	}
+	if f, ok := flavorFromDeviceTree(model, compatible); ok {
+		return f, true
+	}
+	if goarch == "amd64" {
+		return "x86-64", true
+	}
+	return "", false
+}
+
+// flavorFromDeviceTree resolves rpi4/rpi5 from device-tree model +
+// compatible contents (either of the two conventional paths; absent
+// on x86-64). Shared by DetectArchAuto and InstallFlavor.
+func flavorFromDeviceTree(model, compatible string) (string, bool) {
 	dt := model + "\x00" + compatible
 	if strings.Contains(dt, "Raspberry Pi 5") || strings.Contains(dt, "bcm2712") {
 		return "rpi5", true
@@ -107,10 +120,20 @@ func DetectArchAuto(staged []string, model, compatible, goarch string) (string, 
 	if strings.Contains(dt, "Raspberry Pi 4") || strings.Contains(dt, "bcm2711") {
 		return "rpi4", true
 	}
-	if goarch == "amd64" {
-		return "x86-64", true
-	}
 	return "", false
+}
+
+// InstallFlavor resolves the install-image flavor for this node
+// (PLAN.md §3.15, M8 D9): device-tree first (rpi), else the build
+// arch via NodectlArch — fully automatic, zero flags. Unlike
+// DetectArchAuto there is no staged list to consult (the target is
+// about to be wiped) and bare arm64 resolves to the legacy arm64
+// lineage instead of failing closed.
+func InstallFlavor(model, compatible, goarch string) (string, bool) {
+	if f, ok := flavorFromDeviceTree(model, compatible); ok {
+		return f, true
+	}
+	return NodectlArch(goarch)
 }
 
 // StoredKernelName is the decompressed kernel basename on the

@@ -51,6 +51,8 @@ func main() {
 		code = runPurge(log, args)
 	case "boot":
 		code = runBoot(log, args)
+	case "install":
+		code = runInstall(log, args)
 	case "selfupdate":
 		code = runSelfupdate(log, args)
 	case "-h", "-help", "--help", "help":
@@ -74,6 +76,7 @@ Commands:
   list             staged versions + running + bootloader default (read-only)
   purge            retention + bootloader prune (never prompts)
   boot [<ts>]      show the bootloader default, or re-point it at a staged release
+  install [<ts>]   install the distro IMG onto a whole-disk device
   selfupdate       check the nodectl channel + install latest (auto-checked daily)
   version          print embedded build info (no root needed)
 

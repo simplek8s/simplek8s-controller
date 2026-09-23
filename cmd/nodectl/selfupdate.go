@@ -165,10 +165,11 @@ func runSelfupdate(log *slog.Logger, args []string) int {
 
 // autoCheckCommand reports whether cmd triggers the daily selfupdate
 // pre-check: every subcommand but version/help/selfupdate itself
-// (PLAN.md §3.14).
+// (PLAN.md §3.14). install included: destructive ops deserve the
+// freshest binary first.
 func autoCheckCommand(cmd string) bool {
 	switch cmd {
-	case "check", "update", "list", "purge", "boot":
+	case "check", "update", "list", "purge", "boot", "install":
 		return true
 	default:
 		return false

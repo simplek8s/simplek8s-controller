@@ -16,6 +16,7 @@ func TestParseNodectlRelease(t *testing.T) {
 	}{
 		{"nodectl.202609171200.x86-64", "202609171200", "x86-64", true},
 		{"nodectl.202609171200.arm64", "202609171200", "arm64", true},
+		{"nodectl.20260917120012.x86-64", "", "", false},
 		{"nodectl.latest.x86-64", "", "", false},
 		{"nodectl.202609171200.x86-64.upx", "", "", false},
 		{"simplek8s.202609171200.x86-64.efi.zst", "", "", false},

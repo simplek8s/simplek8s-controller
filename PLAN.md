@@ -1057,35 +1057,66 @@ implemented natively in Go (new `cmd/nodectl/install.go`; single
 static binary, M6 D1/D17). The untested `simplek8s-install` shell
 script in simplek8s-buildroot `ce48471` is superseded by this design,
 not ported: the source is the release `.IMG`, not the boot media.
+It runs on a live-booted SimpleK8s (ISO/USB/IMG) and provisions an
+*other* disk; the live environment carrying nodectl plus the
+partition/filesystem tools (`sfdisk`, `mkfs.ext4`,
+`mount`/`umount`, partition re-read) is a distro (buildroot-side)
+requirement, recorded here as external. Go itself streams and
+writes the image (no `curl`/`dd` needed).
 
 **`install`.** `nodectl install [--url] [--yes] [--config FILE]
-[<ts>] <device>` installs the distro onto the whole-disk block
-device `<device>` (e.g. `/dev/vda`). Root required; takes the
-exclusive `/run/simplek8s/update.lock`.
+[--dry-run] [<ts>] <device>` installs the distro onto the
+whole-disk block device `<device>` (e.g. `/dev/vda`). Root
+required. No update lock (M8 D7).
 
-- **Source.** The distro `.IMG` from the release channel (`--url`:
-  `stable|rolling|dev` or full URL, default stable; same keyring
-  discipline). No `<ts>` → latest IMG; `<ts>` → that version. The IMG
-  is resolved through the GPG-verified index, exactly like `update`
-  resolves kernels — one trust path. No `--source` (no boot-media
-  auto-detect), no `--kernel` (the kernel is the IMG's), no
-  `--efi-size` (512MiB ESP, the IMG's constant).
-- **Write.** Dump the verified IMG onto the device, then create the
-  `/var` partition (ext4, label `var`) in the remaining space and
-  leave a `simplek8s.yaml` mounting it (minimal mounts-only default,
-  or `--config FILE`). The IMG already carries both bootloaders, so
-  BIOS + UEFI are always installed — no `--no-bios`.
-- **Users.** The minimal yaml provisions no users: user/network setup
-  stays with the first-boot wizard (`simplek8s-wizard`, port 5443).
-  No generated root password (shown-once secrets are lost on
-  scrollback and conflict with the wizard flow); an explicit
-  opt-in password flag may be added later if the wizard-less case
-  appears.
-- **Safety.** Whole-disk validation (`/sys/block/<base>`, symlinks
-  resolved, partitions rejected), refuse when any `TARGET*` is
-  mounted (`/proc/mounts`), then a 10s cancellable countdown (`Enter`
-  / Ctrl-C aborts untouched; non-tty requires `--yes`). `--yes` is
-  long-only (kebab, no shorts — M6 D5).
+- **Source.** The compressed distro `.IMG` (`.img.zst`, the
+  bandwidth form — the repo also serves plain `.img` plus
+  `latest` aliases, neither consumed) from the release channel
+  (`--url`: `stable|rolling|dev` or full URL, default stable; same
+  keyring discipline). New `updatecore` grammar
+  (`ParseImgRelease`) + newest-TS selection (`FilterImgIndex`,
+  same rule as kernels/flavors — alias ignored). Arch is the
+  node's own, fully auto, zero flags: device-tree model/
+  compatible → `rpi4`/`rpi5`, else build arch (`amd64`→`x86-64`,
+  `arm64`→`arm64`). No `<ts>` → latest IMG; `<ts>` → that
+  version. No `--source`, no `--kernel`, no `--efi-size` (the
+  kernel/ESP are the IMG's).
+- **Write.** Stream (`net/http` + in-process zstd via the already
+  vendored `klauspost/compress`, same primitive as kernel
+  staging) straight onto the whole-disk fd while hashing the
+  *compressed* bytes; stderr progress (MiB downloaded and MiB
+  written — one pipeline, two counters). The hash only
+  completes at end of stream: on mismatch exit 1 with the target
+  left dirty (documented re-run from scratch — no download-first,
+  the live env is not owed ~1GiB free). Then `sfdisk` appends the
+  `/var` partition (type 83, all remaining space), re-read the
+  table, `mkfs.ext4 -L var`; mount p1 and write
+  `simplek8s/simplek8s.yaml` (mounts-only, mounting
+  `/dev/disk/by-label/var` at `/var` — `Version` defaults to
+  `"1"` in init, so no other keys needed; the IMG already ships
+  `simplek8s.yaml.example`), or `--config FILE` verbatim.
+  The IMG carries both bootloaders: BIOS + UEFI always, no
+  `--no-bios`. Target floor: refuse under 1GiB (`/sys/block`
+  size pre-check; ENOSPC mid-write is exit 1).
+- **Users.** With `--config` the file is authoritative and nothing
+  is ever prompted. Without it, on a tty, `install` prompts for
+  the root password (hidden input, twice with confirm; empty
+  refused with exit 2) *before* the countdown, and writes
+  `users: [{name: root, password_hash: $6$…}]` above the mounts
+  (SHA-512-crypt hashed in-process — no live-env dependency).
+  Non-tty without `--config` is exit 2 (cannot prompt: supply
+  `--config`); `--dry-run` never prompts. The wizard (port 5443)
+  stays available for the rest (network, keys).
+- **Safety.** Whole-disk validation (`/sys/block/<base>`,
+  symlinks resolved, partitions rejected; the running boot disk
+  is always refused via the mount check), refuse when any
+  `TARGET*` is mounted (`/proc/mounts`), then a 10s cancellable
+  countdown (`Enter` / Ctrl-C aborts untouched; non-tty requires
+  `--yes`). `--yes` is long-only (kebab, no shorts — M6 D5).
+- **`--dry-run`.** Resolve the IMG and print the plan (device,
+  IMG ts + compressed size, partition layout) — download and
+  touch nothing (M6 minimal-matrix rule: dry-run on write
+  commands).
 
 ## 4. Decision log (per era; §4.7 latest)
 
@@ -1381,8 +1412,14 @@ to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
 | 2 | `ce48471` shell prototype superseded, not ported | Its boot-media logic dies with the IMG source; Go-native single static binary still stands (M6 D1/D17). |
 | 3 | Always BIOS + UEFI, no `--no-bios` | The IMG already carries both; one fewer flag, one fewer untested combination (decided 2026-09-21). |
 | 4 | No `--kernel` / `--source` / `--efi-size` | The kernel is the IMG's; ESP is the IMG's 512MiB constant; channel selection is `--url` (`stable\|rolling\|dev` or full URL). |
-| 5 | Minimal mounts-only yaml; no generated root password | Users stay with the first-boot wizard (port 5443); shown-once secrets are lost on scrollback and conflict with that flow. |
+| 5 | No generated root password; interactive prompt when tty | tty + no `--config` → prompt root password twice (hidden, confirm, empty refused exit 2), hash SHA-512-crypt (`$6$`) implemented in Go in `updatecore` (pure + vectors; no live-env `openssl` owed, single-binary discipline); non-tty without `--config` → exit 2 (supply `--config`); `--config` never prompts; `--dry-run` never prompts (decided 2026-09-23, supersedes 2026-09-21). |
 | 6 | `--yes` long-only, 10s cancellable countdown, non-tty requires `--yes` | Kebab-case no-shorts discipline (M6 D5); destructive runs stay guarded non-interactively. |
+| 7 | No update lock | Install writes a *different* disk (the running boot disk is refused via the mount check): no shared resource with controller/CLI sessions, no contention by design (decided 2026-09-23). |
+| 8 | Stream `.img.zst` straight to disk, verify inline | No ~1GiB staging owed by the live env; zstd decoded in-process (`klauspost/compress`, already vendored); hash covers the compressed bytes; mismatch → exit 1, target dirty, documented re-run (decided 2026-09-23). |
+| 9 | New `ParseImgRelease`/`FilterImgIndex`, alias ignored | Same grammar/selection shape as kernels; arch fully auto (device-tree → rpi4/rpi5, else build arch), zero flags (decided 2026-09-23). |
+| 10 | `/var` = all remaining space, ext4 `var`; 1GiB target floor | 512M IMG + var room; pre-check via `/sys/block` size, ENOSPC mid-write is exit 1 (decided 2026-09-23). |
+| 11 | `--dry-run` + stderr progress (both counters) | Dry-run on the write command per the M6 minimal matrix (resolve + print, touch nothing, never prompts); progress shows compressed-downloaded and decompressed-written MiB — one pipeline, two counters (decided 2026-09-23). |
+| 12 | Mounted check via aliases + rdev; foreign-label warning | `/proc/mounts` lies by omission (live mounts via by-label): resolve symlinks + compare device numbers, either signal refuses (live find: by-label/var slipped through). A *foreign* var/EFI label is warning-only (refusing would kill installed-system provisioning flows): summary shouts detach-before-reboot (decided 2026-09-23). |
 
 ## 5. Behavior changes & migration
 
@@ -1975,18 +2012,44 @@ hardening.
 | S5 | Tampered `SHA256SUMS` signature | Refused, exit 1, binary untouched. |
 | S6 | Handoff after update | After S2, `nodectl version` reports the new stamps (execution passed to the new binary); no update loop on re-run. |
 
-### 7.8 install campaign (M8, planned)
+### 7.8 install campaign (M8, live on wk2 2026-09-23)
 
-Same fleet as §7.6. Not run yet.
+I1/I2/I5/I6/I7/I8/I9 PASS on sk8s-wk2 (dev 202609230227, GPG-verified):
+I1 full stream (60MiB down / 513MiB written, dual progress) →
+vdb1 512M EFI + vdb2 3.5G var, mounts-only yaml with prompted
+root hash (hash cross-checked with openssl; password login proven
+in I3); I2 pinned-ts reinstall over a previous install; I5
+`--config` verbatim incl. the non-tty path (never prompts); I6 all
+three refusals (the mounted-target case caught a live find:
+by-label mounts slip literal string matching — mounted check is
+now mountinfo major:minor ground truth, M8 D12); I7 dry-run
+(which caught a second live find: two Feb-2023 14-digit legacy
+index entries beating newest-TS selection — IMG/nodectl grammars
+are now exactly 12 digits); I8 crafted valid-zstd/wrong-hash
+stream → exit 1 dirty + clean reinstall recovers; I9 512M target
+refused exit 2. I3 PASS on UEFI (installed disk booted unassisted
+to kernel 202609230227 + login + DHCP; root console login +
+`/var` from by-label proven via video screenshot + `send-key` —
+virsh console is silent: no 8250 serial driver in the kernel
+defconfig; BIOS boot N/A on this OVMF fleet). I4 (rpi) pending —
+needs the new image or a pushed binary + spare disk on rpi HW.
+Live finds beyond code: attach raw images with an explicit
+`--subdriver` (qcow2-as-raw presents 385 sectors); reattach qcow2
+as qcow2 (a raw reattach left wk2 unbootable — restored, healthy);
+duplicate var/EFI labels across visible disks hijack by-label
+mounts on reboot (I1 summary now shouts detach-before-reboot).
 
 | # | Case | Expect |
 | --- | --- | --- |
-| I1 | `install /dev/vda` (latest stable IMG) | Verified IMG dumped, `/var` created in the remaining space, mounts-only yaml written; countdown cancellable via Enter/Ctrl-C with zero writes. |
+| I1 | `install /dev/vda` (latest stable IMG) | Verified IMG dumped, `/var` created in the remaining space, mounts-only yaml written; countdown cancellable via Enter/Ctrl-C with zero writes; summary warns on foreign var/EFI labels. |
 | I2 | `install <ts> /dev/vda` + `--url dev` | Pinned IMG version installed; channel override honored. |
 | I3 | Boot the installed disk on UEFI+SecureBoot and on BIOS | Both boot unassisted (MOK enroll on first Secure Boot). |
 | I4 | `install` on rpi4 (+ rpi5 when hardware exists) | Node boots, `/var` mounted from the created partition per the installed yaml. |
 | I5 | `--config FILE` override | Custom yaml installed verbatim instead of the minimal one. |
 | I6 | Partition-as-target, mounted-target, non-tty without `--yes` | All refused before any write (exit 2, 1, 2 respectively). |
+| I7 | `install --dry-run` | Plan printed (device, IMG ts + size, layout); no download, device untouched. |
+| I8 | Corrupt IMG stream (bit-flip proxy) | Exit 1, target left dirty; clean re-run installs fine. |
+| I9 | Target under 1GiB | Refused before the countdown (exit 2). |
 
 ## 8. Deferred
 

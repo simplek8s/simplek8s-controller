@@ -122,7 +122,7 @@ func TestDownloadAndInstall(t *testing.T) {
 }
 
 func TestAutoCheckCommand(t *testing.T) {
-	for _, cmd := range []string{"check", "update", "list", "purge", "boot"} {
+	for _, cmd := range []string{"check", "update", "list", "purge", "boot", "install"} {
 		if !autoCheckCommand(cmd) {
 			t.Errorf("autoCheckCommand(%q) = false, want true", cmd)
 		}

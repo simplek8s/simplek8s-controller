@@ -7,10 +7,9 @@ import (
 // Nodectl release file naming (PLAN.md §3.14): the publisher serves
 // the uploaded CLI binaries under a signed SHA256SUMS as
 // nodectl.<ts>.<arch> (e.g. nodectl.202609171200.x86-64), with
-// <ts> from the nodectl build (`make build-nodectl` TS). The
-// `latest`-style aliases carry no ts and never match — same rule as
-// ParseStoredKernel.
-var nodectlReleaseRe = regexp.MustCompile(`^nodectl\.([0-9]+)\.([A-Za-z0-9_-]+)$`)
+// <ts> the 12-digit release stamp. The `latest`-style aliases
+// carry no ts and never match — same rule as ParseStoredKernel.
+var nodectlReleaseRe = regexp.MustCompile(`^nodectl\.([0-9]{12})\.([A-Za-z0-9_-]+)$`)
 
 // ParseNodectlRelease parses a published nodectl filename into
 // (ts, arch). Non-matching names (aliases, foreign files) report
