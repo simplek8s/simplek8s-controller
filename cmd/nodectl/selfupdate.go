@@ -164,15 +164,19 @@ func runSelfupdate(log *slog.Logger, args []string) int {
 }
 
 // autoCheckCommand reports whether cmd triggers the daily selfupdate
-// pre-check: every subcommand but version/help/selfupdate itself
-// (PLAN.md §3.14). install included: destructive ops deserve the
-// freshest binary first.
+// pre-check (PLAN.md §3.14, M7 D13): everything but
+// version/help/selfupdate itself — unknown commands trigger too,
+// deliberately: an old binary must update precisely when the user
+// invokes a command it does not know yet (e.g. `install` before
+// M8). A typo costs at most one bounded background check.
 func autoCheckCommand(cmd string) bool {
 	switch cmd {
-	case "check", "update", "list", "purge", "boot", "install":
-		return true
-	default:
+	case "version", "-version", "--version",
+		"help", "-h", "-help", "--help",
+		"selfupdate":
 		return false
+	default:
+		return true
 	}
 }
 

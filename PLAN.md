@@ -49,7 +49,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M3  | Maintenance windows, update reboot loop, boot-partition hygiene | Shipped 2026-09-11 (W1–W17 17/17 PASS, builds `f3b329a`/`b1c6da5`, 34 decisions)                                                                          |
 | M5  | Board flavors for updates + boot-device verification            | Shipped 2026-09-16 (F1–F5 5/5 PASS, 8 decisions, §7.5)                                                                                                    |
 | M6  | Local-node admin CLI (`nodectl`)                                | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 21 decisions, §7.6)                                                                           |
-| M7  | `nodectl selfupdate` + daily auto-check                         | Shipped 2026-09-21 (S1–S6 PASS live x86-64 + rpi4 + fake channel, 12 decisions, §7.7)                                                                     |
+| M7  | `nodectl selfupdate` + daily auto-check                         | Shipped 2026-09-21 (S1–S6 PASS live x86-64 + rpi4 + fake channel, 13 decisions, §7.7)                                                                     |
 | M8  | `nodectl install` onto whole-disk devices                       | Shipped 2026-09-24 (I1–I3/I5–I10 PASS live on wk2; I4 full rpi boot pending spare-disk/hw, rpi4 dry-run evidence in §7.8; 13 decisions, GRUB kernel_opts) |
 
 ### 1.2 Shipped baseline
@@ -173,7 +173,7 @@ design (reopens M6 D6, which had folded it into `update` — the CLI
 still updates kernels via distro releases, but the CLI binary itself
 needs its own channel). Shipped 2026-09-21 (S1–S6 PASS live x86-64
 
-- rpi4 + fake channel, 12 decisions).
+- rpi4 + fake channel, 13 decisions: D13 denylist auto-check, 2026-09-24).
   Design in §3.14, decisions in §4.6, E2E in §7.7.
 
 ### 1.7 Shipped (M8: nodectl install)
@@ -1024,7 +1024,10 @@ current; a locally rebuilt binary would never checksum-match
 (`ldflags` embed version/commit/date) and is not shipped.
 
 - **Daily auto-check.** Every invocation except `version`/`help` and
-  `selfupdate` itself — and only when running as root (a non-root
+  `selfupdate` itself — unknown commands included, deliberately
+  (M7 D13): an old binary must update precisely when the user
+  invokes a command it does not know yet — and only when running
+  as root (a non-root
   invocation could never install the binary; attempting the network
   check first would only add noise before the root error) — reads
   `/run/simplek8s/nodectl-selfcheck`, which holds a UTC RFC3339
@@ -1407,6 +1410,7 @@ configmap.data`, live coredns wire JSON). No nested documents, no
 | 10  | Short client timeout for the auto path                               | A stalled network must never hold the real subcommand hostage; explicit runs keep the 5min client (decided 2026-09-21).                                                                                                                              |
 | 11  | Auto path uses defaults; pending `dry-run` suppresses it             | No flag parsing before dispatch (stable + embedded keyring; other channels need explicit runs); dry means dry (decided 2026-09-21).                                                                                                                  |
 | 12  | `selfupdate` ignores the update lock                                 | Touches only binary + state file (own `flock`); never contends with nor blocked by boot-partition sessions (decided 2026-09-21).                                                                                                                     |
+| 13  | Auto-check is denylist: unknown commands trigger                       | An old binary must update precisely when the user invokes a command it does not know yet (live find: no selfupdate on unknown install); typo cost is one bounded check (decided 2026-09-24).                                                       |
 
 ### 4.7 Node CLI install era (M8, shipped 2026-09-24)
 
