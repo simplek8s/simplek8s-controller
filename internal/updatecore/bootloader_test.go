@@ -329,6 +329,61 @@ menuentry "SimpleK8s 202609061935 x86-64" {
 	}
 }
 
+func TestGrubNewEntryReferencesKernelOpts(t *testing.T) {
+	root := t.TempDir()
+	writeRel(t, root, grubConfigRel, grubSample)
+
+	newKernel := "/simplek8s/simplek8s.202601010000.x86-64.efi"
+	if err := SetBootloaderDefault(BootloaderGrub, root, newKernel, "/"); err != nil {
+		t.Fatal(err)
+	}
+	got := readRel(t, root, grubConfigRel)
+	if !strings.Contains(got, "\tlinux "+newKernel+" ${kernel_opts}") {
+		t.Fatalf("new entry must reference ${kernel_opts}:\n%s", got)
+	}
+	// Declared once, empty (behavior-neutral), before the default.
+	if n := strings.Count(got, "set kernel_opts="); n != 1 {
+		t.Fatalf("set kernel_opts count = %d, want 1:\n%s", n, got)
+	}
+	if !strings.Contains(got, "set kernel_opts=\"\"") {
+		t.Fatalf("missing declaration must default to empty:\n%s", got)
+	}
+	if strings.Index(got, "set kernel_opts=") > strings.Index(got, "set default=") {
+		t.Fatalf("declaration must precede the default:\n%s", got)
+	}
+	// The default still resolves to the bare kernel path.
+	if def := GetBootloaderDefault(BootloaderGrub, root); def != newKernel {
+		t.Fatalf("GetBootloaderDefault = %q, want %q", def, newKernel)
+	}
+}
+
+func TestGrubKernelOptsPreservedVerbatim(t *testing.T) {
+	root := t.TempDir()
+	withOpts := strings.Replace(grubSample,
+		"set timeout=5",
+		"set timeout=5\nset kernel_opts=\"console=tty1 console=ttyS0\"",
+		1)
+	writeRel(t, root, grubConfigRel, withOpts)
+
+	// Re-point twice: the operator line must survive untouched, and
+	// no second declaration may appear.
+	for _, want := range []string{
+		"/simplek8s/simplek8s.202608291203.x86-64.efi",
+		"/simplek8s/simplek8s.202601010000.x86-64.efi",
+	} {
+		if err := SetBootloaderDefault(BootloaderGrub, root, want, "/"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := readRel(t, root, grubConfigRel)
+	if n := strings.Count(got, "set kernel_opts="); n != 1 {
+		t.Fatalf("set kernel_opts count = %d, want 1:\n%s", n, got)
+	}
+	if !strings.Contains(got, `set kernel_opts="console=tty1 console=ttyS0"`) {
+		t.Fatalf("operator value rewritten:\n%s", got)
+	}
+}
+
 func TestPruneGrubEntries(t *testing.T) {
 	gone := func(base string) bool {
 		return base == "simplek8s.202608291203.x86-64.efi"

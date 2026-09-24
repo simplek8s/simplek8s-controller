@@ -253,11 +253,12 @@ func syslinuxKernelForLabel(f *os.File, label string) (string, error) {
 // normalized to --id on write.
 
 var (
-	reGrubDefault  = regexp.MustCompile(`(?i)^\s*set\s+default\s*=\s*(.+?)\s*$`)
-	reGrubMenuentr = regexp.MustCompile(`(?i)^\s*menuentry\s+(?:"([^"]+)"|'([^']+)')(.*)\{\s*$`)
-	reGrubID       = regexp.MustCompile(`--id[=\s]+("[^"]+"|'[^']+'|[^\s]+)`)
-	reGrubLinux    = regexp.MustCompile(`(?i)^\s*linux\s+(?P<kernel>\S+)`)
-	reGrubClose    = regexp.MustCompile(`^\s*\}\s*$`)
+	reGrubDefault    = regexp.MustCompile(`(?i)^\s*set\s+default\s*=\s*(.+?)\s*$`)
+	reGrubKernelOpts = regexp.MustCompile(`(?i)^\s*set\s+kernel_opts\s*=`)
+	reGrubMenuentr   = regexp.MustCompile(`(?i)^\s*menuentry\s+(?:"([^"]+)"|'([^']+)')(.*)\{\s*$`)
+	reGrubID         = regexp.MustCompile(`--id[=\s]+("[^"]+"|'[^']+'|[^\s]+)`)
+	reGrubLinux      = regexp.MustCompile(`(?i)^\s*linux\s+(?P<kernel>\S+)`)
+	reGrubClose      = regexp.MustCompile(`^\s*\}\s*$`)
 )
 
 // grubEntry is one parsed menuentry block.
@@ -403,7 +404,7 @@ func setGrubDefault(partRoot, relKernelPath string) error {
 	if !found {
 		block := []string{
 			fmt.Sprintf(`menuentry "%s" --id %s {`, grubMenuTitle(relKernelPath), id),
-			fmt.Sprintf("\tlinux %s", relKernelPath),
+			fmt.Sprintf("\tlinux %s ${kernel_opts}", relKernelPath),
 			"}",
 			"",
 		}
@@ -427,7 +428,11 @@ func setGrubDefault(partRoot, relKernelPath string) error {
 
 	defLine := fmt.Sprintf("set default=%s", id)
 	done := false
+	optsPresent := false
 	for i, ln := range lines {
+		if reGrubKernelOpts.MatchString(ln) {
+			optsPresent = true
+		}
 		if reGrubDefault.MatchString(ln) {
 			lines[i] = defLine
 			done = true
@@ -442,6 +447,17 @@ func setGrubDefault(partRoot, relKernelPath string) error {
 			}
 		}
 		lines = append(lines[:at], append([]string{defLine}, lines[at:]...)...)
+	}
+	if !optsPresent {
+		// Operator-owned kernel args (PLAN M8 D13): the variable
+		// is declared once, empty (behavior-neutral), and never
+		// rewritten afterwards — new entries reference it.
+		for i, ln := range lines {
+			if reGrubDefault.MatchString(ln) {
+				lines = append(lines[:i], append([]string{`set kernel_opts=""`}, lines[i:]...)...)
+				break
+			}
+		}
 	}
 
 	out := strings.Join(lines, "\n")

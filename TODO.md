@@ -88,3 +88,16 @@ machine-console access per node. The verified console recovery (pick
 a good entry, repair, re-pin) is documented in the README runbook;
 the `completed`+mismatch verification and no-auto-retry already hold
 for whatever comes back.
+
+## 15. selfupdate: newer-than-index local builds
+
+`selfupdate` newness is checksum-only (M7 D1): any locally built
+binary never matches the indexed `latest` checksum (`ldflags` bake
+version/commit/date into the bytes), so the auto-check always
+"updates" it — even when the local build is newer, which is a
+downgrade. E2E procedure today is `NODECTL_NO_SELFUPDATE=1` for
+test binaries (live find, M8 I10). Next: stamp the channel TS into
+the binary at `build-nodectl` time (same TS the publish uses) and
+compare — newer local skips with a message instead of
+downgrading. Small, backwards-compatible (unstamped binaries keep
+today's behavior).
