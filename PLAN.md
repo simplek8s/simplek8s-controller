@@ -1426,6 +1426,8 @@ configmap.data`, live coredns wire JSON). No nested documents, no
 | 12  | Mounted check via aliases + rdev; foreign-label warning                | `/proc/mounts` lies by omission (live mounts via by-label): resolve symlinks + compare device numbers, either signal refuses (live find: by-label/var slipped through). A _foreign_ var/EFI label is warning-only (refusing would kill installed-system provisioning flows): summary shouts detach-before-reboot (decided 2026-09-23).                                                   |
 | 13  | GRUB `kernel_opts` operator variable                                   | New menuentries reference `${kernel_opts}`; the `set` line is user-owned (writer declares it once as empty, never rewrites); old entries untouched until purge rotation (writer discipline). Read/prune match the bare path, unaffected. Distro template must ship the same shape day-one (decided 2026-09-24).                                                                          |
 
+| 14  | Partition type follows the dumped disklabel                           | DOS takes `83`, GPT the Linux-filesystem GUID — a bare 83 is Invalid argument on GPT (live find: hybrid-layout IMG on an empty 2GiB disk). Unknown labels fail closed (decided 2026-09-24).                                                                                                                                                                                             |
+
 ## 5. Behavior changes & migration
 
 - **Updates keep working after an M3 rollout** (D6): absent

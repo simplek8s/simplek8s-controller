@@ -359,12 +359,12 @@ func installTargetSize(base string) (int64, error) {
 // and returns its SHA-512-crypt hash. Empty is refused (exit 2):
 // key-only setups belong in an explicit --config file.
 func promptRootPassword(log *slog.Logger) (string, int) {
-	first, err := readPasswordLine("root password: ")
+	first, err := readPasswordLine("root password (typing hidden): ")
 	if err != nil {
 		log.Error("reading password failed", "err", err)
 		return "", exitOperational
 	}
-	second, err := readPasswordLine("confirm root password: ")
+	second, err := readPasswordLine("confirm root password (typing hidden): ")
 	if err != nil {
 		log.Error("reading password failed", "err", err)
 		return "", exitOperational
@@ -517,6 +517,31 @@ func streamImageToDisk(ctx context.Context, client *http.Client, base, file, wan
 	return dev.Sync()
 }
 
+// parseDiskLabel extracts the disklabel type ("dos", "gpt", …)
+// from an `sfdisk --dump` output ("label: <type>" line).
+func parseDiskLabel(dump string) string {
+	for _, line := range strings.Split(dump, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "label:"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// varPartType maps the disklabel to the data-partition type for
+// the appended /var partition.
+func varPartType(label string) (string, bool) {
+	switch label {
+	case "dos":
+		return "83", true
+	case "gpt":
+		// Linux filesystem data GUID (0x83 is MBR-only).
+		return "0FC63DAF-8483-4772-8E79-3D69D8477DE4", true
+	default:
+		return "", false
+	}
+}
+
 // partDevName appends the partition number (sdX->sdX1,
 // nvme0n1/mmcblk0->Xp1).
 func partDevName(disk string, num int) string {
@@ -526,12 +551,25 @@ func partDevName(disk string, num int) string {
 	return fmt.Sprintf("%s%d", disk, num)
 }
 
-// appendVarPartition adds p2 (type 83, rest of disk) via sfdisk,
+// appendVarPartition adds p2 (Linux data, rest of disk) via sfdisk,
 // re-reads the table, waits for the node, and formats it ext4
-// (label var).
+// (label var). The partition type follows the dumped disklabel:
+// DOS takes the 0x83 code, GPT the Linux-filesystem GUID — a bare
+// `83` is rejected as Invalid argument on GPT (live find on a
+// hybrid-layout IMG).
 func appendVarPartition(log *slog.Logger, target string) int {
+	dump, err := exec.Command("sfdisk", "--dump", target).Output()
+	if err != nil {
+		log.Error("reading partition table failed", "err", err)
+		return exitOperational
+	}
+	partType, ok := varPartType(parseDiskLabel(string(dump)))
+	if !ok {
+		log.Error("unsupported partition table (want dos or gpt)", "device", target)
+		return exitOperational
+	}
 	cmd := exec.Command("sfdisk", "--force", "--append", target)
-	cmd.Stdin = strings.NewReader(", ,83\n")
+	cmd.Stdin = strings.NewReader(", ," + partType + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		log.Error("sfdisk append failed", "err", err, "out", strings.TrimSpace(string(out)))
 		return exitOperational

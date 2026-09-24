@@ -76,7 +76,7 @@ Commands:
   list             staged versions + running + bootloader default (read-only)
   purge            retention + bootloader prune (never prompts)
   boot [<ts>]      show the bootloader default, or re-point it at a staged release
-  install [<ts>]   install the distro IMG onto a whole-disk device
+  install <device>   install the distro IMG onto a whole-disk device
   selfupdate       check the nodectl channel + install latest (auto-checked daily)
   version          print embedded build info (no root needed)
 

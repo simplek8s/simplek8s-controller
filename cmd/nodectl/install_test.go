@@ -164,3 +164,34 @@ func TestCryptSalt(t *testing.T) {
 		t.Fatal("salts are not random")
 	}
 }
+
+func TestParseDiskLabel(t *testing.T) {
+	dos := "label: dos\nlabel-id: 0x12345678\ndevice: /dev/sda\nunit: sectors\n\n/dev/sda1 : start=2048, size=1048576, type=ef\n"
+	if got := parseDiskLabel(dos); got != "dos" {
+		t.Errorf("parseDiskLabel(dos) = %q", got)
+	}
+	gpt := "label: gpt\nlabel-id: DBF508B4-D465-48E9-AC1A-5B32AD6AE8F3\ndevice: /dev/sda\nunit: sectors\n\n/dev/sda1 : start=2048, size=1048576, type=U\n"
+	if got := parseDiskLabel(gpt); got != "gpt" {
+		t.Errorf("parseDiskLabel(gpt) = %q", got)
+	}
+	if got := parseDiskLabel("garbage\n"); got != "" {
+		t.Errorf("parseDiskLabel(garbage) = %q, want empty", got)
+	}
+}
+
+func TestVarPartType(t *testing.T) {
+	if got, ok := varPartType("dos"); !ok || got != "83" {
+		t.Errorf("varPartType(dos) = (%q,%v)", got, ok)
+	}
+	// GPT takes the Linux-filesystem GUID: a bare 83 is
+	// rejected as Invalid argument (live find on hybrid IMGs).
+	if got, ok := varPartType("gpt"); !ok || got != "0FC63DAF-8483-4772-8E79-3D69D8477DE4" {
+		t.Errorf("varPartType(gpt) = (%q,%v)", got, ok)
+	}
+	if _, ok := varPartType("sgi"); ok {
+		t.Error("varPartType(sgi) must fail closed")
+	}
+	if _, ok := varPartType(""); ok {
+		t.Error("varPartType(empty) must fail closed")
+	}
+}
