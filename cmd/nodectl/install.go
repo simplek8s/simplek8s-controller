@@ -167,7 +167,7 @@ func runInstall(log *slog.Logger, args []string) int {
 	if code := writeInstallYAML(log, p1, config, ts, passwordHash); code != exitOK {
 		return code
 	}
-	printInstallSummary(target, ts, config)
+	printInstallSummary(target, ts)
 	return exitOK
 }
 
@@ -645,48 +645,39 @@ func writeInstallYAML(log *slog.Logger, esp, config, ts, passwordHash string) in
 // plus the /var mount (init defaults Version to "1").
 func minimalInstallYAML(ts, passwordHash string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Written by nodectl install (%s). Provision network/keys on\n", ts)
-	sb.WriteString("# first boot via the wizard (port 5443) or replace this file\n# with your own (see simplek8s.yaml.example).\nusers:\n  - name: root\n")
+	fmt.Fprintf(&sb, "# Written by nodectl install (%s).\n# See simplek8s.yaml.example for all options.\nusers:\n  - name: root\n", ts)
 	fmt.Fprintf(&sb, "    password_hash: %s\n", passwordHash)
 	sb.WriteString("storage:\n  mounts:\n    - what: /dev/disk/by-label/var\n      where: /var\n")
 	return sb.String()
 }
 
 // printInstallSummary reports the result (bootloader chain comes
-// with the IMG; nothing to re-point on day one).
-func printInstallSummary(target, ts, config string) {
+// with the IMG; nothing to re-point on day one). Deliberately
+// terse: one line plus warnings — no lsblk dump, no config
+// recap (the operator just chose both).
+func printInstallSummary(target, ts string) {
 	fmt.Printf("\nInstalled SimpleK8s %s on %s\n", ts, target)
-	if out, err := exec.Command("lsblk", "-o", "NAME,SIZE,TYPE,LABEL", target).Output(); err == nil {
-		fmt.Printf("%s", out)
-	}
-	if config != "" {
-		fmt.Printf("config: installed from %s\n", config)
-	} else {
-		fmt.Printf("config: minimal (root login + mounts /var); provision network/keys via the wizard (port 5443)\n")
-	}
 	warnForeignLabels(target)
 }
 
 // warnForeignLabels shouts when another visible disk carries the
-// LABEL=var or LABEL=EFI the install just wrote (M8 D12): the
-// distro mounts /var by label at boot, and boot-device discovery
-// is label-scanned — with two claimants the next reboot (or the
-// next update run) may adopt the wrong disk. The fix is
-// operational, not coded: detach the target before rebooting this
-// host or running update tooling on it. Best-effort (a missing
-// blkid never fails the install).
+// LABEL=var this install just wrote (M8 D12): init mounts /var by
+// label at boot, so with two claimants the next reboot may adopt
+// the wrong disk. The fix is operational, not coded: detach the
+// target before rebooting this host. Best-effort (a missing blkid
+// never fails the install). NOTE: LABEL=EFI collisions are
+// intentionally not warned: ESP discovery is grub.cfg-based, not
+// label-scanned.
 func warnForeignLabels(target string) {
-	for _, label := range []string{"var", "EFI"} {
-		out, err := exec.Command("blkid", "-o", "device", "-t", "LABEL="+label).Output()
-		if err != nil && len(bytes.TrimSpace(out)) == 0 {
+	out, err := exec.Command("blkid", "-o", "device", "-t", "LABEL=var").Output()
+	if err != nil && len(bytes.TrimSpace(out)) == 0 {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		dev := strings.TrimSpace(line)
+		if dev == "" || dev == target || mountSourceMatchesTarget(dev, target) {
 			continue
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			dev := strings.TrimSpace(line)
-			if dev == "" || dev == target || mountSourceMatchesTarget(dev, target) {
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "WARNING: LABEL=%s also present on %s: detach %s before rebooting this host or running update tooling on it\n", label, dev, target)
-		}
+		fmt.Fprintf(os.Stderr, "WARNING: LABEL=var also present on %s: detach %s before rebooting this host\n", dev, target)
 	}
 }
