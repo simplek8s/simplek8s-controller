@@ -68,6 +68,15 @@ const (
 	maxCLIBinaryBytes = 64 << 20
 )
 
+// localBuildNewer reports whether the running binary is a stamped
+// local build (releaseTS, Makefile CLI_LDFLAGS) newer than the
+// index's latest release (PLAN.md §3.14 D14): it is skipped, not
+// downgraded. Unstamped binaries (releaseTS == "") keep today's
+// checksum-only behavior.
+func localBuildNewer(local, index string) bool {
+	return local != "" && updatecore.NewerTS(local, index)
+}
+
 // cliRepoBase trims one trailing slash, keeping the short-channel
 // expansion parallel to the kernel channels (dev | rolling |
 // stable) under the simplek8s-nodectl/ prefix.
@@ -149,6 +158,11 @@ func runSelfupdate(log *slog.Logger, args []string) int {
 		refreshSelfState(log)
 		return exitOK
 	}
+	if localBuildNewer(releaseTS, ts) {
+		fmt.Printf("local build %s is newer than the index (%s); skipping update\n", releaseTS, ts)
+		refreshSelfState(log)
+		return exitOK
+	}
 	if dryRun {
 		fmt.Printf("would update %s -> %s\n", displayRelease(sums, arch, own), ts)
 		return exitOK
@@ -227,12 +241,17 @@ func autoSelfupdateAttempt(log *slog.Logger) error {
 	if !ok {
 		return fmt.Errorf("unsupported arch %q", runtime.GOARCH)
 	}
-	_, file, sum, ok := updatecore.FilterNodectlIndex(sums, arch)
+	ts, file, sum, ok := updatecore.FilterNodectlIndex(sums, arch)
 	if !ok {
 		refreshSelfState(log)
 		return fmt.Errorf("no indexed nodectl release for arch %q", arch)
 	}
 	if sum == own {
+		refreshSelfState(log)
+		return nil
+	}
+	if localBuildNewer(releaseTS, ts) {
+		log.Info("local build newer than index; skipping auto selfupdate", "local", releaseTS, "index", ts)
 		refreshSelfState(log)
 		return nil
 	}

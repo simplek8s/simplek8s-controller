@@ -24,22 +24,23 @@ the split is a future hardening milestone, not a correctness issue.
 ## 4. Rollback automation/ergonomics
 
 Manual rollback is already one annotation edit
-(`next-kernel :=` the older preserved version, M2 §3.5, in git) — no
-feature to build. Remaining:
+(`next-kernel :=` the older preserved version, M2 §3.5, in git) and is
+documented in the README runbook (the `Rollback` section, shipped with the
+operations guide).
 
-- document it in the operations guide (shipped during the updates era);
-- (optional, later) a one-shot fleet-wide rollback helper (API or CLI)
+Remaining (optional, later):
+- a one-shot fleet-wide rollback helper (API or CLI)
   that re-anchors a set of nodes to a given version and reboots them via
   the M1 API.
 
 ## 5. Keyring leaves the distro
 
-Today the SimpleK8s signing keyring lives in the distro
-(`/usr/lib/systemd/import-pubring.gpg`) for the legacy
-`simplek8s-update` tool. Once the CLI (item 2) exists, the keyring is
-carried by the controller image (LFS, M2 §3.14, in git) and the CLI
-defaulting to it — the distro file can be removed. Distro-side change,
-tracked here for visibility.
+The CLI (`nodectl`, M6/M7) now carries the keyring
+(`go:embed`, single source of truth: `keys/`, LFS), so the only remaining
+work is distro-side: remove
+`/usr/lib/systemd/import-pubring.gpg` from the image (the legacy
+`simplek8s-update` tool is gone from the controller path). Distro-side
+change, tracked here for visibility.
 
 ## 7. Reboot orchestration success observability
 
@@ -88,16 +89,3 @@ machine-console access per node. The verified console recovery (pick
 a good entry, repair, re-pin) is documented in the README runbook;
 the `completed`+mismatch verification and no-auto-retry already hold
 for whatever comes back.
-
-## 15. selfupdate: newer-than-index local builds
-
-`selfupdate` newness is checksum-only (M7 D1): any locally built
-binary never matches the indexed `latest` checksum (`ldflags` bake
-version/commit/date into the bytes), so the auto-check always
-"updates" it — even when the local build is newer, which is a
-downgrade. E2E procedure today is `NODECTL_NO_SELFUPDATE=1` for
-test binaries (live find, M8 I10). Next: stamp the channel TS into
-the binary at `build-nodectl` time (same TS the publish uses) and
-compare — newer local skips with a message instead of
-downgrading. Small, backwards-compatible (unstamped binaries keep
-today's behavior).

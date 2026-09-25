@@ -59,7 +59,7 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr,
 		&slog.HandlerOptions{Level: logLevelFromEnv(os.Getenv("SIMPLEK8S_LOG_LEVEL"))}))
 
-	// Optional API token (TODO 15): with the Secret present every API
+	// Optional API token: with the Secret present every API
 	// endpoint but the probes requires its bearer; without it the API
 	// serves loopback clients only (kubectl port-forward), enforced in
 	// the auth middleware — never accidentally open to the cluster.

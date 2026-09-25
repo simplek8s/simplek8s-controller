@@ -17,6 +17,11 @@ var (
 	version = "dev"
 	commit  = "none"
 	builtAt = "unknown"
+	// releaseTS is the channel release TS stamped at build time
+	// (the same TS as the binary filename / publish, PLAN.md §3.14
+	// D14). Empty for unstamped builds: selfupdate then falls back
+	// to the checksum-only newness rule.
+	releaseTS = ""
 )
 
 // Exit codes (PLAN-M6 D9).
@@ -39,7 +44,11 @@ func main() {
 	}
 	switch cmd {
 	case "version", "-version", "--version":
-		fmt.Printf("nodectl %s (%s, built %s)\n", version, commit, builtAt)
+		line := fmt.Sprintf("nodectl %s (%s, built %s", version, commit, builtAt)
+		if releaseTS != "" {
+			line += ", release " + releaseTS
+		}
+		fmt.Printf("%s)\n", line)
 		return
 	case "check":
 		code = runCheck(log, args)

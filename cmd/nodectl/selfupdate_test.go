@@ -152,3 +152,23 @@ func TestDisplayRelease(t *testing.T) {
 		t.Errorf("unknown sha displays as %q, want full sha", got)
 	}
 }
+
+func TestLocalBuildNewer(t *testing.T) {
+	for _, tc := range []struct {
+		local, index string
+		want         bool
+	}{
+		{"", "", false},                         // unstamped: checksum-only
+		{"", "202609061935", false},             // unstamped never skips
+		{"202609061935", "", false},             // empty index ts
+		{"202609061935", "202609061935", false}, // equal: checksum decides
+		{"202609071935", "202609061935", true},  // newer local skips
+		{"202609051935", "202609061935", false}, // older local still updates
+		{"bogus", "202609061935", false},        // unparseable stamp
+		{"202609061935", "bogus", false},        // unparseable index ts
+	} {
+		if got := localBuildNewer(tc.local, tc.index); got != tc.want {
+			t.Errorf("localBuildNewer(%q, %q) = %v, want %v", tc.local, tc.index, got, tc.want)
+		}
+	}
+}

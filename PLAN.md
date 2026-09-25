@@ -1023,6 +1023,20 @@ identical to the indexed ones and the daily check is silent when
 current; a locally rebuilt binary would never checksum-match
 (`ldflags` embed version/commit/date) and is not shipped.
 
+**Newness beyond the checksum (stamped TS).** Because a locally
+rebuilt binary never checksum-matches, the checksum-only rule would
+"update" it even when the local build is newer than the channel —
+a silent downgrade. The build stamps the channel release TS into
+the binary (`-X main.releaseTS=$(TS)` — the same `TS` as the binary
+filename and, hence, the published index; `version` shows it when
+present), and both update decisions — explicit `selfupdate` and the
+daily auto-check — skip with a message when the stamped local TS is
+newer than the index's `latest` (TS is `YYYYMMDDHHMM`, compared via
+the shared `NewerTS`). Unstamped binaries (empty TS — plain `go
+build`, or anything published before this change) keep the
+checksum-only rule, so nothing already deployed changes behavior
+(decided 2026-09-25, D14).
+
 - **Daily auto-check.** Every invocation except `version`/`help` and
   `selfupdate` itself — unknown commands included, deliberately
   (M7 D13): an old binary must update precisely when the user
@@ -1411,6 +1425,7 @@ configmap.data`, live coredns wire JSON). No nested documents, no
 | 11  | Auto path uses defaults; pending `dry-run` suppresses it             | No flag parsing before dispatch (stable + embedded keyring; other channels need explicit runs); dry means dry (decided 2026-09-21).                                                                                                                  |
 | 12  | `selfupdate` ignores the update lock                                 | Touches only binary + state file (own `flock`); never contends with nor blocked by boot-partition sessions (decided 2026-09-21).                                                                                                                     |
 | 13  | Auto-check is denylist: unknown commands trigger                       | An old binary must update precisely when the user invokes a command it does not know yet (live find: no selfupdate on unknown install); typo cost is one bounded check (decided 2026-09-24).                                                       |
+| 14  | Stamped local build newer than the index is skipped, not downgraded | `-X main.releaseTS=$(TS)` stamps the channel TS (same as filename/index) into the CLI; both explicit and auto paths skip when the stamped local TS is newer than `latest`; unstamped binaries keep the checksum-only rule (decided 2026-09-25). |
 
 ### 4.7 Node CLI install era (M8, shipped 2026-09-24)
 

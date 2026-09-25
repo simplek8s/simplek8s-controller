@@ -30,9 +30,16 @@ build-simplek8s-controller:
 # nodectl node CLI (PLAN-M6): static binaries for both arches.
 CLI ?= nodectl
 
+# Stamp the channel release TS into the CLI binary (same TS as the
+# output filename, hence the published index; PLAN.md §3.14 D14):
+# a stamped local build newer than the index is skipped by
+# selfupdate instead of downgraded. Unstamped binaries keep the
+# checksum-only rule.
+CLI_LDFLAGS := $(LDFLAGS) -X main.releaseTS=$(TS)
+
 build-nodectl: cli-keyring
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI).$(TS).x86-64 ./cmd/nodectl
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(CLI).$(TS).arm64 ./cmd/nodectl
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(CLI_LDFLAGS)" -o bin/$(CLI).$(TS).x86-64 ./cmd/nodectl
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(CLI_LDFLAGS)" -o bin/$(CLI).$(TS).arm64 ./cmd/nodectl
 
 # The go:embed keyring copy (single source of truth: keys/, LFS).
 # Fails if the file is still an LFS pointer (no smudge) — an
