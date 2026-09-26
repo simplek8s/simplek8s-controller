@@ -33,15 +33,6 @@ Remaining (optional, later):
   that re-anchors a set of nodes to a given version and reboots them via
   the M1 API.
 
-## 5. Keyring leaves the distro
-
-The CLI (`nodectl`, M6/M7) now carries the keyring
-(`go:embed`, single source of truth: `keys/`, LFS), so the only remaining
-work is distro-side: remove
-`/usr/lib/systemd/import-pubring.gpg` from the image (the legacy
-`simplek8s-update` tool is gone from the controller path). Distro-side
-change, tracked here for visibility.
-
 ## 7. Reboot orchestration success observability
 
 The reboot orchestrator logs the failure path (`Error`) but emits no

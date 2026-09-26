@@ -5,8 +5,10 @@ import (
 )
 
 // embeddedPubring is the distro signing keyring (PLAN-M6 D13): the
-// GPG default for release index verification, enabling TODO 5
-// (keyring leaves the distro). `--keyring <path>` overrides it,
+// GPG default for release index verification. The keyring now lives
+// only here and in the controller image — the distro copy and the
+// legacy `simplek8s-update` tool are gone (PLAN.md §5, 2026-09-25).
+// `--keyring <path>` overrides it,
 // `--keyring /dev/null` skips verification.
 //
 // The bytes come from keys/simplek8s-pubring.gpg (single source of

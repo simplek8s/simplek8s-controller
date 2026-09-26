@@ -1540,8 +1540,10 @@ configmap.data`, live coredns wire JSON). No nested documents, no
   flag-compat promise (aliases, filters, keyring default and the six
   culled flags all change); nodes need no migration (CLI writes the
   same files + bootloader default, adopted via `next-kernel`, §7.6).
-  Distro change (TODO 5): once v2 ships with the embedded keyring, the
-  distro file `/usr/lib/systemd/import-pubring.gpg` can be removed.
+  Distro change (done 2026-09-25): `simplek8s-update` and the distro keyring file
+  `/usr/lib/systemd/import-pubring.gpg` are removed from the distro; published
+  images no longer ship them — the keyring now travels only in the
+  controller image and the `nodectl` binary.
 
 ## 6. Implementation
 
