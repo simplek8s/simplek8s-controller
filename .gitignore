@@ -1,5 +1,6 @@
-# Binarios y builds
+# Binaries: ./bin = Makefile tooling, ./build = build artifacts
 /bin/
+/build/
 /dist/
 *.exe
 /simplek8s-controller
@@ -13,12 +14,12 @@ coverage.out
 # cmd/nodectl/keyring.go; never commit the copy)
 /cmd/nodectl/pubring.gpg
 
-# IDE / SO
+# IDE / OS
 .idea/
 .vscode/
 *.swp
 .DS_Store
 
-# Secrets / configs locales
+# Secrets / local configs
 *.local.yaml
 kubeconfig

@@ -15,7 +15,7 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.builtAt=$
 BUILDER ?= simplek8s-builder
 HOST_ARCH := $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
 
-.PHONY: all build build-simplek8s-controller build-nodectl publish-nodectl test vet fmt image deploy undeploy clean cli-no-kube
+.PHONY: all build build-simplek8s-controller build-nodectl publish-nodectl test test-go test-gocyclo test-misspell vet fmt image deploy undeploy clean mrproper
 
 all: vet test build
 
@@ -24,8 +24,8 @@ all: vet test build
 build: build-simplek8s-controller build-nodectl
 
 build-simplek8s-controller:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller.$(TS).x86-64 ./cmd/simplek8s-controller
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/simplek8s-controller.$(TS).arm64 ./cmd/simplek8s-controller
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o build/simplek8s-controller.$(TS).x86-64 ./cmd/simplek8s-controller
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o build/simplek8s-controller.$(TS).arm64 ./cmd/simplek8s-controller
 
 # nodectl node CLI (PLAN-M6): static binaries for both arches.
 CLI ?= nodectl
@@ -38,8 +38,8 @@ CLI ?= nodectl
 CLI_LDFLAGS := $(LDFLAGS) -X main.releaseTS=$(TS)
 
 build-nodectl: cli-keyring
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(CLI_LDFLAGS)" -o bin/$(CLI).$(TS).x86-64 ./cmd/nodectl
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(CLI_LDFLAGS)" -o bin/$(CLI).$(TS).arm64 ./cmd/nodectl
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(CLI_LDFLAGS)" -o build/$(CLI).$(TS).x86-64 ./cmd/nodectl
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(CLI_LDFLAGS)" -o build/$(CLI).$(TS).arm64 ./cmd/nodectl
 
 # The go:embed keyring copy (single source of truth: keys/, LFS).
 # Fails if the file is still an LFS pointer (no smudge) — an
@@ -78,7 +78,7 @@ PUBLISH_TAG_LIST = $(subst ${SPACE},\"${COMMA}\",$(strip $(subst ${COMMA},${SPAC
 
 publish-nodectl: build-nodectl
 	@for arch in x86-64 arm64; do \
-		bin=$$(ls -t bin/$(CLI).[0-9]*.$${arch} 2>/dev/null | head -1); \
+		bin=$$(ls -t build/$(CLI).[0-9]*.$${arch} 2>/dev/null | head -1); \
 		test -n "$$bin" || { echo "no artifact for $${arch} (run: make build-nodectl)" >&2; exit 1; }; \
 		upx --best --lzma --no-progress -o "$${bin}.upx" "$${bin}"; \
 		sum=$$(sha256sum "$${bin}.upx" | cut -d" " -f1); \
@@ -87,8 +87,27 @@ publish-nodectl: build-nodectl
 		curl -F "json=@$${bin}.publish.json" -F "signature=@$${bin}.publish.json.signature" -F "release=@$${bin}.upx" "$(PUBLISH_URL)"; \
 	done
 
-test:
-	go test ./...
+test: test-go test-gocyclo test-misspell
+
+test-go:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
+
+# Test tooling: fetched into ./bin (survives `clean`, unlike build/).
+GOCYCLO  := bin/gocyclo
+MISSPELL := bin/misspell
+
+$(GOCYCLO):
+	GOBIN=$(CURDIR)/bin go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+
+$(MISSPELL):
+	GOBIN=$(CURDIR)/bin go install github.com/client9/misspell/cmd/misspell@latest
+
+test-gocyclo: $(GOCYCLO)
+	$(GOCYCLO) -over 15 .
+
+test-misspell: $(MISSPELL)
+	$(MISSPELL) -error ./...
 
 vet:
 	go vet ./...
@@ -115,4 +134,7 @@ undeploy:
 	helm uninstall $(HELM_RELEASE) -n $(HELM_NAMESPACE)
 
 clean:
-	rm -rf bin
+	rm -rf build
+
+mrproper:
+	rm -rf bin build
