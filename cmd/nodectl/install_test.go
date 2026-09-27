@@ -129,7 +129,7 @@ func TestMountSourceMatchesTarget(t *testing.T) {
 }
 
 func TestMinimalInstallYAML(t *testing.T) {
-	out := minimalInstallYAML("202609210825", "$6$salt$hash")
+	out := minimalInstallYAML("202609210825", "$6$salt$hash", nil)
 	for _, want := range []string{
 		"# Written by nodectl install (202609210825).",
 		"users:\n  - name: root\n    password_hash: $6$salt$hash\n",

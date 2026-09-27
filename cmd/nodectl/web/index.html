@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SimpleK8s Wizard</title>
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="stylesheet" href="styles.css">
+<script>const theme=localStorage.getItem("theme")||"light";document.documentElement.dataset.theme=theme</script>
+</head>
+<body>
+<header class="topbar">
+<div class="d-flex align-items-center gap-2">
+<a class="logo" href="/"><img src="favicon.ico" height="24" alt="SimpleK8s logo"><span>Simple<span class="highlight">K8s</span></span><span class="logo-sub text-muted">Wizard</span></a>
+<button id="theme" class="btn ms-auto" type="button" title="Toggle theme">🕶️</button>
+<button id="logout" class="btn d-none" type="button" title="Log out">🚪</button>
+</div>
+</header>
+<div class="container container-narrow py-3">
+
+<div id="alert" class="alert d-none" role="alert"></div>
+
+<section id="view-login" class="d-none">
+<div class="col-md-6">
+<h2>Login</h2>
+<form id="login-form">
+<div class="mb-4"><label class="form-label">User</label>
+<input id="login-user" class="form-control disabled" value="root" autocomplete="username" readonly></div>
+<div class="mb-4"><label class="form-label">Password</label>
+<input id="login-pass" type="password" class="form-control" autocomplete="current-password"></div>
+<button id="login-go" class="btn btn-primary" type="submit">Log in</button>
+</form>
+</div>
+</section>
+
+<section id="view-install" class="d-none">
+<h2>Installer</h2>
+<div id="ins-intro">
+<p>This node booted without a <code>simplek8s.yaml</code>, so the current session is not persistent. You may install SimpleK8s below:</p>
+<p class="destruct-warning alert alert-warning" role="alert"><strong>ALL DATA ON THE DESTINATION DEVICE WILL BE DESTROYED.</strong><br>Verify twice before proceed.</p>
+</div>
+<div id="ins-form">
+<div class="row mb-4">
+<div class="col-md-6"><label class="form-label">Disk</label><select id="ins-disk" class="form-select"></select></div>
+</div>
+<div class="row mb-4">
+<div class="col-md-6"><label class="form-label">Channel or distro URL</label>
+<input id="ins-channel" class="form-control font-monospace" list="ins-channel-list" value="stable" autocomplete="off" spellcheck="false">
+<datalist id="ins-channel-list"><option value="stable"></option><option value="rolling"></option><option value="dev"></option></datalist></div>
+<div class="col-md-6"><label class="form-label">Version</label>
+<input id="ins-ts" class="form-control font-monospace" list="ins-ts-list" value="latest" autocomplete="off" spellcheck="false">
+<datalist id="ins-ts-list"></datalist></div>
+</div>
+<div class="mb-2 row">
+<div class="col-md-12"><span class="form-label"><code>simplek8s.yaml</code></span></div>
+<div class="col-md-auto"><div class="form-check"><input id="ins-mode-pass" type="radio" name="ins-mode" class="form-check-input" checked>
+<label class="form-check-label" for="ins-mode-pass">Create</label></div></div>
+<div class="col-md-auto"><div class="form-check"><input id="ins-mode-config" type="radio" name="ins-mode" class="form-check-input">
+<label class="form-check-label" for="ins-mode-config">Custom</label></div></div>
+</div>
+<div id="ins-pass-block" class="row mb-4">
+<div class="col-md-6"><label class="form-label">Root password</label>
+<input id="ins-pass" type="password" class="form-control" autocomplete="new-password"></div>
+<div class="col-md-6"><label class="form-label">Confirm</label>
+<input id="ins-pass2" type="password" class="form-control" autocomplete="new-password"></div>
+</div>
+<div id="ins-keys-block" class="mb-4">
+<label class="form-label">Root SSH public keys, one per line (optional)</label>
+<textarea id="ins-keys" class="form-control font-monospace" rows="3" wrap="off" spellcheck="false" placeholder="ssh-ed25519 AAAA... user@host"></textarea>
+</div>
+<div id="ins-config-block" class="mb-4 d-none">
+<p class="text-muted small">See the <a href="https://simplek8s.org/documentation/installation/simplek8s-yaml/" target="_blank" rel="noopener">simplek8s.yaml guide</a> for all options.</p>
+<textarea id="ins-config" class="form-control font-monospace" rows="8" wrap="off" spellcheck="false" autocomplete="off" placeholder="users:&#10;  - name: root&#10;    password_hash: $6$salt$hash&#10;    ssh_authorized_keys:&#10;      - &quot;ssh-ed25519 AAAA... user@host&quot;&#10;storage:&#10;  mounts:&#10;    - what: /dev/disk/by-label/var&#10;      where: /var"></textarea>
+<input id="ins-config-file" type="file" class="form-control mt-1" accept=".yaml,.yml">
+</div>
+<div class="row mb-4">
+<div class="confirm-fill"><label id="ins-confirm-label" class="form-label">Type "/dev/vda" to confirm previous data destruction</label>
+<input id="ins-confirm" class="form-control font-monospace" placeholder="" autocomplete="off"></div>
+<div class="col-md-auto d-flex align-items-end"><button id="ins-go" class="btn btn-install" type="button">Install SimpleK8s</button></div>
+</div>
+</div>
+<div id="ins-prog" class="mt-2 d-none">
+<div><span id="ins-prog-label">Progress: </span><span id="ins-pct">0%</span></div>
+<div class="progress progress-striped"><div id="ins-bar" class="progress-bar" style="width:0%"></div></div>
+<pre id="ins-log" class="mt-1 small"></pre>
+<div id="ins-result" class="d-none">
+<h4>Success! 👏</h4>
+<p>Reboot the node to start the installed system; after reboot you may come back here to create a Kubernetes cluster or join an existing one.</p>
+<button id="ins-reboot" class="btn btn-install" type="button">Reboot</button>
+</div>
+</div>
+</section>
+
+<section id="view-cluster" class="d-none">
+<h2>KubeAdm</h2>
+<div id="kube-form">
+<div class="mb-4 row">
+<div class="col-md-auto"><div class="form-check"><input id="kube-mode-init" type="radio" name="kube-mode" class="form-check-input" checked>
+<label class="form-check-label" for="kube-mode-init">Create cluster</label></div></div>
+<div class="col-md-auto"><div class="form-check"><input id="kube-mode-join" type="radio" name="kube-mode" class="form-check-input">
+<label class="form-check-label" for="kube-mode-join">Join cluster</label></div></div>
+</div>
+<div id="pane-init">
+<p>This node will assume the Control Plane role.</p>
+<div class="col-md-6 mb-4"><label class="form-label">API server advertise address</label>
+<input id="init-addr" class="form-control font-monospace" placeholder="192.168.1.10" autocomplete="off"></div>
+<div class="col-md-6 mb-4"><label class="form-label">Node hostname</label>
+<input id="init-host" class="form-control font-monospace" placeholder="cp1" autocomplete="off"></div>
+<button id="init-go" class="btn btn-primary" type="button">Create</button>
+</div>
+<div id="pane-join" class="d-none">
+<div class="mb-4"><label class="form-label">Paste here the JSON Token from your Control Plane</label>
+<textarea id="join-config" class="form-control font-monospace" rows="8" wrap="off" spellcheck="false"></textarea></div>
+<button id="join-go" class="btn btn-primary" type="button">Join</button>
+</div>
+</div>
+<div id="kube-prog" class="mt-2 d-none"><pre id="kube-log" class="small"></pre><button id="kube-continue" class="btn btn-primary d-none" type="button">Continue</button></div>
+</section>
+
+<section id="view-tokens" class="d-none">
+<h2>Tokens</h2>
+<p>This node is a control plane of an existing cluster. Create a token to join other nodes to this cluster.</p>
+<div class="row mb-4">
+<div class="col-md-4"><label class="form-label">Joining role</label>
+<select id="tok-role" class="form-select"><option value="worker">worker</option><option value="control-plane">control-plane</option></select></div>
+<div class="col-md-4"><label class="form-label">Joining hostname</label>
+<input id="tok-host" class="form-control font-monospace" placeholder="wk3" autocomplete="off"></div>
+<div class="col-md-4 d-flex align-items-end"><button id="tok-go" class="btn btn-primary" type="button">Create token</button></div>
+</div>
+<div id="tok-out" class="d-none">
+<p class="alert alert-info small" role="note">Join this node before creating the next control-plane token: each new certificate key replaces the previous one. Control-plane joins should happen within ~2h of creating the token.</p>
+<label class="form-label">Paste this into the destination node's Wizard to join that node to this cluster</label>
+<pre id="tok-json" class="p-2 border small"></pre>
+<button id="tok-copy-json" class="btn btn-sm btn-outline-secondary" type="button">📋 Copy</button>
+<p class="text-muted small mt-1" id="tok-exp"></p>
+<details class="mt-2">
+<summary>Alternative: join from the command line</summary>
+<pre id="tok-cmd" class="console"></pre>
+<button id="tok-copy" class="btn btn-sm btn-outline-secondary" type="button">📋 Copy</button>
+</details>
+</div>
+<h3>Active tokens</h3>
+<button id="tok-list" class="btn btn-sm btn-outline-secondary mb-1" type="button">Refresh</button>
+<ul id="tok-items" class="list-group small"></ul>
+</section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -7,6 +7,24 @@ Closed items leave this file (history in git log); what remains is
 open work, each ready to be picked up as its own plan; nothing here
 is blocking.
 
+## 15. gocyclo -over 15 clean (agreed order: wizard first)
+
+`make test` fails at `test-gocyclo` with 21 pre-existing
+violations on `next` (up to 51 in `kubetest`, high-20s in
+reboot/update/config/nodectl), none added by M9. CI only
+gates `go test` (green), so this is local-debt, not a merge
+blocker. Fix function by function as its own change after
+the wizard ships, keeping `go test ./...` green at every
+step; do not bundle with feature work.
+
+## 16. SPA UI overhaul (after functionality lands)
+
+The M9 wizard SPA is functional but rough (known nits: theme
+toggle scope, layout polish). Give the UI a full pass once
+the backend surface is stable — same API, no behavior
+changes required from the daemon side.
+
+
 ## 3. Pod split (security hardening)
 
 Split the single privileged DaemonSet into:

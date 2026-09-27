@@ -51,6 +51,7 @@ reference like "M2 §3.5" points at the historical plan in git, e.g.
 | M6  | Local-node admin CLI (`nodectl`)                                | Shipped 2026-09-17 (C1–C8 PASS incl. grub + syslinux + rpi, 21 decisions, §7.6)                                                                           |
 | M7  | `nodectl selfupdate` + daily auto-check                         | Shipped 2026-09-21 (S1–S6 PASS live x86-64 + rpi4 + fake channel, 13 decisions, §7.7)                                                                     |
 | M8  | `nodectl install` onto whole-disk devices                       | Shipped 2026-09-24 (I1–I3/I5–I10 PASS live on wk2; I4 full rpi boot pending spare-disk/hw, rpi4 dry-run evidence in §7.8; 13 decisions, GRUB kernel_opts) |
+| M9  | `nodectl wizard` web setup (install + kubeadm, :5443)           | Active plan, not shipped (design §3.16, decisions §4.8, E2E §7.9) |
 
 ### 1.2 Shipped baseline
 
@@ -184,6 +185,14 @@ plus the GRUB `kernel_opts` operator variable (M8 D13) on the
 shared bootloader writer. Shipped 2026-09-24 (I1–I3/I5–I10 PASS
 live on wk2; I4 full rpi boot pending spare-disk/hw).
 Design in §3.15, decisions in §4.7, E2E in §7.8.
+
+### 1.8 Active plan (M9: nodectl wizard)
+
+The eighth feature: a web setup wizard served by `nodectl`
+itself (`nodectl wizard`, HTTPS on port 5443) for live-install
+plus kubeadm cluster management (init / join / tokens), gated
+by node state. Not shipped. Design in §3.16, decisions in
+§4.8, E2E in §7.9.
 
 ## 2. Constraints
 
@@ -1139,7 +1148,198 @@ required. No update lock (M8 D7).
   touch nothing (M6 minimal-matrix rule: dry-run on write
   commands).
 
-## 4. Decision log (per era; §4.7 latest)
+### 3.16 nodectl wizard (M9, active)
+
+A web setup wizard served by `nodectl` itself: `nodectl wizard`
+listens HTTPS on port 5443 and serves an embedded SPA
+(`go:embed`, new `cmd/nodectl/web/`; Bootstrap + favicon
+vendored as static assets — no CDN, the live env may be
+offline — with the same light/dark toggle and header identity
+as simplek8s.org). Same single-static-binary discipline as
+§3.13 (stdlib `net/http` + `crypto/tls` + `embed`; no new Go
+dependencies). It supersedes the external-wizard backend plan:
+same port, same unit name `simplek8s-wizard.service`, so the
+published docs (`systemctl disable --now simplek8s-wizard`)
+stay valid.
+
+**State (ground truth per request, never cached).** The
+four-state table below drives both the SPA rendering
+(`GET /api/state`) and a server-side gate on every mutating
+endpoint (wrong state → 403; the client is never authoritative):
+
+| State   | `/run/simplek8s/simplek8s.yaml` | `/etc/kubernetes` | `admin.conf` | Serves              |
+| ------- | ------------------------------- | ----------------- | ------------ | ------------------- |
+| `live`  | absent                          | *                 | *            | Installer only      |
+| `fresh` | present                         | absent            | —            | `init` + `join`     |
+| `worker`| present                         | present           | absent       | Nothing (exit 3)    |
+| `cp`    | present                         | present           | present      | Token create (+list/revoke) |
+
+`live` = non-persistent session (install pending);
+`fresh` = persistent node not yet clustered;
+`worker` = joined worker (nothing to manage);
+`cp` = control plane. The yaml contract is distro-side:
+`simplek8s-init` (PID1 in the initrd) copies
+`simplek8s.yaml` from the boot partition into
+`/run/simplek8s/` before the switch-root; this repo only
+`os.Stat`s it.
+
+**`wizard`.** `nodectl wizard [--port 5443]` (root required,
+same exits 0/1/2 plus the idle exit below). Startup evaluates
+the state: `worker` → log `no management actions available
+(worker node)` and exit `3` (new `exitIdle`: nothing to
+manage, not an error). Otherwise generate an ephemeral EC
+P-256 self-signed cert in memory (no files, no fingerprint
+notice), write the issue.d file, and serve TLS-only on all
+interfaces (no plaintext listener). `wizard` keeps the
+daily auto selfupdate pre-check at startup (M7): if it
+installs a newer binary it execs into it (same PID — the
+daemon restarts, active connections drop), and no further
+check runs while serving.
+
+**Auth (root only).** `POST /api/login {username, password}`:
+`username` must be `root` — anything else yields the same
+generic 401 (no enumeration). The password is verified by
+delegating to the distro-owned setuid validator: the daemon
+(which runs as root) forks, drops to `nobody` (uid/gid 65534,
+empty supplementary groups, direct exec — no shell), and runs
+`/usr/bin/su root -c true` with the candidate on a pipe (never
+argv/env); no controlling terminal under systemd, so `su`
+reads stdin (verified live: exit 0 valid, 1 invalid).
+Stdout/stderr discarded; a timeout or exec failure is a 500,
+never a 401; exit codes are not distinguished (no oracle).
+Distro prerequisite (M9 D4): a setuid `su` that a non-root
+caller can use — the two-binary busybox recipe (suid binary
+with the `su` applet only) or equivalent; plain non-setuid
+`su` cannot authenticate in either direction (as root it
+never prompts — measured bypass; as non-root it refuses).
+Success mints a 256-bit `crypto/rand` session token
+(in-memory map) set as a `Secure; HttpOnly;
+SameSite=Strict` cookie; idle expiry is a fixed 30min
+constant; `POST /api/logout` destroys it. Rate-limit:
+repeated failures back off per source IP. Mutating endpoints
+additionally require a matching `Origin` header (stateless
+CSRF guard for the same-origin SPA). `GET /api/state` and
+`/api/login` are the only unauthenticated endpoints; every
+other `/api/*` requires the session. Secrets (passwords,
+tokens, cert keys, hashes) never reach logs (masked `***`),
+URLs, argv or environ.
+
+**TLS.** Ephemeral cert per daemon start (M9 D3). The browser
+warning is accepted and desirable for a setup UI.
+
+**issue.d (daemon-owned).** `wizard` writes and removes its
+own `/run/issue.d/50-wizard.issue` (regular file, ordered
+between the distro's `10-header` and `99-footer` symlinks).
+Content uses the agetty escape so no IP detection code is
+owed and the line never goes stale on DHCP change:
+
+```
+Setup wizard available at: https://\4:5443
+```
+
+Written atomically (tmp + rename) after a successful
+listen, removed on graceful shutdown; the contrib unit adds
+`ExecStopPost=/bin/rm -f` for crash-stale. Never written on
+the idle-3 path. The root password notice stays
+buildroot-owned elsewhere; this file announces only the URL.
+
+**Installer (`live` only, 403 elsewhere).** Full reuse of M8
+(`validateInstallTarget`, `streamImageToDisk`,
+`appendVarPartition`, `writeInstallYAML`,
+`fetchIndex` + `FilterImgIndex`): `GET /api/disks` enumerates
+`/sys/block` with size, mount state and a boot-disk flag
+with reason (mountinfo major:minor ground truth, M8 D12 —
+the boot disk is listed disabled, never selectable);
+channel select (`dev|rolling|stable` or custom URL) + ts
+select (latest default). `GET /api/disks` shows size plus the
+sysfs model (or vendor id on virtio-blk, which exposes no
+model file) so the operator can tell destination disks apart. Config is dual-mode, mirroring the
+CLI: (a) password mode (default) — two `type=password`
+fields with show/hide, both required, server checks
+non-empty + match and writes `minimalInstallYAML` (no
+generated passwords by decision), plus an optional SSH-keys
+textarea (one public key per line, validated, written as
+`ssh_authorized_keys`); (b) advanced mode —
+textarea plus a file picker that fills it client-side
+(`FileReader`, no multipart), sent as one `configYaml`
+string, required non-empty and installed verbatim
+(`--config` semantics: authoritative, never prompts; no
+server-side YAML validator for now — init validates at
+boot). Destruction confirm is a typed echo: the request
+carries `confirmDevice` which must equal `device` exactly
+(else 400) — the web replacement of the CLI countdown.
+`POST /api/install` returns a job id;
+`GET /api/jobs/{id}` is polled for the downloaded/written
+MiB counters; completion reuses `printInstallSummary`
+including the foreign-label detach warning. The same job
+framework fronts `init`/`join` (minutes-long); exactly one
+destructive job runs at a time (second caller gets 409).
+
+**KubeAdm** (binary fixed at `/usr/local/bin/kubeadm`, the
+buildroot wrapper, v1.37.1 — first launch self-provisions,
+so timeouts are generous; `exec` with `argv`, never a
+shell). `init` (`fresh` only): the single operator field is
+`apiserver-advertise-address` (prefilled in the UI from the
+browser-visible node address when it is an IP, editable) and the node
+hostname (applied before joining, like join); the server passes
+`--apiserver-advertise-address=X
+--control-plane-endpoint=X:6443
+--pod-network-cidr=10.244.0.0/16` and leaves the service
+subnet (`10.96.0.0/12`) and DNS domain (`cluster.local`) at
+their kubeadm defaults (never flagged). Both init and join
+first ensure runtimes: `enable` containerd + kubelet and
+`start` containerd with a CRI-socket wait — kubelet is never
+started here (its distro start is gated on the
+kubeadm-generated config; starting it first deadlocks init).
+`join` (`fresh`
+only): one textarea carrying a single JSON object
+`{address, token, caCertHash, certificateKey?, role,
+hostname}` — `address` is `host:port` with a mandatory
+port; `token` matches `xxxxxx.xxxxxxxxxxxxxxxx`;
+`caCertHash` is `sha256:` + 64 hex; `role` is required
+(`worker|control-plane`) and selects the argv;
+`certificateKey` is required for `control-plane` and
+rejected with 400 on `worker` (fail-closed against pasting
+the wrong blob); `hostname` is required (RFC 1123) and is
+applied before joining via `hostnamectl set-hostname` plus
+an idempotent `/etc/hosts` rewrite (replace-or-add the
+`127.0.1.1 <hostname>` line, `127.0.0.1` untouched) and
+`--node-name <hostname>`. kubeadm tokens are reusable until
+TTL or deletion (upstream property, not single-use): the
+flow is one-token-per-node, the create response shows its
+expiry, and the CP offers list (`token list`) and revoke
+(`token delete`); generating for an already-tokened
+hostname warns. Tokens (`cp` only): create per joining role
+with `--ttl` (kubeadm default, 24h; expiry shown) — CP creation includes
+`upload-certs` for the certificate key — and the response
+carries the worker join command, the control-plane join
+command and the per-role JSON blobs, shown in `<pre>` with
+clipboard auto-copy plus a manual copy button.
+
+**Service.** New `contrib/simplek8s-wizard.service` example:
+`ExecStart=nodectl wizard`, `Restart=no` (or
+`on-failure` + `RestartPreventExitStatus=3`),
+`SuccessExitStatus=3`, `ExecStopPost=/bin/rm -f
+/run/issue.d/50-wizard.issue`.
+
+**Out of scope:** the Status section, Add-ons
+(Calico/CSI/MetalLB/Nginx), `kubeadm reset` / Clean up (no
+reset for now — broken workers are fixed over SSH or
+reinstalled), the network/keys wizard remainder anticipated
+in §3.15, and any TLS fingerprint notice.
+
+**Unit scope (table tests):** state matrix (4 states ×
+endpoints → 403 map); su-auth wrapper (stub `su` via
+executable-path seam: exit 0/1/timeout → allow/deny/500;
+never logs the password); `confirmDevice` exactness;
+join-JSON validation (bad token, bad hash, missing port,
+cert-key-on-worker, missing/invalid hostname, missing role);
+`/etc/hosts` rewrite (replace / add / localhost untouched);
+hostname validation; disk-listing helpers (boot flagged,
+partition rejected); idle-3 path (worker fixture → exit 3,
+no listen, no issue file).
+
+## 4. Decision log (per era; §4.8 latest)
 
 Numbers restart per era; unqualified references in this document are
 to the active era (§4.3), e.g. "decision 31" = §4.3 row 31.
@@ -1446,6 +1646,25 @@ configmap.data`, live coredns wire JSON). No nested documents, no
 | 13  | GRUB `kernel_opts` operator variable                                   | New menuentries reference `${kernel_opts}`; the `set` line is user-owned (writer declares it once as empty, never rewrites); old entries untouched until purge rotation (writer discipline). Read/prune match the bare path, unaffected. Distro template must ship the same shape day-one (decided 2026-09-24).                                                                          |
 
 | 14  | Partition type follows the dumped disklabel                           | DOS takes `83`, GPT the Linux-filesystem GUID — a bare 83 is Invalid argument on GPT (live find: hybrid-layout IMG on an empty 2GiB disk). Unknown labels fail closed (decided 2026-09-24).                                                                                                                                                                                             |
+
+### 4.8 Node wizard era (M9, active)
+
+| #   | Decision                                                              | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Subcommand `wizard` (not `serve`); unit keeps `simplek8s-wizard` name | Matches the published docs (`systemctl disable --now simplek8s-wizard`) and avoids a confusing `nodectl-wizard`/`serve` split; `wizard` can host installer + kubeadm (+ later status) without renaming.                                                                                                                                                                                                                            |
+| 2   | SPA embedded via `go:embed` (vendored Bootstrap, no CDN)              | Single static binary discipline (M6 D1/D17); the live env may be offline at first boot. Web identity (toggle, header) follows simplek8s.org.                                                                                                                                                                                                                                                                                     |
+| 3   | Ephemeral EC P-256 self-signed cert, TLS-only :5443, no fingerprint   | No state to manage on a non-persistent live system; the browser warning is acceptable for a setup UI.                                                                                                                                                                                                                                                                                                                           |
+| 4   | Auth root-only via distro setuid `su`, session cookie, rate-limit      | No PAM/CGO; reuses the distro-owned validator (dynamic libcrypt ⇒ future hashes and a future PAM need no nodectl change). Same mechanism covers the live console password and the post-install password. Generic 401 either way (no enumeration); Origin check on mutating endpoints; timeout/exec failure is 500, never 401. Distro prerequisite: setuid `su` usable by non-root (two-binary busybox recipe or equivalent — plain non-setuid `su` authenticates nothing: as root it never prompts, as non-root it refuses; both measured live 2026-09-27; with the drop-to-nobody wrapper the missing bit fails closed — every login 401s, verified live on cp1).                                                                                                                                                                                                                                                                                       |
+| 5   | Four-state machine, per-request gates; yaml contract distro-side      | `live`/`fresh`/`worker`/`cp` from `simplek8s.yaml` × `/etc/kubernetes` × `admin.conf` (table §3.16); every mutating endpoint re-checks (403). `simplek8s-init` owns the copy into `/run`; this repo only stats.                                                                                                                                                                                                                     |
+| 6   | Worker state refuses to serve: new `exitIdle = 3`                     | 0/1/2 already mean ok/operational/misuse; 3 means "nothing to manage". systemd `SuccessExitStatus=3` (+ no retry) via the contrib unit.                                                                                                                                                                                                                                                                                          |
+| 7   | Daemon owns `/run/issue.d/50-wizard.issue` with `\4` escape           | Atomic write after listen, removal on exit (+ `ExecStopPost`); agetty expands the IP per login so the file never goes stale on DHCP change. Password notice stays buildroot-owned.                                                                                                                                                                                                                                               |
+| 8   | Installer reuses M8; typed-echo confirm; dual config; no generated pw | `validate/stream/var/yaml` + index channel logic untouched (no second implementation). `confirmDevice == device` replaces the CLI countdown. Password mode mirrors the CLI prompt; advanced mode is `--config`-verbatim (textarea + file fill, no multipart). No random-password generator by operator decision.                                                                                                                     |
+| 9   | `init` asks only `apiserver-advertise-address`; fixed kubeadm path    | `--pod-network-cidr=10.244.0.0/16` passed; service/DNS stay kubeadm defaults, never flagged. `/usr/local/bin/kubeadm` (buildroot wrapper, v1.37.1), `argv`-exec, generous first-run timeout, secrets masked.                                                                                                                                                                                                                      |
+| 10  | Join = one JSON textarea; strict validation; hostname applied first   | Copy-paste beats retyping hashes. Port mandatory; token/hash grammars enforced; cert-key forbidden on worker (fail-closed); hostname (RFC 1123) set via `hostnamectl` + idempotent `127.0.1.1` rewrite + `--node-name`.                                                                                                                                                                                                          |
+`| 11  | Tokens per joining role, kubeadm-default TTL, list/revoke, reuse documented | kubeadm tokens are reusable until TTL/delete (upstream, not single-use): one-token-per-node flow, expiry shown, duplicate-hostname warns. CP creation includes `upload-certs`; response carries both join commands + per-role JSON blobs. Control-plane joins serialize: each new certificate key invalidates previous unused ones (join each CP before minting the next token); uploaded certs live ~2h, so join promptly. UI states both.                                                                                                                                                                                                                                                          |
+| 12  | No `kubeadm reset` / Clean up in the MVP                             | Broken workers are fixed over SSH or reinstalled; keeps the state machine to four states with no danger-zone paths to test.                                                                                                                                                                                                                                                                                                     |
+| 13  | Status + Add-ons deferred                                            | The web documents Status (node resources) and Add-ons (Calico/CSI/MetalLB/Nginx); M9 ships installer + kubeadm only, sections reserved.                                                                                                                                                                                                                                                                                          |
+| 14  | Secrets discipline: TLS-only, masked logs, cookie flags               | Tokens/keys/hashes never in logs (masked) or URLs; session cookie `Secure; HttpOnly; SameSite=Strict` with idle expiry; only `/api/state` + `/api/login` unauthenticated.                                                                                                                                                                                                                                                        |
 
 ## 5. Behavior changes & migration
 
@@ -2088,6 +2307,67 @@ throughout — auto would replace it with the published build).
 | I9  | Target under 1GiB                                            | Refused before the countdown (exit 2).                                                                                                                                                                                                                                                             |
 | I10 | `kernel_opts` round-trip                                     | Staged entry carries `${kernel_opts}`; operator `set` survives a re-point + prune cycle verbatim (M8 D13). PASS live on wk2 2026-09-24 (details above).                                                                                                                                            |
 | I4  | `install` on rpi4 (+ rpi5 when hardware exists)              | Node boots, `/var` mounted from the created partition per the installed yaml. Partial 2026-09-24: dry-run on PROD rpi4 refuses the mounted boot disk (exit 1) and `check` resolves flavor rpi4 live — full install+boot pending spare-disk/hw (single-disk PROD node can never be its own target). |
+
+### 7.9 wizard campaign (M9, Z1–Z12 planned — not yet run)
+
+Planned live on the test VMs (3-node fleet where possible);
+each case records PASS + evidence as it runs. Needs:
+`nodectl wizard` built with the embedded SPA, the contrib
+unit installed, and a dev channel IMG for the install cases
+(run with `NODECTL_NO_SELFUPDATE=1` so auto-check never
+replaces the binary under test, as in §7.8).
+
+Live evidence 2026-09-27 (test binary, pre-campaign):
+worker-state start on sk8s-wk2 → exit 3 with the idle
+message; serve on sk8s-cp1 → `/api/state` reports `cp`,
+SPA 200, `50-wizard.issue` present with the `\4` line while
+serving and gone after stop, wrong-password login 401s
+(suid `su` not yet in the distro — fail-closed as designed).
+
+Live evidence 2026-09-27/28 (full fleet cycle, 5 fresh VMs
+from dev 202609270536 ISO, sideloaded wizard, suid applied
+by hand — the image still ships su 0755):
+- live: state, root login good/bad, disks (vda selectable),
+  versions (dev channel), install ×5 (4 password+keys, 1
+  verbatim config with both operator keys) → all boot
+  persistent with working SSH keys, no console needed.
+- fresh ×5: init cp1 (advertise + hostname + endpoint),
+  Calico v3.32.2, node Ready; tokens worker/CP with expiry;
+  list normalized; revoke removes; join wk1/wk2 (worker),
+  join cp2/cp3 (control-plane, serialized: batch minting
+  invalidates previous cert keys — live find, UI warns).
+- 3-CP + 2-worker fleet all Ready v1.37.1; cross-node pod
+  ping 0% loss. Init hostname asked (localhost never again).
+- Findings for distro: suid bit missing in image (manual
+  chmod for tests); containerd disabled despite preset
+  (wizard enables); init without endpoint blocks 2nd CP
+  (wizard passes it now).
+- Repeat on dev 202609271114 (5 fresh VMs, suid in image,
+  human passwords): identical full cycle green, plus
+  UI-pass paths (latest/channel-text/percent/reboot
+  button) and cross-node ping 0% loss.
+- UI pass (M9): no-Bootstrap SPA matching simplek8s.org
+  (vendored favicon.ico via LFS, blink logo, theme toggle),
+  `-listen host:port`, reboot endpoint + button, percent
+  progress, channel/version text inputs with datalists,
+  dynamic confirm label, disabled form during install,
+  result area with success block, stale errors cleared,
+  401 on login surfaces the server message.
+
+| #   | Case                                                         | Expect                                                                                                                                                                              |
+| --- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Z1  | State gates (`live`/`fresh`/`worker`/`cp` × every endpoint)  | `GET /api/state` reports the fixture state; installer 403 outside `live`, init/join 403 outside `fresh`, tokens 403 outside `cp`.                                                   |
+| Z2  | Auth (root ok, wrong password, unknown user, rate-limit)     | Correct root password → session cookie; wrong password and unknown user → identical 401; burst of failures → backoff; logout destroys the session.                                   |
+| Z3  | `GET /api/disks` on a live node                              | Running boot disk listed disabled with reason; a free whole disk selectable; partitions never listed as targets.                                                                    |
+| Z4  | Install plan via API (`dry-run` equivalent)                  | Resolves IMG ts + size + layout for channel and pinned ts; downloads and touches nothing.                                                                                           |
+| Z5  | Full install via SPA + boot (mirrors I1/I3)                  | IMG streamed, `/var` appended, yaml written per the chosen config mode; target disk boots unassisted; foreign-label warning shown.                                                  |
+| Z6  | Config modes (password vs verbatim; invalid YAML)            | Password mode writes the minimal yaml with a verifiable `$6$` hash (cross-check login); verbatim mode installs the pasted file byte-identical; unparseable YAML → 400, touch nothing. |
+| Z7  | `confirmDevice` mismatch                                     | Echo not equal to `device` → 400 before any download or write.                                                                                                                      |
+| Z8  | `init` with advertise address                                | Cluster initializes; `admin.conf` appears; state flips to `cp`; only the advertise-address field was operator-supplied.                                                              |
+| Z9  | Join as worker via JSON blob                                | Hostname applied (`hostnamectl` + `127.0.1.1` line), node joins and shows Ready; token reuse on a second node warns/demonstrates the documented behavior.                            |
+| Z10 | Join as control plane via JSON blob                         | Same as Z9 plus `--control-plane` + certificate key; second CP shows Ready; cert-key-on-worker blob → 400.                                                                          |
+| Z11 | Token create/list/revoke per role                            | Create returns worker + CP commands and JSON blobs with expiry; list shows the token; revoke deletes it and joining with it fails closed.                                            |
+| Z12 | Idle-3 + issue.d lifecycle                                   | Worker-state start → exit 3, no listener, no `50-wizard.issue`; live/fresh/cp start → file present with the URL line, removed after stop; `SuccessExitStatus=3` → no systemd retry. |
 
 ## 8. Deferred
 

@@ -24,11 +24,15 @@ var (
 	releaseTS = ""
 )
 
-// Exit codes (PLAN-M6 D9).
+// Exit codes (PLAN-M6 D9, plus the M9 idle exit).
 const (
 	exitOK          = 0
 	exitOperational = 1
 	exitMisuse      = 2
+	// exitIdle means "nothing to manage, not an error"
+	// (PLAN.md §3.16, M9 D6: `nodectl wizard` on a worker
+	// node refuses to serve).
+	exitIdle = 3
 )
 
 func main() {
@@ -62,6 +66,8 @@ func main() {
 		code = runBoot(log, args)
 	case "install":
 		code = runInstall(log, args)
+	case "wizard":
+		code = runWizard(log, args)
 	case "selfupdate":
 		code = runSelfupdate(log, args)
 	case "-h", "-help", "--help", "help":
@@ -80,16 +86,18 @@ func usage() {
 Usage: nodectl <command> [flags]
 
 Commands:
-  check            newest indexed release vs running vs staged (read-only)
-  update [<ts>]    stage a release + retention + bootloader re-point
+  check            newest indexed release vs running vs staged
+  update [<ts>]    stage a release + retention + re-point
   list             staged versions + running + bootloader default (read-only)
   purge            retention + bootloader prune (never prompts)
-  boot [<ts>]      show the bootloader default, or re-point it at a staged release
-  install <device>   install the distro IMG onto a whole-disk device
-  selfupdate       check the nodectl channel + install latest (auto-checked daily)
+  boot [<ts>]      show the bootloader default, or re-point it
+  install <device> install the distro IMG onto a whole-disk device
+  wizard           web setup wizard (HTTPS, exit 3 when idle)
+  selfupdate       check the nodectl channel + install latest
   version          print embedded build info (no root needed)
 
-Exits: 0 ok, 1 operational error, 2 misuse. Root required (except version).
+Exits: 0 ok, 1 operational error, 2 misuse, 3 idle (wizard only).
+Root required (except version).
 `, version, commit)
 }
 

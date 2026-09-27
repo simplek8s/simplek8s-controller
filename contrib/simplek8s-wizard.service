@@ -1,0 +1,23 @@
+# Example systemd unit for the SimpleK8s setup wizard
+# (PLAN.md §3.16, M9). The distro installs and enables its own
+# copy as simplek8s-wizard.service (the name the docs use:
+# `systemctl disable --now simplek8s-wizard` opts out).
+[Unit]
+Description=SimpleK8s setup wizard (nodectl wizard, HTTPS :5443)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nodectl wizard
+ExecStopPost=-/bin/rm -f /run/issue.d/50-wizard.issue
+# Crash recovery without retrying the worker-idle exit (M9 D6):
+# exit 3 means "nothing to manage", a clean stop, not a failure.
+Restart=on-failure
+RestartPreventExitStatus=3
+SuccessExitStatus=3
+# NOTE: never add NoNewPrivileges here — it would neuter the
+# setuid auth helper the wizard delegates root logins to.
+
+[Install]
+WantedBy=multi-user.target

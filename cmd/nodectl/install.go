@@ -109,22 +109,10 @@ func runInstall(log *slog.Logger, args []string) int {
 		return exitMisuse
 	}
 	var ts, file, sum string
-	if wantTS != "" {
-		file = fmt.Sprintf("simplek8s.%s.%s.img.zst", wantTS, flavor)
-		var found bool
-		sum, found = sums[file]
-		if !found || sum == "" {
-			log.Error("ts not in verified index for flavor", "ts", wantTS, "flavor", flavor)
-			return exitOperational
-		}
-		ts = wantTS
-	} else {
-		var found bool
-		ts, file, sum, found = updatecore.FilterImgIndex(sums, flavor)
-		if !found {
-			log.Error("no indexed install image for flavor", "flavor", flavor)
-			return exitOperational
-		}
+	ts, file, sum, selErr := selectInstallRelease(sums, flavor, wantTS)
+	if selErr != nil {
+		log.Error("install image select failed", "err", selErr)
+		return exitOperational
 	}
 
 	// Root password (M8 D5): --config is authoritative and never
@@ -164,11 +152,56 @@ func runInstall(log *slog.Logger, args []string) int {
 	if code := appendVarPartition(log, target); code != exitOK {
 		return code
 	}
-	if code := writeInstallYAML(log, p1, config, ts, passwordHash); code != exitOK {
+	if code := writeInstallYAML(log, p1, config, ts, passwordHash, nil); code != exitOK {
 		return code
 	}
 	printInstallSummary(target, ts)
 	return exitOK
+}
+
+// selectInstallRelease picks the IMG (ts/file/sha) from a
+// verified index: the pinned ts when given, else the newest
+// for the flavor (shared by the CLI and the wizard API).
+func selectInstallRelease(sums map[string]string, flavor, wantTS string) (ts, file, sum string, err error) {
+	if wantTS != "" {
+		file = fmt.Sprintf("simplek8s.%s.%s.img.zst", wantTS, flavor)
+		var found bool
+		sum, found = sums[file]
+		if !found || sum == "" {
+			return "", "", "", fmt.Errorf("ts %s not in verified index for flavor %s", wantTS, flavor)
+		}
+		return wantTS, file, sum, nil
+	}
+	var found bool
+	ts, file, sum, found = updatecore.FilterImgIndex(sums, flavor)
+	if !found {
+		return "", "", "", fmt.Errorf("no indexed install image for flavor %s", flavor)
+	}
+	return ts, file, sum, nil
+}
+
+// readMountTable returns the mount table: mountinfo ground
+// truth (major:minor per mount) with the plain mounts fallback
+// (shared by install validation and the wizard disk list).
+func readMountTable() (string, error) {
+	raw, err := os.ReadFile(wizardMountinfo)
+	if err != nil {
+		raw, err = os.ReadFile("/proc/mounts")
+		if err != nil {
+			return "", err
+		}
+	}
+	return string(raw), nil
+}
+
+// hashRootPassword salts + SHA-512-crypt hashes a root password
+// (shared by the CLI prompt and the wizard password mode).
+func hashRootPassword(password string) (string, error) {
+	salt, err := cryptSalt()
+	if err != nil {
+		return "", err
+	}
+	return updatecore.CryptSHA512(password, salt)
 }
 
 // validateInstallTarget normalizes the device path (resolving
@@ -198,15 +231,12 @@ func validateInstallTarget(log *slog.Logger, device string) (target, base string
 		}
 		return "", "", exitMisuse
 	}
-	raw, err := os.ReadFile("/proc/self/mountinfo")
+	raw, err := readMountTable()
 	if err != nil {
-		raw, err = os.ReadFile("/proc/mounts")
-		if err != nil {
-			log.Error("reading mounts failed", "err", err)
-			return "", "", exitOperational
-		}
+		log.Error("reading mounts failed", "err", err)
+		return "", "", exitOperational
 	}
-	if installTargetMounted(string(raw), target, base) {
+	if installTargetMounted(raw, target, base) {
 		log.Error("target has mounted filesystems, unmount first", "device", target)
 		return "", "", exitOperational
 	}
@@ -342,9 +372,9 @@ func isDigits(s string) bool {
 }
 
 // installTargetSize reads the whole-disk size in bytes via sysfs
-// (sectors × 512).
+// (sectors × 512). The sysfs root is a seam for tests.
 func installTargetSize(base string) (int64, error) {
-	raw, err := os.ReadFile("/sys/block/" + base + "/size")
+	raw, err := os.ReadFile(wizardSysBlock + "/" + base + "/size")
 	if err != nil {
 		return 0, err
 	}
@@ -377,12 +407,7 @@ func promptRootPassword(log *slog.Logger) (string, int) {
 		log.Error("passwords do not match")
 		return "", exitMisuse
 	}
-	salt, err := cryptSalt()
-	if err != nil {
-		log.Error("generating salt failed", "err", err)
-		return "", exitOperational
-	}
-	hash, err := updatecore.CryptSHA512(first, salt)
+	hash, err := hashRootPassword(first)
 	if err != nil {
 		log.Error("hashing password failed", "err", err)
 		return "", exitOperational
@@ -468,6 +493,15 @@ func (c countingWriter) Write(p []byte) (int, error) {
 // (M8 D11). A hash mismatch fails with the target left dirty
 // (documented re-run from scratch, M8 D8).
 func streamImageToDisk(ctx context.Context, client *http.Client, base, file, wantSHA, target string) error {
+	return streamImageToDiskReport(ctx, client, base, file, wantSHA, target, nil)
+}
+
+// streamImageToDiskReport is streamImageToDisk with a byte
+// progress hook: report(down, written) fires ~1/s while the
+// pipeline runs plus once at completion. A nil report keeps
+// the CLI stderr printer (M8 D11); the wizard passes a job
+// counter instead.
+func streamImageToDiskReport(ctx context.Context, client *http.Client, base, file, wantSHA, target string, report func(down, written int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/"+file, nil)
 	if err != nil {
 		return err
@@ -494,6 +528,12 @@ func streamImageToDisk(ctx context.Context, client *http.Client, base, file, wan
 	defer dec.Close()
 	done := make(chan struct{})
 	defer close(done)
+	progress := report
+	if progress == nil {
+		progress = func(down, written int64) {
+			fmt.Fprintf(os.Stderr, "\rdownloaded %d MiB / wrote %d MiB... ", down>>20, written>>20)
+		}
+	}
 	go func() {
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
@@ -502,7 +542,7 @@ func streamImageToDisk(ctx context.Context, client *http.Client, base, file, wan
 			case <-done:
 				return
 			case <-tick.C:
-				fmt.Fprintf(os.Stderr, "\rdownloaded %d MiB / wrote %d MiB... ", down.Load()>>20, written.Load()>>20)
+				progress(down.Load(), written.Load())
 			}
 		}
 	}()
@@ -510,7 +550,11 @@ func streamImageToDisk(ctx context.Context, client *http.Client, base, file, wan
 		fmt.Fprintf(os.Stderr, "\n")
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "\rdownloaded %d MiB / wrote %d MiB.\n", down.Load()>>20, written.Load()>>20)
+	if report == nil {
+		fmt.Fprintf(os.Stderr, "\rdownloaded %d MiB / wrote %d MiB.\n", down.Load()>>20, written.Load()>>20)
+	} else {
+		report(down.Load(), written.Load())
+	}
 	if got := hex.EncodeToString(hash.Sum(nil)); got != wantSHA {
 		return fmt.Errorf("checksum mismatch for %s (target left dirty — re-run install)", file)
 	}
@@ -574,7 +618,18 @@ func appendVarPartition(log *slog.Logger, target string) int {
 		log.Error("sfdisk append failed", "err", err, "out", strings.TrimSpace(string(out)))
 		return exitOperational
 	}
-	if out, err := exec.Command("blockdev", "--rereadpt", target).CombinedOutput(); err != nil {
+	// The re-read can transiently lose to udev probes or the
+	// kernel's own async scan right after sfdisk (seen live as
+	// BLKRRPART busy): retry briefly before failing. (err is
+	// the function-scope one from the sfdisk dump above.)
+	var out []byte
+	for i := 0; i < 6; i++ {
+		if out, err = exec.Command("blockdev", "--rereadpt", target).CombinedOutput(); err == nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if err != nil {
 		log.Error("partition re-read failed", "err", err, "out", strings.TrimSpace(string(out)))
 		return exitOperational
 	}
@@ -602,7 +657,7 @@ func appendVarPartition(log *slog.Logger, target string) int {
 
 // writeInstallYAML mounts the ESP and writes
 // simplek8s/simplek8s.yaml (minimal or --config verbatim).
-func writeInstallYAML(log *slog.Logger, esp, config, ts, passwordHash string) int {
+func writeInstallYAML(log *slog.Logger, esp, config, ts, passwordHash string, keys []string) int {
 	mnt, err := os.MkdirTemp("", "nodectl-install-")
 	if err != nil {
 		log.Error("scratch dir failed", "err", err)
@@ -626,7 +681,7 @@ func writeInstallYAML(log *slog.Logger, esp, config, ts, passwordHash string) in
 			return exitOperational
 		}
 	} else {
-		content = []byte(minimalInstallYAML(ts, passwordHash))
+		content = []byte(minimalInstallYAML(ts, passwordHash, keys))
 	}
 	dir := filepath.Join(mnt, "simplek8s")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -642,11 +697,18 @@ func writeInstallYAML(log *slog.Logger, esp, config, ts, passwordHash string) in
 }
 
 // minimalInstallYAML renders the default node config: root login
-// plus the /var mount (init defaults Version to "1").
-func minimalInstallYAML(ts, passwordHash string) string {
+// plus the /var mount (init defaults Version to "1"). Optional
+// SSH keys land in ssh_authorized_keys (one per line in the UI).
+func minimalInstallYAML(ts, passwordHash string, keys []string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Written by nodectl install (%s).\n# See simplek8s.yaml.example for all options.\nusers:\n  - name: root\n", ts)
 	fmt.Fprintf(&sb, "    password_hash: %s\n", passwordHash)
+	if len(keys) > 0 {
+		sb.WriteString("    ssh_authorized_keys:\n")
+		for _, k := range keys {
+			fmt.Fprintf(&sb, "      - %q\n", k)
+		}
+	}
 	sb.WriteString("storage:\n  mounts:\n    - what: /dev/disk/by-label/var\n      where: /var\n")
 	return sb.String()
 }
@@ -655,8 +717,14 @@ func minimalInstallYAML(ts, passwordHash string) string {
 // with the IMG; nothing to re-point on day one). Deliberately
 // terse: one line plus warnings — no lsblk dump, no config
 // recap (the operator just chose both).
+// installSummaryLine renders the one-line install result
+// (shared by the CLI summary and the wizard job message).
+func installSummaryLine(target, ts string) string {
+	return fmt.Sprintf("Installed SimpleK8s %s on %s", ts, target)
+}
+
 func printInstallSummary(target, ts string) {
-	fmt.Printf("\nInstalled SimpleK8s %s on %s\n", ts, target)
+	fmt.Printf("\n%s\n", installSummaryLine(target, ts))
 	warnForeignLabels(target)
 }
 
