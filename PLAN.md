@@ -1234,8 +1234,12 @@ Content uses the agetty escape so no IP detection code is
 owed and the line never goes stale on DHCP change:
 
 ```
-Setup wizard available at: https://\4:5443
+    Wizard: https://\4:5443
 ```
+
+No leading blank line: the notice renders directly under the
+distro's 10-header block, with the label padded so the colon
+aligns with Kernel/Host/IPv4/IPv6.
 
 Written atomically (tmp + rename) after a successful
 listen, removed on graceful shutdown; the contrib unit adds

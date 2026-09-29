@@ -266,7 +266,7 @@ func wizardEphemeralCert() (tls.Certificate, error) {
 func wizardIssueFile() string { return wizardIssueDir + "/50-wizard.issue" }
 
 func wizardIssueText(port int) string {
-	return fmt.Sprintf("\nSetup wizard available at: https://\\4:%d\n", port)
+	return fmt.Sprintf("    Wizard: https://\\4:%d\n", port)
 }
 
 func writeWizardIssue(log *slog.Logger, port int) error {

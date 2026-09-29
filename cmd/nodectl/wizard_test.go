@@ -449,7 +449,7 @@ func TestWizardEphemeralCertSANs(t *testing.T) {
 }
 
 func TestWizardIssueText(t *testing.T) {
-	if got, want := wizardIssueText(5443), "\nSetup wizard available at: https://\\4:5443\n"; got != want {
+	if got, want := wizardIssueText(5443), "    Wizard: https://\\4:5443\n"; got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
