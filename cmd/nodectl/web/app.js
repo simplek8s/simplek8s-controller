@@ -181,7 +181,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   $("ins-reboot").onclick = async () => {
     $("ins-reboot").disabled = true;
-    const msg = "Rebooting... the server will restart. Refresh this page to continue with the wizard; the rebooted node uses a new self-signed certificate, so accept the browser warning if shown.";
+    const msg = "Rebooting... Refresh this page to continue with the wizard; the rebooted node uses a new self-signed certificate, so accept the browser warning if shown.";
     // Once the reboot is underway the install view is over: hide its
     // sections, including the "Installer" title.
     const rebooting = () => {
