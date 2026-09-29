@@ -23,7 +23,7 @@ async function api(method, path, body) {
   return data;
 }
 function copyText(text, btn) {
-  const done = () => { const o = btn.textContent; btn.textContent = "Copied"; setTimeout(() => btn.textContent = o, 1500); };
+  const done = () => { const o = btn.textContent; btn.textContent = "✅ Copied!"; setTimeout(() => btn.textContent = o, 1500); };
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
   } else fallbackCopy(text, done);
