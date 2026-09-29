@@ -70,6 +70,7 @@ async function render(loggedIn) {
 }
 
 async function loadInstaller() {
+  $("ins-title").classList.remove("d-none");
   const disks = (await api("GET", "/api/disks")).disks || [];
   const sel = $("ins-disk"); sel.innerHTML = "";
   for (const d of disks) {
@@ -181,18 +182,22 @@ document.addEventListener("DOMContentLoaded", () => {
   $("ins-reboot").onclick = async () => {
     $("ins-reboot").disabled = true;
     const msg = "Rebooting... the server will restart. Refresh this page to continue with the wizard; the rebooted node uses a new self-signed certificate, so accept the browser warning if shown.";
+    // Once the reboot is underway the install view is over: hide its
+    // sections, including the "Installer" title.
+    const rebooting = () => {
+      for (const id of ["ins-prog", "ins-title"]) $(id).classList.add("d-none");
+      showAlert(msg, "info");
+    };
     try {
       await api("POST", "/api/reboot", { confirm: true });
-      $("ins-prog").classList.add("d-none");
-      showAlert(msg, "info");
+      rebooting();
     } catch (e) {
       // The node may go down before the 202 flushes: a
       // network-level failure after asking for reboot means
       // it is already on its way down. HTTP errors are real
       // failures instead.
       if (e instanceof TypeError) {
-        $("ins-prog").classList.add("d-none");
-        showAlert(msg, "info");
+        rebooting();
       } else { showAlert(String(e)); $("ins-reboot").disabled = false; }
     }
   };
