@@ -5,7 +5,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILT   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 TS      := $(shell date -u +%Y%m%d%H%M)
-LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.builtAt=$(BUILT)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.builtAt=$(BUILT)
 
 # Multi-arch image (PLAN.md §3.11): buildx validates linux/amd64 +
 # linux/arm64 (fails if either fails); the host-arch image is then

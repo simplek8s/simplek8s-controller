@@ -87,8 +87,8 @@ jobs:
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build \
-              -ldflags "-X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }}" \
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }}" \
               -o dist/simplek8s-controller-linux-$arch ./cmd/simplek8s-controller
           done
       - uses: softprops/action-gh-release@v3
