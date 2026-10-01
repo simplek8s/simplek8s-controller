@@ -6,6 +6,7 @@ package main
 // E2E (§7.8) — they need root + block devices.
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -162,6 +163,66 @@ func TestCryptSalt(t *testing.T) {
 	}
 	if len(seen) < 2 {
 		t.Fatal("salts are not random")
+	}
+}
+
+func TestCollectInstallSSHKeys(t *testing.T) {
+	const k1 = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc user@h"
+	const k2 = "ssh-rsa AAAAB3x== other@h"
+
+	// Empty is valid (keys are optional, like the wizard).
+	if got, err := collectInstallSSHKeys(nil, ""); err != nil || len(got) != 0 {
+		t.Fatalf("empty = %v,%v, want no keys", got, err)
+	}
+	// Flags only.
+	got, err := collectInstallSSHKeys([]string{k1, k2}, "")
+	if err != nil || len(got) != 2 || got[0] != k1 || got[1] != k2 {
+		t.Fatalf("flags = %v,%v", got, err)
+	}
+	// Bad flag rejected (same rule as the wizard textarea).
+	if _, err := collectInstallSSHKeys([]string{"not-a-key"}, ""); err == nil {
+		t.Fatal("bad flag must fail")
+	}
+	if _, err := collectInstallSSHKeys([]string{"  "}, ""); err == nil {
+		t.Fatal("blank flag must fail")
+	}
+	// File: blank lines ignored, bad line reported with its number.
+	dir := t.TempDir()
+	file := filepath.Join(dir, "keys")
+	if err := os.WriteFile(file, []byte(k1+"\n\n"+k2+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = collectInstallSSHKeys(nil, file)
+	if err != nil || len(got) != 2 || got[0] != k1 || got[1] != k2 {
+		t.Fatalf("file = %v,%v", got, err)
+	}
+	bad := filepath.Join(dir, "bad")
+	if err := os.WriteFile(bad, []byte(k1+"\nnot-a-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collectInstallSSHKeys(nil, bad); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("bad file err = %v, want line 2", err)
+	}
+	if _, err := collectInstallSSHKeys(nil, filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("missing file must fail")
+	}
+	// File first, then flags.
+	got, err = collectInstallSSHKeys([]string{k2}, file)
+	if err != nil || len(got) != 3 || got[0] != k1 || got[1] != k2 || got[2] != k2 {
+		t.Fatalf("merged = %v,%v", got, err)
+	}
+}
+
+func TestStringListFlag(t *testing.T) {
+	var s stringList
+	if err := s.Set("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("b"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s) != 2 || s[0] != "a" || s[1] != "b" {
+		t.Fatalf("list = %v", []string(s))
 	}
 }
 

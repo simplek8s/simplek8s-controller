@@ -49,15 +49,19 @@ const (
 )
 
 // runInstall implements `nodectl install [--url] [--yes]
-// [--config FILE] [--dry-run] [<ts>] <device>`.
+// [--config FILE] [--ssh-key KEY]... [--ssh-keys-file FILE]
+// [--dry-run] [<ts>] <device>`.
 func runInstall(log *slog.Logger, args []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var url, config string
+	var url, config, keysFile string
 	var assumeYes, dryRun bool
+	var keysFlags stringList
 	fs.StringVar(&url, "url", defaultRepoURL, "release channel (dev|rolling|stable) or custom base URL")
 	fs.BoolVar(&assumeYes, "yes", false, "skip the confirmation countdown (required without a terminal)")
 	fs.StringVar(&config, "config", "", "install FILE as simplek8s.yaml (default: prompt root password, mounts-only yaml)")
+	fs.Var(&keysFlags, "ssh-key", "root SSH public key (repeatable, one key per flag)")
+	fs.StringVar(&keysFile, "ssh-keys-file", "", "file with root SSH public keys, one per line (blank lines ignored)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the plan; download and touch nothing")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -80,6 +84,15 @@ func runInstall(log *slog.Logger, args []string) int {
 			log.Error("--config file not found", "file", config)
 			return exitMisuse
 		}
+		if len(keysFlags) > 0 || keysFile != "" {
+			log.Error("--ssh-key/--ssh-keys-file cannot be combined with --config (the file is installed verbatim)")
+			return exitMisuse
+		}
+	}
+	keys, err := collectInstallSSHKeys([]string(keysFlags), keysFile)
+	if err != nil {
+		log.Error("invalid SSH keys", "err", err)
+		return exitMisuse
 	}
 	if code := requireRoot(log); code != exitOK {
 		return code
@@ -135,6 +148,8 @@ func runInstall(log *slog.Logger, args []string) int {
 		fmt.Printf("device: %s\nimg: %s (%s)\nlayout: p1 ESP (from IMG), p2 var ext4 (rest of disk)\n", target, ts, file)
 		if config != "" {
 			fmt.Printf("config: %s\n", config)
+		} else if len(keys) > 0 {
+			fmt.Printf("config: minimal (mounts /var, would prompt root password, %d ssh key(s))\n", len(keys))
 		} else {
 			fmt.Printf("config: minimal (mounts /var, would prompt root password)\n")
 		}
@@ -152,11 +167,58 @@ func runInstall(log *slog.Logger, args []string) int {
 	if code := appendVarPartition(log, target); code != exitOK {
 		return code
 	}
-	if code := writeInstallYAML(log, p1, config, ts, passwordHash, nil); code != exitOK {
+	if code := writeInstallYAML(log, p1, config, ts, passwordHash, keys); code != exitOK {
 		return code
 	}
 	printInstallSummary(target, ts)
 	return exitOK
+}
+
+// stringList is a repeatable string flag (one value per
+// occurrence, e.g. --ssh-key KEY --ssh-key KEY).
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// collectInstallSSHKeys merges --ssh-key flags with the
+// --ssh-keys-file content (file first, then flags) and validates
+// every key with the same authorized_keys rule as the web wizard
+// (sshKeyLine). Blank file lines are ignored; an empty result is
+// valid (keys are optional, like in the wizard password mode).
+func collectInstallSSHKeys(flagKeys []string, file string) ([]string, error) {
+	var keys []string
+	if file != "" {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("reading --ssh-keys-file failed: %w", err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if !sshKeyLine.MatchString(line) {
+				return nil, fmt.Errorf("ssh key line %d in %s is not a valid public key", i+1, file)
+			}
+			keys = append(keys, line)
+		}
+	}
+	for _, k := range flagKeys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			return nil, fmt.Errorf("empty --ssh-key value")
+		}
+		if !sshKeyLine.MatchString(k) {
+			return nil, fmt.Errorf("invalid --ssh-key value (not a valid public key)")
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
 }
 
 // selectInstallRelease picks the IMG (ts/file/sha) from a
