@@ -65,7 +65,7 @@ func runInstall(log *slog.Logger, args []string) int {
 	fs.StringVar(&url, "url", defaultRepoURL, "release channel (dev|rolling|stable) or custom base URL")
 	fs.BoolVar(&assumeYes, "yes", false, "skip the confirmation countdown (required without a terminal)")
 	fs.StringVar(&config, "config", "", "install FILE as simplek8s.yaml (default: prompt root password, mounts-only yaml)")
-	fs.StringVar(&passwordFile, "password-file", "", "read the root password from FILE (trailing newline ignored)")
+	fs.StringVar(&passwordFile, "password-file", "", "read the root password from FILE (trailing newline ignored; or set $NODECTL_ROOT_PASSWORD)")
 	fs.Var(&keysFlags, "ssh-key", "root SSH public key (repeatable, one key per flag)")
 	fs.StringVar(&keysFile, "ssh-keys-file", "", "file with root SSH public keys, one per line (blank lines ignored)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the plan; download and touch nothing")
