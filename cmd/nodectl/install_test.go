@@ -213,6 +213,66 @@ func TestCollectInstallSSHKeys(t *testing.T) {
 	}
 }
 
+func TestInstallPasswordSource(t *testing.T) {
+	if got := installPasswordSource("some-file"); got != "file" {
+		t.Fatalf("file = %q", got)
+	}
+	t.Setenv(envRootPassword, "s3cret")
+	if got := installPasswordSource(""); got != "env" {
+		t.Fatalf("env = %q", got)
+	}
+	// --password-file wins over the env.
+	if got := installPasswordSource("some-file"); got != "file" {
+		t.Fatalf("file+env = %q, want file", got)
+	}
+	t.Setenv(envRootPassword, "")
+	if got := installPasswordSource(""); got != "prompt" {
+		t.Fatalf("empty env = %q, want prompt", got)
+	}
+}
+
+func TestResolveInstallPassword(t *testing.T) {
+	log := testLog()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "pw")
+	if err := os.WriteFile(file, []byte("s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, code := resolveInstallPassword(log, file)
+	if code != exitOK || !strings.HasPrefix(hash, "$6$") {
+		t.Fatalf("file = (%q, %d), want $6$ hash", hash, code)
+	}
+	// CRLF is trimmed like a trailing newline, inner content kept.
+	crlf := filepath.Join(dir, "crlf")
+	if err := os.WriteFile(crlf, []byte("s3 cret\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if hash, code := resolveInstallPassword(log, crlf); code != exitOK || !strings.HasPrefix(hash, "$6$") {
+		t.Fatalf("crlf = (%q, %d)", hash, code)
+	}
+	// Empty file refused (key-only belongs in --config).
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, code := resolveInstallPassword(log, empty); code != exitMisuse {
+		t.Fatalf("empty file code = %d, want %d", code, exitMisuse)
+	}
+	// Missing file is operational (stat guard catches it first as misuse).
+	if _, code := resolveInstallPassword(log, filepath.Join(dir, "missing")); code != exitOperational {
+		t.Fatalf("missing file code = %d, want %d", code, exitOperational)
+	}
+	// Env path.
+	t.Setenv(envRootPassword, "env-secret")
+	if hash, code := resolveInstallPassword(log, ""); code != exitOK || !strings.HasPrefix(hash, "$6$") {
+		t.Fatalf("env = (%q, %d)", hash, code)
+	}
+	// File wins over env.
+	if hash, code := resolveInstallPassword(log, file); code != exitOK || !strings.HasPrefix(hash, "$6$") {
+		t.Fatalf("file+env = (%q, %d)", hash, code)
+	}
+}
+
 func TestStringListFlag(t *testing.T) {
 	var s stringList
 	if err := s.Set("a"); err != nil {

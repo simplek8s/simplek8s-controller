@@ -48,18 +48,24 @@ const (
 	installCryptSaltLen = 16
 )
 
+// envRootPassword carries the root password for non-interactive
+// installs (same role as the wizard password fields, without the
+// confirmation round-trip).
+const envRootPassword = "NODECTL_ROOT_PASSWORD"
+
 // runInstall implements `nodectl install [--url] [--yes]
-// [--config FILE] [--ssh-key KEY]... [--ssh-keys-file FILE]
-// [--dry-run] [<ts>] <device>`.
+// [--config FILE] [--password-file FILE] [--ssh-key KEY]...
+// [--ssh-keys-file FILE] [--dry-run] [<ts>] <device>`.
 func runInstall(log *slog.Logger, args []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var url, config, keysFile string
+	var url, config, keysFile, passwordFile string
 	var assumeYes, dryRun bool
 	var keysFlags stringList
 	fs.StringVar(&url, "url", defaultRepoURL, "release channel (dev|rolling|stable) or custom base URL")
 	fs.BoolVar(&assumeYes, "yes", false, "skip the confirmation countdown (required without a terminal)")
 	fs.StringVar(&config, "config", "", "install FILE as simplek8s.yaml (default: prompt root password, mounts-only yaml)")
+	fs.StringVar(&passwordFile, "password-file", "", "read the root password from FILE (trailing newline ignored)")
 	fs.Var(&keysFlags, "ssh-key", "root SSH public key (repeatable, one key per flag)")
 	fs.StringVar(&keysFile, "ssh-keys-file", "", "file with root SSH public keys, one per line (blank lines ignored)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the plan; download and touch nothing")
@@ -86,6 +92,16 @@ func runInstall(log *slog.Logger, args []string) int {
 		}
 		if len(keysFlags) > 0 || keysFile != "" {
 			log.Error("--ssh-key/--ssh-keys-file cannot be combined with --config (the file is installed verbatim)")
+			return exitMisuse
+		}
+		if passwordFile != "" || os.Getenv(envRootPassword) != "" {
+			log.Error("--password-file/$NODECTL_ROOT_PASSWORD cannot be combined with --config (put password_hash in the file instead)")
+			return exitMisuse
+		}
+	}
+	if passwordFile != "" {
+		if st, err := os.Stat(passwordFile); err != nil || st.IsDir() {
+			log.Error("--password-file not found", "file", passwordFile)
 			return exitMisuse
 		}
 	}
@@ -129,15 +145,12 @@ func runInstall(log *slog.Logger, args []string) int {
 	}
 
 	// Root password (M8 D5): --config is authoritative and never
-	// prompts; otherwise prompt on a tty before anything
-	// destructive. --dry-run never prompts.
+	// prompts; otherwise --password-file, $NODECTL_ROOT_PASSWORD,
+	// or the tty prompt, in that order, before anything
+	// destructive. --dry-run never prompts nor reads.
 	var passwordHash string
 	if config == "" && !dryRun {
-		if !isTerminalStdin() {
-			log.Error("cannot prompt for the root password without a terminal (use --config)")
-			return exitMisuse
-		}
-		hash, code := promptRootPassword(log)
+		hash, code := resolveInstallPassword(log, passwordFile)
 		if code != exitOK {
 			return code
 		}
@@ -148,10 +161,19 @@ func runInstall(log *slog.Logger, args []string) int {
 		fmt.Printf("device: %s\nimg: %s (%s)\nlayout: p1 ESP (from IMG), p2 var ext4 (rest of disk)\n", target, ts, file)
 		if config != "" {
 			fmt.Printf("config: %s\n", config)
-		} else if len(keys) > 0 {
-			fmt.Printf("config: minimal (mounts /var, would prompt root password, %d ssh key(s))\n", len(keys))
 		} else {
-			fmt.Printf("config: minimal (mounts /var, would prompt root password)\n")
+			pwSrc := "would prompt root password"
+			switch installPasswordSource(passwordFile) {
+			case "file":
+				pwSrc = "root password from --password-file"
+			case "env":
+				pwSrc = "root password from $" + envRootPassword
+			}
+			if len(keys) > 0 {
+				fmt.Printf("config: minimal (mounts /var, %s, %d ssh key(s))\n", pwSrc, len(keys))
+			} else {
+				fmt.Printf("config: minimal (mounts /var, %s)\n", pwSrc)
+			}
 		}
 		return exitOK
 	}
@@ -445,6 +467,59 @@ func installTargetSize(base string) (int64, error) {
 		return 0, err
 	}
 	return sectors * 512, nil
+}
+
+// installPasswordSource reports where the root password would
+// come from: "file" (--password-file), "env"
+// ($NODECTL_ROOT_PASSWORD), or "prompt" (tty). An empty env value
+// counts as unset.
+func installPasswordSource(passwordFile string) string {
+	if passwordFile != "" {
+		return "file"
+	}
+	if os.Getenv(envRootPassword) != "" {
+		return "env"
+	}
+	return "prompt"
+}
+
+// resolveInstallPassword returns the SHA-512-crypt hash from
+// --password-file, $NODECTL_ROOT_PASSWORD, or the interactive
+// prompt, in that order. Non-interactive sources skip the
+// confirmation round-trip; empty passwords are refused everywhere
+// (key-only setups belong in an explicit --config file).
+func resolveInstallPassword(log *slog.Logger, passwordFile string) (string, int) {
+	if passwordFile != "" {
+		raw, err := os.ReadFile(passwordFile)
+		if err != nil {
+			log.Error("reading --password-file failed", "err", err)
+			return "", exitOperational
+		}
+		return hashInstallPassword(log, strings.TrimRight(string(raw), "\r\n"), "--password-file")
+	}
+	if pw := os.Getenv(envRootPassword); pw != "" {
+		return hashInstallPassword(log, pw, "$"+envRootPassword)
+	}
+	if !isTerminalStdin() {
+		log.Error("cannot prompt for the root password without a terminal (use --config, --password-file or $NODECTL_ROOT_PASSWORD)")
+		return "", exitMisuse
+	}
+	return promptRootPassword(log)
+}
+
+// hashInstallPassword refuses an empty password and hashes the
+// rest (shared by the --password-file and env paths).
+func hashInstallPassword(log *slog.Logger, password, source string) (string, int) {
+	if password == "" {
+		log.Error("empty root password refused (use --config for key-only setups)", "source", source)
+		return "", exitMisuse
+	}
+	hash, err := hashRootPassword(password)
+	if err != nil {
+		log.Error("hashing password failed", "err", err)
+		return "", exitOperational
+	}
+	return hash, exitOK
 }
 
 // promptRootPassword reads + confirms the root password (hidden)
