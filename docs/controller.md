@@ -229,6 +229,12 @@ for the automatic reboots):
   downloads or staging. A per-node `next-kernel` already set is still
   honored at boot, and the bootloader reconciliation still re-points
   it.
+- **Held goal**: while `next-kernel` names a version other than the
+  running one (operator pin or staged-but-unrebooted version), the
+  updater never stages a newer release past it — the bootloader
+  `DEFAULT` (GRUB `set default` on new images, syslinux `DEFAULT` on
+  legacy ones) always tracks the annotation. The newest release waits
+  for the check after the reboot.
 
 Windows are cron-style schedule lists (Vixie syntax, see PLAN.md §3.3)
 plus a grace period, evaluated against the UTC clock; only the *start*

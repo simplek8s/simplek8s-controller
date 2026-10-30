@@ -7,6 +7,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -167,6 +168,16 @@ func (f *Feature) RunLocal(ctx context.Context) {
 	}
 	if f.reconcileBootloader(ctx, node, dirty) {
 		dirty = true
+	}
+	if dirty {
+		// Bootstrap/reconcile patched the node: re-read so the
+		// check claim and staging decide on a fresh view (in
+		// particular, a just-anchored goal counts as held below).
+		if fresh, err := f.kube.GetNode(ctx, f.cfg.NodeName); err == nil {
+			node = fresh
+		} else {
+			f.log.Debug("update: own node re-read failed", "err", err)
+		}
 	}
 
 	// Master switch (PLAN.md §3.4): update work runs only while a
@@ -349,10 +360,55 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 			dirty = true
 		}
 	}
-	// (2) newest available release not yet local.
+	// (1b) adopt a verified, already-local newest on a quiescent
+	// node. Pre-fix staging past a held goal leaves the file without
+	// the anchor; the occurrence after the reboot adopts it,
+	// mirroring a fresh stage minus the download (verified index +
+	// present file + quiescent anchor, same preconditions).
+	if !heldGoal(ui, running) && ui.NextKernelPresent && ui.NextKernelParseErr == "" &&
+		res.Available && res.Latest != "" && res.Latest != running &&
+		ui.NextKernel != res.Latest && localSet[res.Latest] && indexHas(res, res.Latest, arch) {
+		if f.anchor(ctx, node, res.Latest, running) {
+			f.log.Info("update: adopted already-staged release", "version", res.Latest)
+			dirty = true
+			if _, err := f.cfg.Store.EnsureBootGoal(ctx, res.Latest, arch); err != nil &&
+				!errors.Is(err, updatecore.ErrGoalAbsent) {
+				f.log.Warn("update: bootloader re-point after adopt failed; retrying next cycle", "version", res.Latest, "err", err)
+			}
+			f.rearmIfCompleted(ctx, node.Metadata.Name)
+		}
+		return dirty
+	}
+	// (2) newest available release.
 	if res.Available && res.Latest != "" && res.Latest != running &&
-		!localSet[res.Latest] && ui.NextKernel != res.Latest {
-		if f.stageOne(ctx, node, fc, res, res.Latest) {
+		ui.NextKernel != res.Latest {
+		if heldGoal(ui, running) {
+			// A held goal (operator pin or staged-but-unrebooted
+			// version) owns the bootloader: staging the newest
+			// would re-point DEFAULT away from it while the
+			// anchor below refuses for the same reason
+			// (PrecondQuiescent) — leaving DEFAULT naming a
+			// version the annotation does not. The newest
+			// waits for the occurrence after the reboot; when
+			// a newer file is already local (the aftermath of
+			// that re-point), converge DEFAULT back to the
+			// goal — the annotation is the source of truth.
+			if ui.NextKernelParseErr == "" && localSet[ui.NextKernel] &&
+				newerLocal(localSet, ui.NextKernel) {
+				if repointed, err := f.cfg.Store.EnsureBootGoal(ctx, ui.NextKernel, arch); err != nil {
+					if !errors.Is(err, updatecore.ErrGoalAbsent) {
+						f.log.Warn("update: bootloader reconverge failed; retrying next cycle", "version", ui.NextKernel, "err", err)
+					}
+				} else if repointed {
+					f.log.Info("update: bootloader default reconverged to held goal", "version", ui.NextKernel)
+					dirty = f.rearmIfCompleted(ctx, node.Metadata.Name)
+				}
+			} else {
+				f.log.Debug("update: newest release deferred by held goal", "latest", res.Latest, "goal", ui.NextKernel)
+			}
+			return dirty
+		}
+		if !localSet[res.Latest] && f.stageOne(ctx, node, fc, res, res.Latest) {
 			if f.anchor(ctx, node, res.Latest, running) {
 				// A fresh-stage anchor changes the goal to a
 				// well-formed present version: re-arm per the
@@ -366,6 +422,25 @@ func (f *Feature) maybeStage(ctx context.Context, node *kube.Node, fc config.Con
 		}
 	}
 	return dirty
+}
+
+// heldGoal reports whether the node carries a goal staging must not
+// move: any present next-kernel that is not the running version
+// (operator pin, staged-but-unrebooted anchor) or a malformed value
+// (owned by the §3.10 correction path, never by staging).
+func heldGoal(ui *nodestate.UpdateInfo, running string) bool {
+	return ui.NextKernelPresent && (ui.NextKernelParseErr != "" || ui.NextKernel != running)
+}
+
+// newerLocal reports whether set holds a version newer than goal
+// (callers pass the own-flavor local set).
+func newerLocal(set map[string]bool, goal string) bool {
+	for v := range set {
+		if v != goal && updatecore.NewerTS(v, goal) {
+			return true
+		}
+	}
+	return false
 }
 
 // indexHas reports whether the verified index contains a kernel

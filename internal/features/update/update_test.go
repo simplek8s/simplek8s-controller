@@ -31,8 +31,11 @@ type fakeStore struct {
 	err     error
 	flavors map[string]string
 	// defGoal records the last EnsureBootGoal target (the fake's
-	// DEFAULT).
-	defGoal string
+	// DEFAULT). Stage moves it like the real staging path (which
+	// re-points the bootloader default at the staged version unless
+	// NoRepoint); goalCalls counts EnsureBootGoal invocations.
+	defGoal   string
+	goalCalls int
 }
 
 func (s *fakeStore) Versions(ctx context.Context) ([]string, error) {
@@ -52,6 +55,9 @@ func (s *fakeStore) Stage(ctx context.Context, req updatecore.StageRequest) erro
 			}
 		}
 		s.vers = append(s.vers, req.Version)
+		if !req.NoRepoint {
+			s.defGoal = req.Version
+		}
 	}
 	return s.err
 }
@@ -487,6 +493,80 @@ func TestStagingSkippedWhenVersionAlreadyLocal(t *testing.T) {
 	}
 }
 
+// TestHeldGoalDefersNewestStage: a node with a pending (non-quiescent)
+// goal keeps it — the newest release is neither staged nor anchored,
+// and the bootloader default still names the goal (staging must never
+// re-point away from a value its anchor refuses to move).
+func TestHeldGoalDefersNewestStage(t *testing.T) {
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202501010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202501010000", "202601010000"})
+	h.store.defGoal = "202601010000"
+	h.tick()
+	if got := h.store.stagedVersions(); len(got) != 0 {
+		t.Fatalf("staged = %v, want none (held goal defers newest)", got)
+	}
+	if got := h.nextKernel(); got != "202601010000" {
+		t.Fatalf("next-kernel = %q, want unchanged held goal", got)
+	}
+	if h.store.defGoal != "202601010000" {
+		t.Fatalf("DEFAULT = %q, want held goal 202601010000", h.store.defGoal)
+	}
+	if h.store.goalCalls != 1 {
+		t.Fatalf("EnsureBootGoal calls = %d, want 1 (pod-start reconcile only)", h.store.goalCalls)
+	}
+}
+
+// TestDivergedDefaultReconvergesToHeldGoal: DEFAULT names a newer
+// version than the held goal (the aftermath of staging past it) —
+// the occurrence reconverges DEFAULT back to the annotation without
+// staging anything further.
+func TestDivergedDefaultReconvergesToHeldGoal(t *testing.T) {
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202501010000"},
+		[]string{"202601010000", "202501010000", "202608291203"})
+	h.store.defGoal = "202608291203"
+	// Long-running pod: the goal was already reconciled, so the
+	// change-triggered path stays in steady state (zero disk I/O) and
+	// never re-verifies DEFAULT — reconvergence must come from the
+	// staging path below.
+	h.f.lastGoal, h.f.goalKnown = "202501010000", true
+	h.tick()
+	if got := h.store.stagedVersions(); len(got) != 0 {
+		t.Fatalf("staged = %v, want none (reconvergence stages nothing)", got)
+	}
+	if got := h.nextKernel(); got != "202501010000" {
+		t.Fatalf("next-kernel = %q, want unchanged held goal", got)
+	}
+	if h.store.defGoal != "202501010000" {
+		t.Fatalf("DEFAULT = %q, want reconverged held goal 202501010000", h.store.defGoal)
+	}
+	if h.store.goalCalls != 1 {
+		t.Fatalf("EnsureBootGoal calls = %d, want 1 (reconvergence only)", h.store.goalCalls)
+	}
+}
+
+// TestQuiescentAdoptsAlreadyStagedNewest: the newest verified release
+// is already local but not anchored (staged past a held goal before
+// the deferral fix) — once quiescent, the node adopts it: anchor +
+// DEFAULT re-point, no download.
+func TestQuiescentAdoptsAlreadyStagedNewest(t *testing.T) {
+	h := newUpdateHarness(t, "6.18.48-simplek8s-202601010000 (amd64)",
+		map[string]string{"simplek8s.org/next-kernel": "202601010000"},
+		[]string{"202601010000", "202608291203"})
+	h.store.defGoal = "202601010000"
+	h.tick()
+	if got := h.store.stagedVersions(); len(got) != 0 {
+		t.Fatalf("staged = %v, want none (already local, adopt only)", got)
+	}
+	if got := h.nextKernel(); got != "202608291203" {
+		t.Fatalf("next-kernel = %q, want adopted 202608291203", got)
+	}
+	if h.store.defGoal != "202608291203" {
+		t.Fatalf("DEFAULT = %q, want re-pointed at adopted 202608291203", h.store.defGoal)
+	}
+}
+
 // TestStagingFailureFiresEventNoAnnotationChange: a failed stage fires
 // UpdateStagingSkipped and never changes the annotation.
 func TestStagingFailureFiresEventNoAnnotationChange(t *testing.T) {
@@ -564,6 +644,7 @@ func TestDefensiveRestageDoesNotSetRebootEligible(t *testing.T) {
 func (s *fakeStore) EnsureBootGoal(ctx context.Context, version, arch string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.goalCalls++
 	for _, v := range s.vers {
 		if v == version {
 			changed := s.defGoal != version
