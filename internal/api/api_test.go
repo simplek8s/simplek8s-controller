@@ -223,7 +223,7 @@ func TestReadyzUnhealthy(t *testing.T) {
 func TestPostHappyPath(t *testing.T) {
 	h := newHarness(t)
 	h.node("w1")
-	code, resp := h.postReboots([]byte(`{"nodes":["w1"],"force":true,"requestedBy":"jls"}`))
+	code, resp := h.postReboots([]byte(`{"nodes":["w1"],"force":true,"requestedBy":"user"}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
@@ -248,7 +248,7 @@ func TestPostHappyPath(t *testing.T) {
 	if err := json.Unmarshal([]byte(h.fake.NodeAnnotation("w1", nodestate.AnnRequest)), &req); err != nil {
 		t.Fatalf("request annotation: %v", err)
 	}
-	if req.ID == "" || req.By != "jls" || !req.Force {
+	if req.ID == "" || req.By != "user" || !req.Force {
 		t.Errorf("request = %+v", req)
 	}
 	if h.fake.NodeAnnotation("w1", nodestate.AnnExec) != "" || h.fake.NodeAnnotation("w1", nodestate.AnnStatus) != "" {
@@ -358,7 +358,7 @@ func TestGetList(t *testing.T) {
 	h.node("w1") // no state: not listed
 	h.fake.SetNode("w2", map[string]string{
 		nodestate.AnnState:   nodestate.StateValue(nodestate.Draining, h.now),
-		nodestate.AnnRequest: nodestate.RequestValue("req-1", "jls", true),
+		nodestate.AnnRequest: nodestate.RequestValue("req-1", "user", true),
 		nodestate.AnnStatus:  `{"blockedBy":["ns1/pdb1","ns2/pdb2"]}`,
 		nodestate.AnnExec:    nodestate.ExecValue(nodestate.ExecInfo{IssuedAt: h.now, BootID: "abc", Attempt: 1, ExecutorPodUID: "p1"}),
 	}, true, nil, "uid-w2")
@@ -383,7 +383,7 @@ func TestGetList(t *testing.T) {
 		byName[e.Node] = e
 	}
 	w2 := byName["w2"]
-	if w2.State != "draining" || w2.By != "jls" || !w2.Force || w2.Ready {
+	if w2.State != "draining" || w2.By != "user" || !w2.Force || w2.Ready {
 		t.Errorf("w2 = %+v", w2)
 	}
 	if len(w2.BlockedBy) != 2 || w2.BlockedBy[0] != "ns1/pdb1" {
