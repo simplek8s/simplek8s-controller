@@ -54,7 +54,7 @@ func (f *Feature) Check(ctx context.Context, node *kube.Node, repoURL, flavor st
 	if err != nil {
 		return res, err
 	}
-	if _, err := updatecore.VerifyIndex(keyring, indexBytes, sigBytes); err != nil {
+	if _, err := updatecore.VerifyIndex(f.log, keyring, indexBytes, sigBytes); err != nil {
 		return res, err
 	}
 

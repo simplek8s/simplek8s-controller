@@ -311,7 +311,7 @@ func FetchVerifiedIndex(ctx context.Context, c *http.Client, log Logger, baseURL
 				return nil, err
 			}
 		}
-		if _, err := VerifyIndex(el, indexBytes, sigBytes); err != nil {
+		if _, err := VerifyIndex(log, el, indexBytes, sigBytes); err != nil {
 			return nil, err
 		}
 	}

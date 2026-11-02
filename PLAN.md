@@ -1005,8 +1005,15 @@ keyring discipline — embedded default, `--keyring` override,
 kernel check: fetch the channel's GPG-signed `SHA256SUMS` with the
 existing `updatecore.FetchVerifiedIndex` (no new verifier — the
 publisher verifies the uploaded `publish.json`, discards it, and
-serves a plain signed `SHA256SUMS` over the stored binaries). Arch
-uses the same mapping as kernel artifacts (`runtime.GOARCH` to the
+serves a plain signed `SHA256SUMS` over the stored binaries). **Expired
+keys are accepted with a warning** (M7 D15): the embedded keyring is
+part of the running binary, so treating its expiry as fatal would make
+the tool unable to install the release that renews it. The non-expired
+copy of the same key published on the web is deliberately *not*
+re-fetched at runtime: the keyring is the trust root, and fetching it
+from the same server it authenticates would defeat the signature.
+Only validity time is ignored, never revocation or the cryptographic
+check. Arch uses the same mapping as kernel artifacts (`runtime.GOARCH` to the
 channel infix, shared helper — no new vocabulary); `latest` is the
 newest `TS` for that arch computed from the verified index, with the
 same selection rule as kernels (not the publisher alias); the
@@ -1630,6 +1637,7 @@ configmap.data`, live coredns wire JSON). No nested documents, no
 | 12  | `selfupdate` ignores the update lock                                 | Touches only binary + state file (own `flock`); never contends with nor blocked by boot-partition sessions (decided 2026-09-21).                                                                                                                     |
 | 13  | Auto-check is denylist: unknown commands trigger                       | An old binary must update precisely when the user invokes a command it does not know yet (live find: no selfupdate on unknown install); typo cost is one bounded check (decided 2026-09-24).                                                       |
 | 14  | Stamped local build newer than the index is skipped, not downgraded | `-X main.releaseTS=$(TS)` stamps the channel TS (same as filename/index) into the CLI; both explicit and auto paths skip when the stamped local TS is newer than `latest`; unstamped binaries keep the checksum-only rule (decided 2026-09-25). |
+| 15  | Key/signature expiry is a warning, not a verification failure        | The keyring is embedded in the very binary it gates: once it expires, rejecting verification would permanently brick the tool that installs its own replacement (live find 2026-11-02, expired embedded subkey). Expiry relaxes only the validity period — a bad signature, unknown issuer, or revoked key stays fatal (decided 2026-11-02). |
 
 ### 4.7 Node CLI install era (M8, shipped 2026-09-24)
 

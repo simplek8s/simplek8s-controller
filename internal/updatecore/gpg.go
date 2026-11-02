@@ -6,12 +6,14 @@ package updatecore
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	openpgperrors "github.com/ProtonMail/go-crypto/openpgp/errors"
 )
 
 // DefaultKeyringPaths are the fixed, non-configurable keyring locations
@@ -59,9 +61,22 @@ func LoadKeyring(path string) (openpgp.EntityList, error) {
 // VerifyIndex checks the detached GPG signature of the index. The
 // signature may be armored or binary. A bad signature (or unknown
 // issuer) rejects the whole index: nothing from it is ever trusted.
-func VerifyIndex(keyring openpgp.EntityList, index, signature []byte) (*openpgp.Entity, error) {
+//
+// Expiry (of the signing key or of the signature) is deliberately
+// non-fatal: the signature is still cryptographically valid, and the
+// keyring is embedded in the binary that verifies it, so an expired
+// key cannot be replaced by the very self-update it gates. Treating
+// expiry as fatal would brick already-deployed tools permanently.
+// Revocation and every other verification failure remain fatal.
+func VerifyIndex(log Logger, keyring openpgp.EntityList, index, signature []byte) (*openpgp.Entity, error) {
 	signer, err := openpgp.CheckDetachedSignature(keyring, bytes.NewReader(index), detachedSignatureReader(signature), nil)
 	if err != nil {
+		if errors.Is(err, openpgperrors.ErrKeyExpired) || errors.Is(err, openpgperrors.ErrSignatureExpired) {
+			if log != nil {
+				log.Warn("release index signature accepted despite expiry; renew the signing key", "err", err)
+			}
+			return signer, nil
+		}
 		return nil, fmt.Errorf("index signature verification failed: %w", err)
 	}
 	return signer, nil

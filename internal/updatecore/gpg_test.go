@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+// recordingLogger captures warnings emitted during verification.
+type recordingLogger struct{ warnings []string }
+
+func (l *recordingLogger) Debug(string, ...any) {}
+func (l *recordingLogger) Info(string, ...any)  {}
+func (l *recordingLogger) Warn(msg string, _ ...any) {
+	l.warnings = append(l.warnings, msg)
+}
+
 func TestResolveKeyring(t *testing.T) {
 	tmp := t.TempDir()
 	custom := filepath.Join(tmp, "custom.gpg")
@@ -71,7 +80,7 @@ func TestVerifyIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 		sig := k.sign(t, index, armored)
-		signer, err := VerifyIndex(el, index, sig)
+		signer, err := VerifyIndex(nil, el, index, sig)
 		if err != nil {
 			t.Fatalf("armored=%v: verify: %v", armored, err)
 		}
@@ -85,14 +94,52 @@ func TestVerifyIndex(t *testing.T) {
 	el, _ := LoadKeyring(k.keyring)
 	sig := k.sign(t, index, true)
 	tampered := append(append([]byte{}, index...), 'x')
-	if _, err := VerifyIndex(el, tampered, sig); err == nil {
+	if _, err := VerifyIndex(nil, el, tampered, sig); err == nil {
 		t.Fatal("want error for tampered index")
 	}
 
 	// A signature from a different key is rejected (unknown issuer).
 	other := newTestKey(t, true)
 	foreignSig := other.sign(t, index, true)
-	if _, err := VerifyIndex(el, index, foreignSig); err == nil {
+	if _, err := VerifyIndex(nil, el, index, foreignSig); err == nil {
 		t.Fatal("want error for foreign signer")
+	}
+}
+
+// TestVerifyIndexAcceptsExpiredKey covers the deployed-tool case: the
+// keyring is embedded in the binary, so once its key expires the tool
+// can no longer verify the self-update that would replace it. Expiry
+// must warn, not reject; the cryptographic checks stay in force.
+func TestVerifyIndexAcceptsExpiredKey(t *testing.T) {
+	index := []byte("deadbeef  simplek8s.202601010000.x86-64.efi.zst\n")
+
+	for _, armored := range []bool{true, false} {
+		k := newExpiredTestKey(t, true)
+		el, err := LoadKeyring(k.keyring)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig := k.sign(t, index, armored)
+		log := &recordingLogger{}
+		signer, err := VerifyIndex(log, el, index, sig)
+		if err != nil {
+			t.Fatalf("armored=%v: expired key rejected: %v", armored, err)
+		}
+		if signer == nil {
+			t.Fatalf("armored=%v: nil signer", armored)
+		}
+		if len(log.warnings) != 1 {
+			t.Fatalf("armored=%v: want one expiry warning, got %v", armored, log.warnings)
+		}
+
+		// Expiry relaxes only the validity period, never the signature.
+		tampered := append(append([]byte{}, index...), 'x')
+		if _, err := VerifyIndex(nil, el, tampered, sig); err == nil {
+			t.Fatalf("armored=%v: want error for tampered index", armored)
+		}
+		other := newTestKey(t, true)
+		if _, err := VerifyIndex(nil, el, index, other.sign(t, index, armored)); err == nil {
+			t.Fatalf("armored=%v: want error for foreign signer", armored)
+		}
 	}
 }
