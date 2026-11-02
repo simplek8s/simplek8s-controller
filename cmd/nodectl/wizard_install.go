@@ -124,7 +124,7 @@ func installHandler(log *slog.Logger) http.HandlerFunc {
 		sums, err := cachedIndex(r.Context(), log, baseURL)
 		if err != nil {
 			log.Error("install index failed", "err", err)
-			apiError(w, http.StatusBadGateway, "release channel unreachable")
+			apiError(w, http.StatusBadGateway, indexFailureMessage(err))
 			return
 		}
 		flavor, ok := wizardFlavor()

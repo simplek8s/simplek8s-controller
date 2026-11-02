@@ -16,6 +16,37 @@ import (
 	"testing"
 )
 
+func TestFetchVerifiedIndexClassifiesRejections(t *testing.T) {
+	ctx := context.Background()
+	files := map[string][]byte{"info.json": []byte("{}")}
+	key := newTestKey(t, true)
+	srv := releaseRepo(t, key, true, files)
+	log := &recordingLogger{}
+
+	// Correct keyring: accepted.
+	if _, err := FetchVerifiedIndex(ctx, srv.Client(), log, srv.URL, key.keyring, nil); err != nil {
+		t.Fatalf("valid keyring: %v", err)
+	}
+
+	// Wrong keyring: fetched but rejected, not a transport failure.
+	other := newTestKey(t, true)
+	if _, err := FetchVerifiedIndex(ctx, srv.Client(), log, srv.URL, other.keyring, nil); !errors.Is(err, ErrIndexRejected) {
+		t.Fatalf("wrong keyring: err=%v, want ErrIndexRejected", err)
+	}
+
+	// Unusable keyring: also a rejection (the check cannot proceed).
+	missing := filepath.Join(t.TempDir(), "missing.gpg")
+	if _, err := FetchVerifiedIndex(ctx, srv.Client(), log, srv.URL, missing, nil); !errors.Is(err, ErrIndexRejected) {
+		t.Fatalf("missing keyring: err=%v, want ErrIndexRejected", err)
+	}
+
+	// Unreachable channel: transport failure, never classified as rejected.
+	srv.Close()
+	if _, err := FetchVerifiedIndex(ctx, srv.Client(), log, srv.URL, key.keyring, nil); err == nil || errors.Is(err, ErrIndexRejected) {
+		t.Fatalf("unreachable: err=%v, want a plain transport error", err)
+	}
+}
+
 func TestCheckVerdict(t *testing.T) {
 	for _, tc := range []struct {
 		latest, running, staged, want string

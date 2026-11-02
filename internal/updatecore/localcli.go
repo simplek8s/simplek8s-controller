@@ -281,6 +281,13 @@ func (s *PhysicalStore) LockExcl() (func(), error) {
 	return LockFile(s.lockPath, true)
 }
 
+// ErrIndexRejected marks a fetched release index that was not
+// accepted: keyring/signature verification failed or the index could
+// not be parsed. Transport failures are left unwrapped, so callers can
+// tell "unreachable" from "rejected" (the wizard reports them
+// differently).
+var ErrIndexRejected = errors.New("release index rejected")
+
 // FetchVerifiedIndex fetches the release index plus its detached
 // signature and verifies the signature (PLAN-M6 check/update
 // prelude), returning the verified filename -> sha256 map. With
@@ -304,18 +311,22 @@ func FetchVerifiedIndex(ctx context.Context, c *http.Client, log Logger, baseURL
 		var el openpgp.EntityList
 		if keyringPath != "" {
 			if el, err = LoadKeyring(keyringPath); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%w: %w", ErrIndexRejected, err)
 			}
 		} else {
 			if el, err = LoadKeyringBytes(embedded); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%w: %w", ErrIndexRejected, err)
 			}
 		}
 		if _, err := VerifyIndex(log, el, indexBytes, sigBytes); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrIndexRejected, err)
 		}
 	}
-	return ParseIndex(indexBytes)
+	sums, err := ParseIndex(indexBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrIndexRejected, err)
+	}
+	return sums, nil
 }
 
 // sha256File returns the hex sha256 of a file's bytes.

@@ -53,16 +53,17 @@ const (
 // confirmation round-trip).
 const envRootPassword = "NODECTL_ROOT_PASSWORD"
 
-// runInstall implements `nodectl install [--url] [--yes]
-// [--config FILE] [--password-file FILE] [--ssh-key KEY]...
+// runInstall implements `nodectl install [--url] [--keyring PATH]
+// [--yes] [--config FILE] [--password-file FILE] [--ssh-key KEY]...
 // [--ssh-keys-file FILE] [--dry-run] [<ts>] <device>`.
 func runInstall(log *slog.Logger, args []string) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	var url, config, keysFile, passwordFile string
+	var url, keyring, config, keysFile, passwordFile string
 	var assumeYes, dryRun bool
 	var keysFlags stringList
 	fs.StringVar(&url, "url", defaultRepoURL, "release channel (dev|rolling|stable) or custom base URL")
+	fs.StringVar(&keyring, "keyring", "", "custom keyring path (default: embedded; /dev/null skips GPG verification)")
 	fs.BoolVar(&assumeYes, "yes", false, "skip the confirmation countdown (required without a terminal)")
 	fs.StringVar(&config, "config", "", "install FILE as simplek8s.yaml (default: prompt root password, mounts-only yaml)")
 	fs.StringVar(&passwordFile, "password-file", "", "read the root password from FILE (trailing newline ignored; or set $NODECTL_ROOT_PASSWORD)")
@@ -127,7 +128,7 @@ func runInstall(log *slog.Logger, args []string) int {
 
 	baseURL := repoBase(url)
 	ctx := context.Background()
-	sums, code := fetchIndex(ctx, log, baseURL, "")
+	sums, code := fetchIndex(ctx, log, baseURL, keyring)
 	if code != exitOK {
 		return code
 	}

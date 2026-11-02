@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,14 +45,26 @@ func cachedIndex(ctx context.Context, log *slog.Logger, baseURL string) (map[str
 		return sums, nil
 	}
 	releaseIndex.mu.Unlock()
-	sums, code := fetchIndex(ctx, log, baseURL, "")
-	if code != exitOK {
-		return nil, fmt.Errorf("release index check failed")
+	sums, err := fetchIndexChecked(ctx, log, baseURL, "")
+	if err != nil {
+		log.Error("release index check failed", "err", err)
+		return nil, err
 	}
 	releaseIndex.mu.Lock()
 	defer releaseIndex.mu.Unlock()
 	releaseIndex.by[baseURL] = indexEntry{at: time.Now(), sums: sums}
 	return sums, nil
+}
+
+// indexFailureMessage distinguishes a channel that could not be
+// reached from one whose index was fetched but rejected (bad
+// signature, keyring or malformed index). The detailed cause is in
+// the node log.
+func indexFailureMessage(err error) string {
+	if errors.Is(err, updatecore.ErrIndexRejected) {
+		return "release index rejected (signature, keyring or index invalid)"
+	}
+	return "release channel unreachable"
 }
 
 // wizardFlavor resolves this node's install flavor (same rule
@@ -77,7 +89,7 @@ func versionsHandler(log *slog.Logger) http.HandlerFunc {
 		sums, err := cachedIndex(r.Context(), log, baseURL)
 		if err != nil {
 			log.Error("versions index failed", "err", err)
-			apiError(w, http.StatusBadGateway, "release channel unreachable")
+			apiError(w, http.StatusBadGateway, indexFailureMessage(err))
 			return
 		}
 		flavor, ok := wizardFlavor()

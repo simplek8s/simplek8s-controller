@@ -82,10 +82,16 @@ Runs on a **live-booted** SimpleK8s (ISO/USB/IMG) and provisions an
 while writing — no `curl`/`dd` needed):
 
 ```sh
-nodectl install [<ts>] <device> [--url ...] [--yes] [--dry-run] \
+nodectl install [<ts>] <device> [--url ...] [--keyring PATH] [--yes] [--dry-run] \
   [--config FILE] [--password-file FILE] [--ssh-key KEY]... [--ssh-keys-file FILE]
   # e.g. nodectl install /dev/vda
 ```
+
+- Same keyring discipline as `update`/`selfupdate`: the keyring is
+  embedded (so a freshly built installer is self-sufficient), `--keyring
+  PATH` overrides it, and `--keyring /dev/null` skips GPG verification
+  as a loud break-glass (the IMG checksum from the index is still
+  enforced).
 
 - Arch fully auto (device-tree model → `rpi4`/`rpi5`, else build arch).
   No `<ts>` → latest IMG; `<ts>` → that version.

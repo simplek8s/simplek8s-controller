@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	updatecore "github.com/simplek8s/simplek8s-controller/internal/updatecore"
 )
 
 func testLog() *slog.Logger {
@@ -612,5 +615,23 @@ func TestStateGate(t *testing.T) {
 	// jobs route (nil states) still passes across the flip.
 	if code := ok("/api/jobs/1", nil); code != http.StatusNoContent {
 		t.Fatalf("jobs across flip = %d", code)
+	}
+}
+
+func TestIndexFailureMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"rejected", errors.Join(updatecore.ErrIndexRejected, errors.New("bad signature")),
+			"release index rejected (signature, keyring or index invalid)"},
+		{"transport", errors.New("dial tcp 10.0.0.1:443: connection refused"),
+			"release channel unreachable"},
+	}
+	for _, tc := range cases {
+		if got := indexFailureMessage(tc.err); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

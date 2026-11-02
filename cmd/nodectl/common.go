@@ -101,20 +101,25 @@ func httpClientWithTimeout(d time.Duration) *http.Client {
 	return &http.Client{Timeout: d}
 }
 
-// fetchIndex fetches + GPG-verifies the release index (or skips
-// verification for --keyring /dev/null with a loud warning),
-// returning the verified filename -> sha256 map.
-func fetchIndex(ctx context.Context, log *slog.Logger, base, keyringPath string) (map[string]string, int) {
+// fetchIndexChecked fetches + GPG-verifies the release index (or skips
+// verification for --keyring /dev/null with a loud warning), returning
+// the verified filename -> sha256 map and the underlying error for
+// callers that need to classify it.
+func fetchIndexChecked(ctx context.Context, log *slog.Logger, base, keyringPath string) (map[string]string, error) {
 	sums, err := updatecore.FetchVerifiedIndex(ctx, httpClient(), log, base, keyringPath, embeddedPubring)
-	if err != nil {
-		if keyringPath == "/dev/null" {
-			log.Warn("GPG verification skipped (--keyring /dev/null): transport integrity only")
-		}
-		log.Error("release index check failed", "err", err)
-		return nil, exitOperational
-	}
 	if keyringPath == "/dev/null" {
 		log.Warn("GPG verification skipped (--keyring /dev/null): transport integrity only")
+	}
+	return sums, err
+}
+
+// fetchIndex is the CLI shape: it logs the failure and maps it to the
+// operational exit code.
+func fetchIndex(ctx context.Context, log *slog.Logger, base, keyringPath string) (map[string]string, int) {
+	sums, err := fetchIndexChecked(ctx, log, base, keyringPath)
+	if err != nil {
+		log.Error("release index check failed", "err", err)
+		return nil, exitOperational
 	}
 	return sums, exitOK
 }

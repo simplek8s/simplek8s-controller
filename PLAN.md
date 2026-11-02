@@ -1101,8 +1101,8 @@ partition/filesystem tools (`sfdisk`, `mkfs.ext4`,
 requirement, recorded here as external. Go itself streams and
 writes the image (no `curl`/`dd` needed).
 
-**`install`.** `nodectl install [--url] [--yes] [--config FILE]
-[--dry-run] [<ts>] <device>` installs the distro onto the
+**`install`.** `nodectl install [--url] [--keyring PATH] [--yes]
+[--config FILE] [--dry-run] [<ts>] <device>` installs the distro onto the
 whole-disk block device `<device>` (e.g. `/dev/vda`). Root
 required. No update lock (M8 D7).
 
